@@ -21,9 +21,9 @@ class Kitchen(AndNode, RootNode, SpatialNodeMixin):
     ''' Implements a square-footprint kitchen of varying length/width/height,
     with four walls and a floor. '''
     def __init__(self):
-        kitchen_height = 2. # pyro.sample("kitchen_height", dist.Uniform(2.0, 2.0001))
-        kitchen_length = 3. #pyro.sample("kitchen_length", dist.Uniform(3.0, 3.0001)) # x axis
-        kitchen_width = 4. #pyro.sample("kitchen_width", dist.Uniform(3., 6.)) # y axis
+        kitchen_height = pyro.sample("kitchen_height", dist.Uniform(2.0, 3.0))
+        kitchen_length = pyro.sample("kitchen_length", dist.Uniform(3.0, 6.0)) # x axis
+        kitchen_width = pyro.sample("kitchen_width", dist.Uniform(3.0, 6.0)) # y axis
         # North is +y
         # East is +x
         n_wall_rule = DeterministicRelativePoseProductionRule(
@@ -77,14 +77,15 @@ class Kitchen(AndNode, RootNode, SpatialNodeMixin):
 
 class Wall(TerminalNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
     def __init__(self, name, tf, height, length):
-        wall_thickness = 0.1
         SpatialNodeMixin.__init__(self, tf)
         TerminalNode.__init__(self, name)
 
+        # Handle geometry and physics.
+        wall_thickness = 0.1
         PhysicsGeometryNodeMixin.__init__(self, fixed=True)
         # Move the collision geometry so the wall surface is at y=0 (local frame),
-        # and is open in the -y direction.
-        geom_tf = pose_to_tf_matrix(torch.tensor([0., wall_thickness/2., 0., 0., 0., 0.]))
+        # and is open in the -y direction, and the base of the wall is at z=0.
+        geom_tf = pose_to_tf_matrix(torch.tensor([0., wall_thickness/2., height/2., 0., 0., 0.]))
         # "Order flip of length/width to get "length" to be the x-axis length scale, and
         # extend edge length so the corners are filled in.
         geometry = Box(width=length+wall_thickness*2., depth=wall_thickness, height=height)
@@ -92,9 +93,11 @@ class Wall(TerminalNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
 
 class Floor(TerminalNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
     def __init__(self, name, tf, length, width):
-        floor_depth = 0.1
         SpatialNodeMixin.__init__(self, tf)
         TerminalNode.__init__(self, name)
+
+        # Handle geometry and physics.
+        floor_depth = 0.1
         PhysicsGeometryNodeMixin.__init__(self, fixed=True)
         # Move the collision geometry so the surface is at z=0
         geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., -floor_depth/2., 0., 0., 0.]))
