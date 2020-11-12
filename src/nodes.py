@@ -30,16 +30,23 @@ default_spatial_inertia = SpatialInertia(
 )
 default_friction = CoulombFriction(0.9, 0.8)
 class PhysicsGeometryNodeMixin(object):
-    ''' Contract that this class has physics and geometry info.
-
-    Each piece of geometry is registered with a local transform,
-    which is an offset from the origin of this node.'''
-    def __init__(self, fixed=True, spatial_inertia=default_spatial_inertia):
-        assert(isinstance(spatial_inertia, SpatialInertia))
+    '''
+        Contract that this class has physics and geometry info. Enables
+    registered geometry in the form of:
+        - Model files (urdf/sdf), paired with a transform from the object
+          local origin.
+        - Visual and collision geometry (Drake Shape types), paired with
+          transforms from the object local origin and relevant color
+          and friction information.
+    '''
+    def __init__(self, fixed=True, spatial_inertia=None):
         self.fixed = fixed
-        self.spatial_inertia = spatial_inertia
+        self.model_paths = []
+        self.spatial_inertia = spatial_inertia or default_spatial_inertia
         self.visual_geometry = []
         self.collision_geometry = []
+    def register_model_file(self, tf, model_path, root_body_name):
+        self.model_paths.append((tf, model_path, root_body_name))
     def register_geometry(self, tf, geometry, color=np.ones(4), friction=default_friction):
         # Shorthand for registering the same geometry as collision + visual.
         self.register_visual_geometry(tf, geometry, color)

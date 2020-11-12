@@ -1,5 +1,6 @@
 from functools import partial
 import numpy as np
+import os
 import time
 
 import pydrake
@@ -141,9 +142,11 @@ class Cabinet(TerminalNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
 
         # Handle geometry and physics.
         PhysicsGeometryNodeMixin.__init__(self, fixed=True)
-        geom_tf = pose_to_tf_matrix(torch.tensor([0., -0.25, 0., 0., 0., 0.]))
-        geometry = Box(width=0.5, depth=0.5, height=0.5)
-        self.register_geometry(geom_tf, geometry, color=np.array([0.2, 0.2, 0.8, 1.0]))
+        # Rotate cabinet so it opens away from the wall
+        geom_tf = pose_to_tf_matrix(torch.tensor([0., -0.1, 0., 0., 0., -np.pi/2.]))
+        # TODO(gizatt) Resource path management to be done here...
+        model_path = "/home/gizatt/drake/examples/manipulation_station/models/cupboard.sdf"
+        self.register_model_file(tf=geom_tf, model_path=model_path, root_body_name="cupboard_body")
 
 
 if __name__ == "__main__":
