@@ -19,11 +19,16 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
         builder, MultibodyPlant(time_step=timestep))
     world_body = mbp.world_body()
     free_body_poses = []
+    tree_body_index = 0
     for node in scene_tree.nodes:
         if isinstance(node, SpatialNodeMixin) and isinstance(node, PhysicsGeometryNodeMixin):
             # Add a body for this node, and register any of the
             # visual and collision geometry available.
-            body = mbp.AddRigidBody(node.name, node.spatial_inertia)
+            # TODO(gizatt) This tree body index is built in to disambiguate names.
+            # But I forsee a name-to-stuff resolution crisis when inference time comes...
+            # this might get resolved by the solution to that.
+            body = mbp.AddRigidBody(node.name + "_%04d" % tree_body_index, node.spatial_inertia)
+            tree_body_index += 1
             tf = torch_tf_to_drake_tf(node.tf)
             if node.fixed:
                 mbp.WeldFrames(world_body.body_frame(),

@@ -1,5 +1,6 @@
 import networkx as nx
 from .nodes import RootNode, TerminalNode
+from pyro.contrib.autoname import scope, name_count
 
 class ParseTree(nx.DiGraph):
     def __init__(self):
@@ -18,6 +19,7 @@ class ParseTree(nx.DiGraph):
             raise NotImplementedError("> 1 parent --> bad parse tree")
 
     @staticmethod
+    @name_count
     def generate_from_root_type(root_node_type):
         ''' Generates an unconditioned parse tree from a root node class. '''
         assert issubclass(root_node_type, RootNode)

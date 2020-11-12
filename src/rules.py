@@ -15,9 +15,34 @@ class ProductionRule(object):
             returns: a list of ProductionRules '''
         raise NotImplementedError()
 
-class DeterministicRelativePoseProductionRule(ProductionRule):
+
+class RandomRelativePoseProductionRule(ProductionRule):
     ''' Helper ProductionRule type representing
-    deterministic relative offsets between two nodes that have poses. '''
+    random placement, described by a distribution on relative pose between
+    two nodes. '''
+    def __init__(self, child_constructor, child_name, relative_tf_sampler, **kwargs):
+        ''' Args:
+                child_constructor: Callable that takes `name` and `tf` args,
+                    and produces a Node with SpatialNodeMixin.
+                child_name: string name to be assigned to the new node.
+                relative_tf_sampler: callable that samples a 4x4 tf.
+        '''
+        self.child_constructor = child_constructor
+        self.child_name = child_name
+        self.relative_tf_sampler = relative_tf_sampler
+        self.kwargs = kwargs
+
+    def sample_products(self, parent):
+        assert(isinstance(parent, SpatialNodeMixin))
+        new_tf = torch.mm(parent.tf, self.relative_tf_sampler())
+        return [self.child_constructor(name=self.child_name, tf=new_tf, **self.kwargs)]
+
+class DeterministicRelativePoseProductionRule(RandomRelativePoseProductionRule):
+    ''' Helper ProductionRule type representing
+    deterministic relative offsets between two nodes that have poses.
+
+    In practice, shells out toe RandomRelativePoseProductionRule, but supplies
+    a deterministic sampler. '''
     def __init__(self, child_constructor, child_name, relative_tf, **kwargs):
         ''' Args:
                 child_constructor: Callable that takes `name` and `tf` args,
@@ -25,14 +50,10 @@ class DeterministicRelativePoseProductionRule(ProductionRule):
                 child_name: string name to be assigned to the new node.
                 relative_tf: 4x4 torch tf matrix.
         '''
-        self.child_constructor = child_constructor
-        self.child_name = child_name
-        self.relative_tf = relative_tf
-        self.kwargs = kwargs
-
-    def sample_products(self, parent):
-        assert(isinstance(parent, SpatialNodeMixin))
-        new_tf = torch.mm(parent.tf, self.relative_tf)
-        return [self.child_constructor(name=self.child_name, tf=new_tf, **self.kwargs)]
-        
-
+        RandomRelativePoseProductionRule.__init__(
+            self,
+            child_constructor,
+            child_name,
+            lambda: relative_tf,
+            **kwargs
+        )

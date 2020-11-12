@@ -15,12 +15,14 @@ class Node(object):
     def __init__(self, name):
         self.name = name
 
+
 class SpatialNodeMixin(object):
     ''' Contract that a class with this mixin has a 'tf' attribute,
     which is a 4x4 tf matrix representing the node's pose in world
     frame. '''
     def __init__(self, tf):
         self.tf = tf
+
 
 default_spatial_inertia = SpatialInertia(
     mass=1.0,
@@ -183,3 +185,21 @@ class IndependentSetNode(NonTerminalNode):
             if selected_rules[k] == 1:
                 output.append(rule)
         return output
+
+
+class GeometricSetNode(NonTerminalNode):
+    ''' Convenience specialization of a nonterminal node: given a single production
+    rule, can reapply it a number of times following a geometric distribution
+    with a given repeat probability.'''
+    def __init__(self, name, production_rule,
+                 geometric_prob):
+        self.production_dist = dist.Geometric(geometric_prob)
+        self.production_rule = production_rule
+        NonTerminalNode.__init__(self, name=name)
+
+    def sample_production_rules(self):
+        num_repeats = pyro.sample(
+            self.name + "_geometric_set_sample",
+            self.production_dist)
+        # Select out the appropriate rules
+        return [self.production_rule] * int(num_repeats.item())
