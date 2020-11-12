@@ -1,4 +1,5 @@
 import networkx as nx
+from .nodes import RootNode, TerminalNode
 
 class ParseTree(nx.DiGraph):
     def __init__(self):
@@ -18,21 +19,25 @@ class ParseTree(nx.DiGraph):
 
     @staticmethod
     def generate_from_root_type(root_node_type):
-        ''' Generates an unconditioned parse tree from a given root node type. '''
-        assert issubclass(root_node, RootNode)
-        # Start by sampling the root node itself.
-        unexpanded_nodes = [ root_node.sample() ]
+        ''' Generates an unconditioned parse tree from a root node class. '''
+        assert issubclass(root_node_type, RootNode)
+        unexpanded_nodes = [ root_node_type.sample() ]
         parse_tree = ParseTree()
-        parse_tree.add_node(root_node)
-        while len(input_nodes_with_parents)>  0:
-            parent_node = input_nodes_with_parents.pop(0)
+        parse_tree.add_node(unexpanded_nodes[0])
+        while len(unexpanded_nodes)>  0:
+            parent_node = unexpanded_nodes.pop(0)
             if isinstance(parent_node, TerminalNode):
                 # Nothing more to do with this node
                 pass
             else:
-                new_nodes = parent_node.sample_products()
-                for new_node in new_nodes:
-                    parse_tree.add_node(new_node)
-                    parse_tree.add_edge(parent_node, new_node)
-                unexpanded_nodes += new_nodes
+                # Expand by picking a production rule
+                production_rules = parent_node.sample_production_rules()
+                for i, rule in enumerate(production_rules):
+                    parse_tree.add_node(rule)
+                    parse_tree.add_edge(parent_node, rule)
+                    new_nodes = rule.sample_products(parent_node)
+                    for new_node in new_nodes:
+                        parse_tree.add_node(new_node)
+                        parse_tree.add_edge(rule, new_node)
+                    unexpanded_nodes += new_nodes
         return parse_tree
