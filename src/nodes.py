@@ -29,19 +29,23 @@ default_spatial_inertia = SpatialInertia(
     p_PScm_E=np.zeros(3), G_SP_E=UnitInertia(0.01, 0.01, 0.01)
 )
 default_friction = CoulombFriction(0.9, 0.8)
-class PhysicsGeometryNodeMixin(object):
+class PhysicsGeometryNodeMixin(SpatialNodeMixin):
     '''
-        Contract that this class has physics and geometry info. Enables
-    registered geometry in the form of:
+    Contract that this class has physics and geometry info, providing
+    Drake / simulator interoperation. Implies SpatialNodeMixin.
+    Enables calls to register geometry of the following types:
         - Model files (urdf/sdf), paired with a transform from the object
           local origin, the name of the root body (which gets put at that
           transform), and optionally, the initial joint configuration of
-          the model (as a dict of joint names to joint states).
+          the model (as a dict of joint names to joint states). These
+          are added to the simulated scene with the specified link
+          welded (or translated, if not fixed) to the node transform.
         - Visual and collision geometry (Drake Shape types), paired with
           transforms from the object local origin and relevant color
           and friction information.
     '''
-    def __init__(self, fixed=True, spatial_inertia=None):
+    def __init__(self, tf, fixed=True, spatial_inertia=None):
+        SpatialNodeMixin.__init__(self, tf)
         self.fixed = fixed
         self.model_paths = []
         self.spatial_inertia = spatial_inertia or default_spatial_inertia

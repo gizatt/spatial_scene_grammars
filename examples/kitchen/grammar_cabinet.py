@@ -23,12 +23,11 @@ from scene_grammar.src.drake_interop import *
 
 from grammar_objects import *
 
-class Cabinet(AndNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
+class Cabinet(AndNode, PhysicsGeometryNodeMixin):
     ''' Cabinets can produce objects on each internal level. '''
     def __init__(self, name, tf):
-        SpatialNodeMixin.__init__(self, tf)
         # Handle geometry and physics.
-        PhysicsGeometryNodeMixin.__init__(self, fixed=True)
+        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
         # Rotate cabinet so it opens away from the wall
         geom_tf = pose_to_tf_matrix(torch.tensor([0., -0.15, 0., 0., 0., -np.pi/2.]))
         # TODO(gizatt) Resource path management to be done here...

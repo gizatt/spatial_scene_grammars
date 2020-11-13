@@ -23,12 +23,17 @@ from scene_grammar.src.drake_interop import *
 
 from grammar_objects import *
 
-class Table(AndNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
+class Table(AndNode, PhysicsGeometryNodeMixin):
     ''' Table (using the extra heavy duty table from Drake) that
     produces objects on its surface. '''
     def __init__(self, name, tf):
-        SpatialNodeMixin.__init__(self, tf)
-        
+        # Handle geometry and physics.
+        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
+        geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., 0., 0., 0., 0.]))
+        # TODO(gizatt) Resource path management to be done here...
+        model_path = "/home/gizatt/drake/examples/kuka_iiwa_arm/models/table/extra_heavy_duty_table_surface_only_collision.sdf"
+        self.register_model_file(tf=geom_tf, model_path=model_path, root_body_name="link")
+
         # Put an object spawning volume on the table surface.
         rules = []
         rules.append(DeterministicRelativePoseProductionRule(
@@ -41,10 +46,3 @@ class Table(AndNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
                 show_geometry=True
         ))
         AndNode.__init__(self, name=name, production_rules=rules)
-
-        # Handle geometry and physics.
-        PhysicsGeometryNodeMixin.__init__(self, fixed=True)
-        geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., 0., 0., 0., 0.]))
-        # TODO(gizatt) Resource path management to be done here...
-        model_path = "/home/gizatt/drake/examples/kuka_iiwa_arm/models/table/extra_heavy_duty_table_surface_only_collision.sdf"
-        self.register_model_file(tf=geom_tf, model_path=model_path, root_body_name="link")

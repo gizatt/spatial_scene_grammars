@@ -29,6 +29,8 @@ class Kitchen(AndNode, RootNode, SpatialNodeMixin):
     ''' Implements a square-footprint kitchen of varying length/width/height,
     with four walls and a floor. '''
     def __init__(self):
+        SpatialNodeMixin.__init__(self, tf=torch.eye(4))
+
         # TODO(gizatt) pyro @scope for local variable naming?
         kitchen_height = pyro.sample("kitchen_height", dist.Uniform(2.0, 3.0))
         kitchen_width = pyro.sample("kitchen_width", dist.Uniform(2.0, 4.0)) # x axis
@@ -78,19 +80,30 @@ class Kitchen(AndNode, RootNode, SpatialNodeMixin):
                             #w_wall_rule,
                             #s_wall_rule,
                             floor_rule])
-        SpatialNodeMixin.__init__(self, tf=torch.eye(4))
 
     @staticmethod
     def sample():
+        # The root node should be able to sample itself; in this case,
+        # because Kitchen takes no arguments, this is easy.
         return Kitchen()
 
 
-class Wall(GeometricSetNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
+class Wall(GeometricSetNode, PhysicsGeometryNodeMixin):
     ''' Each wall can produce some number of cabinets on its surface and
     random (feasible) positions. '''
 
     def __init__(self, name, tf, height, width):
-        SpatialNodeMixin.__init__(self, tf)
+        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
+        # Handle geometry and physics.
+        self.wall_thickness = 0.1
+        self.width = width
+        self.height = height
+        # Move the collision geometry so the wall surface is at y=0 (local frame),
+        # and is open in the -y direction, and the base of the wall is at z=0.
+        geom_tf = pose_to_tf_matrix(torch.tensor([0., self.wall_thickness/2., height/2., 0., 0., 0.]))
+        # Extend wall width so corners get filled in.
+        geometry = Box(width=width+self.wall_thickness*2., depth=self.wall_thickness, height=height)
+        self.register_geometry(geom_tf, geometry, color=np.array([1., 0.898, 0.706, 1.0]))
 
         # This node produces a geometric number of cabinets on its surface.
         cabinet_production_rule = RandomRelativePoseProductionRule(
@@ -100,18 +113,6 @@ class Wall(GeometricSetNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
             self, name=name, production_rule=cabinet_production_rule,
             geometric_prob=0.5
         )
-
-        # Handle geometry and physics.
-        self.wall_thickness = 0.1
-        self.width = width
-        self.height = height
-        PhysicsGeometryNodeMixin.__init__(self, fixed=True)
-        # Move the collision geometry so the wall surface is at y=0 (local frame),
-        # and is open in the -y direction, and the base of the wall is at z=0.
-        geom_tf = pose_to_tf_matrix(torch.tensor([0., self.wall_thickness/2., height/2., 0., 0., 0.]))
-        # Extend wall width so corners get filled in.
-        geometry = Box(width=width+self.wall_thickness*2., depth=self.wall_thickness, height=height)
-        self.register_geometry(geom_tf, geometry, color=np.array([1., 0.898, 0.706, 1.0]))
 
     def _sample_cabinet_pose_on_wall(self):
         # For now, hard-code cabinet size to help it not intersect the other walls...
@@ -126,10 +127,15 @@ class Wall(GeometricSetNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
         return pose_to_tf_matrix(torch.tensor([x_on_wall, 0., z_on_wall, 0., 0., 0.]))
 
 
-class Floor(AndNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
+class Floor(AndNode, PhysicsGeometryNodeMixin):
     def __init__(self, name, tf, width, length):
-        SpatialNodeMixin.__init__(self, tf)
-        
+        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
+        floor_depth = 0.1
+        # Move the collision geometry so the surface is at z=0
+        geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., -floor_depth/2., 0., 0., 0.]))
+        geometry = Box(width=width, depth=length, height=floor_depth)
+        self.register_geometry(geom_tf, geometry, color=np.array([0.8, 0.8, 0.8, 1.0]))
+
         # Spawn a table at a determined location.
         # (Currently just for testing item placement.)
         table_spawn_rule = DeterministicRelativePoseProductionRule(
@@ -139,10 +145,3 @@ class Floor(AndNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
         )
         AndNode.__init__(self, name=name, production_rules=[table_spawn_rule])
 
-        # Handle geometry and physics.
-        floor_depth = 0.1
-        PhysicsGeometryNodeMixin.__init__(self, fixed=True)
-        # Move the collision geometry so the surface is at z=0
-        geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., -floor_depth/2., 0., 0., 0.]))
-        geometry = Box(width=width, depth=length, height=floor_depth)
-        self.register_geometry(geom_tf, geometry, color=np.array([0.8, 0.8, 0.8, 1.0]))

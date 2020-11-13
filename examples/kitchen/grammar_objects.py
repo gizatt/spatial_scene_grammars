@@ -21,15 +21,13 @@ from scene_grammar.src.tree import *
 from scene_grammar.src.transform_utils import *
 from scene_grammar.src.drake_interop import *
 
-class Object(TerminalNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
+class Object(TerminalNode, PhysicsGeometryNodeMixin):
     ''' Concrete object we might want to manipulate.
         Currently just creates a green block. '''
     def __init__(self, name, tf):
-        SpatialNodeMixin.__init__(self, tf)
         TerminalNode.__init__(self, name)
+        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=False)
 
-        # Handle geometry and physics.
-        PhysicsGeometryNodeMixin.__init__(self, fixed=False)
         # Rotate cabinet so it opens away from the wall
         geom_tf = torch.eye(4)
         # TODO(gizatt) Resource path management to be done here...
@@ -37,7 +35,7 @@ class Object(TerminalNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
         self.register_model_file(tf=geom_tf, model_path=model_path, root_body_name="base_link")
 
 
-class PlanarObjectRegion(GeometricSetNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
+class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNodeMixin):
     '''
         Produces a geometric number of objects in a bounded volume
         by randomly sampling their placement on the surface.
@@ -49,22 +47,10 @@ class PlanarObjectRegion(GeometricSetNode, SpatialNodeMixin, PhysicsGeometryNode
             show_geometry: Adds visual geometry indicating the object spawn region.
     '''
     def __init__(self, name, tf, object_production_rate, bounds, show_geometry=False):
-        SpatialNodeMixin.__init__(self, tf)
-        PhysicsGeometryNodeMixin.__init__(self, fixed=True)
-
+        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
         self.x_bounds = bounds[0]
         self.y_bounds = bounds[1]
         self.z_bounds = bounds[2]
-
-        # Produce a geometric number of objects within bounds.
-        object_production_rule = RandomRelativePoseProductionRule(
-            Object, "%s_object" % name, self._sample_object_pose
-        )
-        GeometricSetNode.__init__(
-            self, name=name, production_rule=object_production_rule,
-            geometric_prob=object_production_rate
-        )
-
         # Add some geometry for viz purposes
         geom_tf = pose_to_tf_matrix(torch.tensor([
             np.mean(self.x_bounds),
@@ -76,6 +62,15 @@ class PlanarObjectRegion(GeometricSetNode, SpatialNodeMixin, PhysicsGeometryNode
                        height=self.z_bounds[1] - self.z_bounds[0])
         if show_geometry:
             self.register_visual_geometry(geom_tf, geometry, color=np.array([0.5, 1.0, 0.2, 0.2]))
+
+        # Produce a geometric number of objects within bounds.
+        object_production_rule = RandomRelativePoseProductionRule(
+            Object, "%s_object" % name, self._sample_object_pose
+        )
+        GeometricSetNode.__init__(
+            self, name=name, production_rule=object_production_rule,
+            geometric_prob=object_production_rate
+        )
 
     def _sample_object_pose(self):
         # For now, hard-code cabinet size to help it not intersect the other walls...
