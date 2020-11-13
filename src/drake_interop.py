@@ -1,3 +1,5 @@
+import meshcat
+
 import pydrake
 from pydrake.all import (
     AddMultibodyPlantSceneGraph,
@@ -13,6 +15,9 @@ from .nodes import SpatialNodeMixin, PhysicsGeometryNodeMixin
 
 def torch_tf_to_drake_tf(tf):
     return RigidTransform(tf.cpu().detach().numpy())
+
+def draw_clearance_geometry_meshcat(scene_tree, meshcat_url=None):
+    pass
 
 def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
     builder = DiagramBuilder()

@@ -32,7 +32,8 @@ default_friction = CoulombFriction(0.9, 0.8)
 class PhysicsGeometryNodeMixin(SpatialNodeMixin):
     '''
     Contract that this class has physics and geometry info, providing
-    Drake / simulator interoperation. Implies SpatialNodeMixin.
+    Drake / simulator interoperation. Implies SpatialNodeMixin (and
+    calls its constructor.) 
     Enables calls to register geometry of the following types:
         - Model files (urdf/sdf), paired with a transform from the object
           local origin, the name of the root body (which gets put at that
@@ -43,6 +44,11 @@ class PhysicsGeometryNodeMixin(SpatialNodeMixin):
         - Visual and collision geometry (Drake Shape types), paired with
           transforms from the object local origin and relevant color
           and friction information.
+        - Clearance geometry (Drake Shape types), paired with transforms
+          from the object local origin. This represents the region around
+          this object that should not intersect with any other node's
+          clearance geometry: e.g., the space in front of a cabinet should
+          be clear so the doors can open.
     '''
     def __init__(self, tf, fixed=True, spatial_inertia=None):
         SpatialNodeMixin.__init__(self, tf)
@@ -51,6 +57,7 @@ class PhysicsGeometryNodeMixin(SpatialNodeMixin):
         self.spatial_inertia = spatial_inertia or default_spatial_inertia
         self.visual_geometry = []
         self.collision_geometry = []
+        self.clearance_geometry = []
     def register_model_file(self, tf, model_path, root_body_name,
                             q0_dict=None):
         self.model_paths.append((tf, model_path, root_body_name, q0_dict))
@@ -66,6 +73,11 @@ class PhysicsGeometryNodeMixin(SpatialNodeMixin):
         assert isinstance(tf, torch.Tensor) and tf.shape == (4, 4)
         assert isinstance(geometry, pydrake.geometry.Shape)
         self.collision_geometry.append((tf, geometry, friction))
+    def register_clearance_geometry(self, tf, geometry):
+        assert isinstance(tf, torch.Tensor) and tf.shape == (4, 4)
+        assert isinstance(geometry, pydrake.geometry.Shape)
+        self.clearance_geometry.append((tf, geometry))
+
 
 class NonTerminalNode(Node):
     ''' Abstract interface for nonterminal nodes, which are responsible

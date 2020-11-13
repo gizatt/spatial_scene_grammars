@@ -21,6 +21,7 @@ from scene_grammar.src.tree import *
 from scene_grammar.src.transform_utils import *
 from scene_grammar.src.drake_interop import *
 
+
 class Object(TerminalNode, PhysicsGeometryNodeMixin):
     ''' Concrete object we might want to manipulate.
         Currently just creates a green block. '''

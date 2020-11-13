@@ -143,5 +143,24 @@ class Floor(AndNode, PhysicsGeometryNodeMixin):
             child_name="%s_table" % name,
             relative_tf=pose_to_tf_matrix(torch.tensor([1., 0., 0., 0., 0., 0.]))
         )
-        AndNode.__init__(self, name=name, production_rules=[table_spawn_rule])
+        robot_spawn_rule = DeterministicRelativePoseProductionRule(
+            child_constructor=RobotSpawnLocation,
+            child_name="%s_robot_spawn" % name,
+            relative_tf=pose_to_tf_matrix(torch.tensor([-1, 0., 0., 0., 0., 0.]))
+        )
+        AndNode.__init__(self, name=name, production_rules=[
+            table_spawn_rule, robot_spawn_rule])
 
+
+class RobotSpawnLocation(TerminalNode, PhysicsGeometryNodeMixin):
+    ''' Node with clearance geometry to indicate where the robot should
+    spawn in. '''
+    def __init__(self, name, tf):
+        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
+        # Only has clearance geometry: indicates robot start location, and
+        # ensures that there's space to put a robot into this scene.
+        geom_tf = torch.eye(4)
+        geometry = Box(width=1., depth=1., height=2., )
+        self.register_clearance_geometry(geom_tf, geometry)
+
+        TerminalNode.__init__(self, name=name)

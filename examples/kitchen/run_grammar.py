@@ -19,6 +19,7 @@ from scene_grammar.src.nodes import *
 from scene_grammar.src.rules import *
 from scene_grammar.src.tree import *
 from scene_grammar.src.transform_utils import *
+from scene_grammar.src.visualization import *
 from scene_grammar.src.drake_interop import *
 
 from grammar_room_layout import *
@@ -49,6 +50,9 @@ if __name__ == "__main__":
         print(node_name, ": ", trace.nodes[node_name]["value"].detach().numpy())
 
 
+    # Draw generated tree in meshcat.
+    draw_scene_tree_meshcat(scene_tree, alpha=1.0, node_sphere_size=0.1)
+
     # Simulate the resulting scene, with a PR2 for scale.
     builder, mbp, scene_graph = compile_scene_tree_to_mbp_and_sg(
         scene_tree, timestep=0.001)
@@ -58,9 +62,10 @@ if __name__ == "__main__":
     parser.package_map().PopulateUpstreamToDrake(pr2_model_path);
     pr2_model_id = parser.AddModelFromFile(
         file_name=pr2_model_path, model_name="PR2_for_scale")
-    # The PR2 is on x and y rails: find the x joint and set its default state
-    # to shift back from the table.
-    mbp.GetJointByName("x", model_instance=pr2_model_id).set_default_translation(-0.5)
+    # Get the tf of the robot spawn node, and put the PR2 at that xy location.
+    robot_spawn_tf = scene_tree.find_nodes_by_type(RobotSpawnLocation)[0].tf.numpy()
+    mbp.GetJointByName("x", model_instance=pr2_model_id).set_default_translation(robot_spawn_tf[0, 3])
+    mbp.GetJointByName("y", model_instance=pr2_model_id).set_default_translation(robot_spawn_tf[1, 3])
 
     mbp.Finalize()
     

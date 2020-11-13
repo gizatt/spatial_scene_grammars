@@ -45,6 +45,10 @@ class Cabinet(AndNode, PhysicsGeometryNodeMixin):
                 "left_door_hinge": left_door_state.detach().numpy(),
                 "right_door_hinge": right_door_state.detach().numpy()
             })
+        # Add clearance geometry to indicate that shelves shouldn't
+        # penetrate each other and should have clearance to open the doors.
+        geometry = Box(width=1., depth=1., height=2.)
+        self.register_clearance_geometry(geom_tf, geometry)
 
         # Place shelf nodes.
         # Dimensions of a single shelf, in terms of the 
@@ -59,8 +63,7 @@ class Cabinet(AndNode, PhysicsGeometryNodeMixin):
                 relative_tf=pose_to_tf_matrix(torch.tensor(
                     [0., -0.15, bottom_shelf_z_local+shelf_height*k, 0., 0., 0.])),
                 object_production_rate=0.5,
-                bounds=((-0.3, 0.3), (-0.15, 0.15), (0., 0.2)),
-                show_geometry=True
+                bounds=((-0.2, 0.2), (-0.1, 0.1), (0., 0.2))
             ))
         AndNode.__init__(self, name=name, production_rules=rules)
 

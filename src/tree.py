@@ -1,5 +1,6 @@
 import networkx as nx
-from .nodes import RootNode, TerminalNode
+from .nodes import RootNode, TerminalNode, Node
+from .rules import ProductionRule
 from pyro.contrib.autoname import scope, name_count
 
 class ParseTree(nx.DiGraph):
@@ -17,6 +18,29 @@ class ParseTree(nx.DiGraph):
             print("Node: ", node)
             print("Parents: ", parents)
             raise NotImplementedError("> 1 parent --> bad parse tree")
+
+    def find_nodes_by_type(self, target_type):
+        nodes = []
+        for node in self.nodes:
+            if isinstance(node, target_type):
+                nodes.append(node)
+        return nodes
+
+    def get_tree_without_production_rules(self):
+        # Returns a raw nx.DiGraph of the same nodes
+        # in this tree, but with the production rules removed
+        # (so nodes are connected directly to their parent node).
+        new_tree = nx.DiGraph()
+        for node in self.nodes:
+            if isinstance(node, Node):
+                new_tree.add_node(node)
+        for node in self.nodes:
+            if isinstance(node, ProductionRule):
+                parent = self.get_node_parent_or_none(node)
+                assert(parent is not None)
+                for child in list(self.successors(node)):
+                    new_tree.add_edge(parent, child)
+        return new_tree
 
     @staticmethod
     @name_count
