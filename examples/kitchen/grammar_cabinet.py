@@ -49,8 +49,8 @@ class Cabinet(AndNode, PhysicsGeometryNodeMixin):
         # penetrate each other and should have clearance to open the doors.
         # (Offset the clearance geometry forward to line up with the actual cabinet geometry.)
         geom_tf = torch.mm(geom_tf, 
-            pose_to_tf_matrix(torch.tensor([0.0, 0., 0., 0., 0., 0.])))
-        geometry = Box(width=1.2, depth=.8, height=1.)
+            pose_to_tf_matrix(torch.tensor([0.15, 0., 0., 0., 0., 0.])))
+        geometry = Box(width=0.5, depth=.8, height=1.)
         self.register_clearance_geometry(geom_tf, geometry)
 
         # Place shelf nodes.

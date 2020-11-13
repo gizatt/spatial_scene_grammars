@@ -36,7 +36,7 @@ class Table(AndNode, PhysicsGeometryNodeMixin):
         geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., 0.6251, 0., 0., 0.]))
         self.register_clearance_geometry(
             tf=geom_tf, 
-            geometry=Box(width=1., depth=1., height=1.25))
+            geometry=Box(width=1., depth=1., height=1.0))
         # Put an object spawning volume on the table surface.
         rules = []
         rules.append(DeterministicRelativePoseProductionRule(

@@ -101,9 +101,10 @@ class Wall(GeometricSetNode, PhysicsGeometryNodeMixin):
         # Move the collision geometry so the wall surface is at y=0 (local frame),
         # and is open in the -y direction, and the base of the wall is at z=0.
         geom_tf = pose_to_tf_matrix(torch.tensor([0., self.wall_thickness/2., height/2., 0., 0., 0.]))
-        # Extend wall width so corners get filled in.
-        geometry = Box(width=width+self.wall_thickness*2., depth=self.wall_thickness, height=height)
+        geometry = Box(width=width, depth=self.wall_thickness, height=height)
         self.register_geometry(geom_tf, geometry, color=np.array([1., 0.898, 0.706, 1.0]))
+        # Use the same geom as clearance geometry
+        self.register_clearance_geometry(geom_tf, geometry)
 
         # This node produces a geometric number of cabinets on its surface.
         cabinet_production_rule = RandomRelativePoseProductionRule(
