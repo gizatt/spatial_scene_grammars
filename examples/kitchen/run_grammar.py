@@ -52,6 +52,8 @@ if __name__ == "__main__":
 
     # Draw generated tree in meshcat.
     draw_scene_tree_meshcat(scene_tree, alpha=1.0, node_sphere_size=0.1)
+    # Draw its clearance geometry for debugging.
+    draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
 
     # Simulate the resulting scene, with a PR2 for scale.
     builder, mbp, scene_graph = compile_scene_tree_to_mbp_and_sg(

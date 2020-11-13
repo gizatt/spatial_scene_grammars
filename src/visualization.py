@@ -53,7 +53,6 @@ def draw_scene_tree_meshcat(scene_tree, zmq_url=None, alpha=1.0, node_sphere_siz
             meshcat_geom.Sphere(node_sphere_size),
             meshcat_geom.MeshToonMaterial(color=color, opacity=alpha, transparent=(alpha != 1.)))
 
-        # Get node global pose by going all the way up pose TF chain
         tf = node.tf.cpu().detach().numpy()
         vis["scene_tree"][node.name + "%d" % k].set_transform(tf)
 

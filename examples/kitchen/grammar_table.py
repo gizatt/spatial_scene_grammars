@@ -33,9 +33,10 @@ class Table(AndNode, PhysicsGeometryNodeMixin):
         # TODO(gizatt) Resource path management to be done here...
         model_path = "/home/gizatt/drake/examples/kuka_iiwa_arm/models/table/extra_heavy_duty_table_surface_only_collision.sdf"
         self.register_model_file(tf=geom_tf, model_path=model_path, root_body_name="link")
+        geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., 0.6251, 0., 0., 0.]))
         self.register_clearance_geometry(
             tf=geom_tf, 
-            geometry=Box(width=1., depth=1., height=2.))
+            geometry=Box(width=1., depth=1., height=1.25))
         # Put an object spawning volume on the table surface.
         rules = []
         rules.append(DeterministicRelativePoseProductionRule(

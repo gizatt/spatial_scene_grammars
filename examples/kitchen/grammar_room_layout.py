@@ -159,7 +159,7 @@ class RobotSpawnLocation(TerminalNode, PhysicsGeometryNodeMixin):
         PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
         # Only has clearance geometry: indicates robot start location, and
         # ensures that there's space to put a robot into this scene.
-        geom_tf = torch.eye(4)
+        geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., 1., 0., 0., 0.]))
         geometry = Box(width=1., depth=1., height=2., )
         self.register_clearance_geometry(geom_tf, geometry)
 
