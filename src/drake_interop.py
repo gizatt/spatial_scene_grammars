@@ -47,7 +47,8 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
                                        root_body.body_frame(),
                                        full_model_tf)
                     else:
-                        mbp.SetDefaultFreeBodyPose(body, full_model_tf)
+                        print("Placing model at full tf ", full_model_tf.GetAsMatrix4())
+                        mbp.SetDefaultFreeBodyPose(root_body, full_model_tf)
 
 
             # Handle adding primitive geometry by adding it all to one
@@ -66,9 +67,10 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
                                         M_BBo_B=node.spatial_inertia)
                 tf = torch_tf_to_drake_tf(node.tf)
                 if node.fixed:
-                    mbp.WeldFrames(world_body.body_frame(),
-                                   body.body_frame(),
-                                   tf)
+                    weld = mbp.WeldFrames(world_body.body_frame(),
+                                          body.body_frame(),
+                                          tf)
+
                 else:
                     mbp.SetDefaultFreeBodyPose(body, tf)
                 for k, (tf, geometry, color) in enumerate(node.visual_geometry):
@@ -87,13 +89,12 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
                         coulomb_friction=friction)
 
             node_to_model_id_map[node] = node_model_ids
-    # Create a context for the MBP so we can set up the state
-    mbp.Finalize()
     return builder, mbp, scene_graph
 
 def simulate_scene_tree(scene_tree, T, timestep=0.001, with_meshcat=False):
     builder, mbp, scene_graph = compile_scene_tree_to_mbp_and_sg(
         scene_tree, timestep=timestep)
+    mbp.Finalize()
 
     if with_meshcat:
         visualizer = ConnectMeshcatVisualizer(builder, scene_graph,

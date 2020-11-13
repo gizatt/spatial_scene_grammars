@@ -4,8 +4,9 @@ import os
 import time
 
 import pydrake
-from pydrake.geometry import Box
-from pydrake.math import (RollPitchYaw, RigidTransform)
+from pydrake.all import (
+    Box, RollPitchYaw, RigidTransform, Parser
+)
 
 import torch
 import torch.distributions.constraints as constraints
@@ -93,7 +94,7 @@ class Wall(GeometricSetNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
         )
         GeometricSetNode.__init__(
             self, name=name, production_rule=cabinet_production_rule,
-            geometric_prob=0.5
+            geometric_prob=0.2
         )
 
         # Handle geometry and physics.
@@ -121,10 +122,18 @@ class Wall(GeometricSetNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
         return pose_to_tf_matrix(torch.tensor([x_on_wall, 0., z_on_wall, 0., 0., 0.]))
 
 
-class Floor(TerminalNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
+class Floor(AndNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
     def __init__(self, name, tf, width, length):
         SpatialNodeMixin.__init__(self, tf)
-        TerminalNode.__init__(self, name)
+        
+        # Spawn a table at a determined location.
+        # (Currently just for testing item placement.)
+        table_spawn_rule = DeterministicRelativePoseProductionRule(
+            child_constructor=Table,
+            child_name="%s_table" % name,
+            relative_tf=pose_to_tf_matrix(torch.tensor([1., 0., 0., 0., 0., 0.]))
+        )
+        AndNode.__init__(self, name=name, production_rules=[table_spawn_rule])
 
         # Handle geometry and physics.
         floor_depth = 0.1
@@ -133,6 +142,7 @@ class Floor(TerminalNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
         geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., -floor_depth/2., 0., 0., 0.]))
         geometry = Box(width=width, depth=length, height=floor_depth)
         self.register_geometry(geom_tf, geometry, color=np.array([0.8, 0.8, 0.8, 1.0]))
+
 
 
 class Cabinet(TerminalNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
@@ -149,20 +159,75 @@ class Cabinet(TerminalNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
         self.register_model_file(tf=geom_tf, model_path=model_path, root_body_name="cupboard_body")
 
 
+class Table(GeometricSetNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
+    ''' Table (using the extra heavy duty table from Drake) that
+    produces objects on its surface. '''
+    def __init__(self, name, tf):
+        SpatialNodeMixin.__init__(self, tf)
+        
+        # Produce a geometric number of objects just above the table surface.
+        object_production_rule = RandomRelativePoseProductionRule(
+            Object, "%s_object" % name, self._sample_object_pose_on_table
+        )
+        GeometricSetNode.__init__(
+            self, name=name, production_rule=object_production_rule,
+            geometric_prob=0.2
+        )
+
+        # Handle geometry and physics.
+        PhysicsGeometryNodeMixin.__init__(self, fixed=True)
+        geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., 0., 0., 0., 0.]))
+        # TODO(gizatt) Resource path management to be done here...
+        model_path = "/home/gizatt/drake/examples/kuka_iiwa_arm/models/table/extra_heavy_duty_table_surface_only_collision.sdf"
+        self.register_model_file(tf=geom_tf, model_path=model_path, root_body_name="link")
+
+    def _sample_object_pose_on_table(self):
+        # For now, hard-code cabinet size to help it not intersect the other walls...
+        table_width = 0.5
+        table_length = 0.5
+        table_height = 1.0
+        x_on_table = pyro.sample("%s_object_x" % self.name,
+                                dist.Uniform(-table_width/2.,
+                                              table_width/2.))
+        y_on_table = pyro.sample("%s_object_y" % self.name,
+                                dist.Uniform(-table_length/2.,
+                                              table_length/2.))
+        return pose_to_tf_matrix(torch.tensor([x_on_table, y_on_table, table_height,
+                                               0., 0., 0.]))
+
+class Object(TerminalNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
+    ''' Concrete object we might want to manipulate.
+        Currently just creates a green block. '''
+    def __init__(self, name, tf):
+        SpatialNodeMixin.__init__(self, tf)
+        TerminalNode.__init__(self, name)
+
+        # Handle geometry and physics.
+        PhysicsGeometryNodeMixin.__init__(self, fixed=False)
+        # Rotate cabinet so it opens away from the wall
+        geom_tf = torch.eye(4)
+        # TODO(gizatt) Resource path management to be done here...
+        model_path = "/home/gizatt/drake/examples/kuka_iiwa_arm/models/objects/block_for_pick_and_place_mid_size.urdf"
+        self.register_model_file(tf=geom_tf, model_path=model_path, root_body_name="base_link")
+
+
 if __name__ == "__main__":
     torch.set_default_tensor_type(torch.DoubleTensor)
     pyro.enable_validation(True)
 
-    # Draw + plot an environment and their trees
+    # Sample an environment (wrapped in some pyro messiness so I can
+    # play with the resulting program trace.)
     start = time.time()
     pyro.clear_param_store()
     trace = poutine.trace(ParseTree.generate_from_root_type).get_trace(root_node_type=Kitchen)
     scene_tree = trace.nodes["_RETURN"]["value"]
     end = time.time()
 
+    # Print out all the nodes and their transforms.
     for node in scene_tree.nodes:
         if isinstance(node, Node):
             print(node.name, ": ", node.tf.tolist())
+
     print("Generated data in %f seconds." % (end - start))
     print("Full trace values:" )
     for node_name in trace.nodes.keys():
@@ -170,4 +235,34 @@ if __name__ == "__main__":
             continue
         print(node_name, ": ", trace.nodes[node_name]["value"].detach().numpy())
 
-    simulate_scene_tree(scene_tree, T=1., with_meshcat=True)
+
+    # Simulate the resulting scene, with a PR2 for scale.
+    builder, mbp, scene_graph = compile_scene_tree_to_mbp_and_sg(
+        scene_tree, timestep=0.001)
+    # Add PR2 and shift it back in front of where I know the table will be.
+    parser = Parser(mbp)
+    pr2_model_path = "/home/gizatt/drake/build/install/share/drake/examples/pr2/models/pr2_description/urdf/pr2_simplified.urdf"
+    parser.package_map().PopulateUpstreamToDrake(pr2_model_path);
+    pr2_model_id = parser.AddModelFromFile(
+        file_name=pr2_model_path, model_name="PR2_for_scale")
+    # The PR2 is on x and y rails: find the x joint and set its default state
+    # to shift back from the table.
+    mbp.GetJointByName("x", model_instance=pr2_model_id).set_default_translation(-0.5)
+
+    mbp.Finalize()
+    
+    visualizer = ConnectMeshcatVisualizer(builder, scene_graph,
+        zmq_url="default")
+
+    diagram = builder.Build()
+    diag_context = diagram.CreateDefaultContext()
+
+    # Fix input port for PR2 to zero.
+    actuation_port = mbp.get_actuation_input_port(model_instance=pr2_model_id)
+    nu = mbp.num_actuated_dofs(model_instance=pr2_model_id)
+    mbp_context = diagram.GetMutableSubsystemContext(mbp, diag_context)
+    actuation_port.FixValue(mbp_context, np.zeros(nu))
+
+    sim = Simulator(diagram, diag_context)
+    sim.set_target_realtime_rate(1.0)
+    sim.AdvanceTo(20)
