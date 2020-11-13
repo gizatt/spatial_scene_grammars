@@ -27,8 +27,8 @@ class Kitchen(AndNode, RootNode, SpatialNodeMixin):
     def __init__(self):
         # TODO(gizatt) pyro @scope for local variable naming?
         kitchen_height = pyro.sample("kitchen_height", dist.Uniform(2.0, 3.0))
-        kitchen_width = pyro.sample("kitchen_width", dist.Uniform(3.0, 6.0)) # x axis
-        kitchen_length = pyro.sample("kitchen_length", dist.Uniform(3.0, 6.0)) # y axis
+        kitchen_width = pyro.sample("kitchen_width", dist.Uniform(2.0, 4.0)) # x axis
+        kitchen_length = pyro.sample("kitchen_length", dist.Uniform(2.0, 4.0)) # y axis
         # North is +y
         # East is +x
         n_wall_rule = DeterministicRelativePoseProductionRule(
@@ -71,8 +71,8 @@ class Kitchen(AndNode, RootNode, SpatialNodeMixin):
                          production_rules=[
                             n_wall_rule,
                             e_wall_rule,
-                            w_wall_rule,
-                            s_wall_rule,
+                            #w_wall_rule,
+                            #s_wall_rule,
                             floor_rule])
         SpatialNodeMixin.__init__(self, tf=torch.eye(4))
 
@@ -94,7 +94,7 @@ class Wall(GeometricSetNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
         )
         GeometricSetNode.__init__(
             self, name=name, production_rule=cabinet_production_rule,
-            geometric_prob=0.2
+            geometric_prob=0.5
         )
 
         # Handle geometry and physics.
@@ -111,14 +111,14 @@ class Wall(GeometricSetNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
 
     def _sample_cabinet_pose_on_wall(self):
         # For now, hard-code cabinet size to help it not intersect the other walls...
-        cabinet_height = 0.5
-        cabinet_width = 0.5
+        min_cab_height = 0.5
+        max_cab_height = 1.5
+        cabinet_width = 0.6
         x_on_wall = pyro.sample("%s_cabinet_x" % self.name,
                                 dist.Uniform(-self.width/2. + cabinet_width/2.,
                                               self.width/2. - cabinet_width/2.))
         z_on_wall = pyro.sample("%s_cabinet_z" % self.name,
-                                dist.Uniform(cabinet_height/2.,
-                                             self.height - cabinet_height/2.))
+                                dist.Uniform(min_cab_height, max_cab_height))
         return pose_to_tf_matrix(torch.tensor([x_on_wall, 0., z_on_wall, 0., 0., 0.]))
 
 
@@ -145,18 +145,86 @@ class Floor(AndNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
 
 
 
-class Cabinet(TerminalNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
+class Cabinet(IndependentSetNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
+    ''' Cabinets can potentially produce objects on each internal level. '''
     def __init__(self, name, tf):
         SpatialNodeMixin.__init__(self, tf)
-        TerminalNode.__init__(self, name)
-
         # Handle geometry and physics.
         PhysicsGeometryNodeMixin.__init__(self, fixed=True)
         # Rotate cabinet so it opens away from the wall
-        geom_tf = pose_to_tf_matrix(torch.tensor([0., -0.1, 0., 0., 0., -np.pi/2.]))
+        geom_tf = pose_to_tf_matrix(torch.tensor([0., -0.15, 0., 0., 0., -np.pi/2.]))
         # TODO(gizatt) Resource path management to be done here...
         model_path = "/home/gizatt/drake/examples/manipulation_station/models/cupboard.sdf"
-        self.register_model_file(tf=geom_tf, model_path=model_path, root_body_name="cupboard_body")
+        # Randomly open doors random amounts.
+        left_door_state = pyro.sample("%s_left_door_state" % name,
+                                      dist.Uniform(0., np.pi/2.))
+        right_door_state = pyro.sample("%s_right_door_state" % name,
+                                      dist.Uniform(0., np.pi/2.))
+        self.register_model_file(
+            tf=geom_tf, model_path=model_path, root_body_name="cupboard_body",
+            q0_dict={
+                "left_door_hinge": left_door_state.detach().numpy(),
+                "right_door_hinge": right_door_state.detach().numpy()
+            })
+
+        # Place shelf nodes.
+        # Dimensions of a single shelf, in terms of the 
+        shelf_height = 0.13115*2
+        bottom_shelf_z_local = -0.3995
+        num_shelves = 3
+        rules = []
+        for k in range(num_shelves):
+            rules.append(DeterministicRelativePoseProductionRule(
+                child_constructor=CabinetLevel,
+                child_name="cabinet_level_%02d" % k,
+                relative_tf=pose_to_tf_matrix(torch.tensor(
+                    [0., -0.15, bottom_shelf_z_local+shelf_height*k, 0., 0., 0.]))
+            ))
+        IndependentSetNode.__init__(self, name=name, production_rules=rules,
+            production_probs=torch.tensor([0.5]*num_shelves))
+
+
+class CabinetLevel(GeometricSetNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
+    ''' Can produce a geometric number of objects on the shelf. '''
+    def __init__(self, name, tf):
+        SpatialNodeMixin.__init__(self, tf)
+        PhysicsGeometryNodeMixin.__init__(self, fixed=True)
+
+        # Hardcoded local frame shelf bounds
+        self.x_bounds = [-0.3, 0.3]
+        self.y_bounds = [-0.15, 0.15]
+        self.z_bounds = [0., 0.2]
+
+        # Produce a geometric number of objects just above the table surface.
+        object_production_rule = RandomRelativePoseProductionRule(
+            Object, "%s_object" % name, self._sample_object_pose_on_shelf
+        )
+        GeometricSetNode.__init__(
+            self, name=name, production_rule=object_production_rule,
+            geometric_prob=0.5
+        )
+
+        # Add some geometry for viz purposes
+        geom_tf = pose_to_tf_matrix(torch.tensor([
+            np.sum(self.x_bounds)/2.,
+            np.sum(self.y_bounds)/2.,
+            np.sum(self.z_bounds)/2.,
+            0., 0., 0.]))
+        geometry = Box(width=self.x_bounds[1] - self.x_bounds[0],
+                       depth=self.y_bounds[1] - self.y_bounds[0],
+                       height=self.z_bounds[1] - self.z_bounds[0])
+        #self.register_visual_geometry(geom_tf, geometry, color=np.array([0.5, 1.0, 0.2, 0.25]))
+
+    def _sample_object_pose_on_shelf(self):
+        # For now, hard-code cabinet size to help it not intersect the other walls...
+        x_on_shelf = pyro.sample("%s_object_x" % self.name,
+                                dist.Uniform(self.x_bounds[0]+0.05,
+                                             self.x_bounds[1]-0.05))
+        y_on_shelf = pyro.sample("%s_object_y" % self.name,
+                                dist.Uniform(self.y_bounds[0]+0.05,
+                                             self.y_bounds[1]-0.05))
+        return pose_to_tf_matrix(torch.tensor([x_on_shelf, y_on_shelf, self.z_bounds[0]+0.1,
+                                               0., 0., 0.]))
 
 
 class Table(GeometricSetNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
@@ -171,7 +239,7 @@ class Table(GeometricSetNode, SpatialNodeMixin, PhysicsGeometryNodeMixin):
         )
         GeometricSetNode.__init__(
             self, name=name, production_rule=object_production_rule,
-            geometric_prob=0.2
+            geometric_prob=0.35
         )
 
         # Handle geometry and physics.

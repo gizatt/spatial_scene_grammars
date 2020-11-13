@@ -33,7 +33,7 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
             # Handle adding each model from sdf/urdf.
             node_model_ids = []
             if has_models:
-                for local_tf, model_path, root_body_name in node.model_paths:
+                for local_tf, model_path, root_body_name, q0_dict in node.model_paths:
                     model_id = parser.AddModelFromFile(
                         model_path,
                         node.name + "_model_%04d" % mbp.num_model_instances())
@@ -49,6 +49,15 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
                     else:
                         print("Placing model at full tf ", full_model_tf.GetAsMatrix4())
                         mbp.SetDefaultFreeBodyPose(root_body, full_model_tf)
+                    # Handle initial joint state
+                    if q0_dict is not None:
+                        for joint_name in list(q0_dict.keys()):
+                            q0_this = q0_dict[joint_name]
+                            joint = mbp.GetMutableJointByName(
+                                joint_name, model_instance=model_id)
+                            # Reshape to make Drake happy.
+                            q0_this = q0_this.reshape(joint.num_positions(), 1)
+                            joint.set_default_positions(q0_this)
 
 
             # Handle adding primitive geometry by adding it all to one

@@ -34,7 +34,9 @@ class PhysicsGeometryNodeMixin(object):
         Contract that this class has physics and geometry info. Enables
     registered geometry in the form of:
         - Model files (urdf/sdf), paired with a transform from the object
-          local origin.
+          local origin, the name of the root body (which gets put at that
+          transform), and optionally, the initial joint configuration of
+          the model (as a dict of joint names to joint states).
         - Visual and collision geometry (Drake Shape types), paired with
           transforms from the object local origin and relevant color
           and friction information.
@@ -45,8 +47,9 @@ class PhysicsGeometryNodeMixin(object):
         self.spatial_inertia = spatial_inertia or default_spatial_inertia
         self.visual_geometry = []
         self.collision_geometry = []
-    def register_model_file(self, tf, model_path, root_body_name):
-        self.model_paths.append((tf, model_path, root_body_name))
+    def register_model_file(self, tf, model_path, root_body_name,
+                            q0_dict=None):
+        self.model_paths.append((tf, model_path, root_body_name, q0_dict))
     def register_geometry(self, tf, geometry, color=np.ones(4), friction=default_friction):
         # Shorthand for registering the same geometry as collision + visual.
         self.register_visual_geometry(tf, geometry, color)
