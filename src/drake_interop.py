@@ -17,76 +17,85 @@ from pydrake.all import (
 )
 import pydrake.geometry as pydrake_geom
 
-from .nodes import SpatialNodeMixin, PhysicsGeometryNodeMixin
+from .nodes import SpatialNodeMixin, PhysicsGeometryNodeMixin, default_friction
 from .visualization import rgb_2_hex
 
 def torch_tf_to_drake_tf(tf):
     return RigidTransform(tf.cpu().detach().numpy())
 
-def set_meshcat_geometry_from_drake_geometry(vis, shape, color, alpha, X_FG):
-    # Copied from meshcat_visualizer.py in Drake.
-    material = meshcat_geom.MeshLambertMaterial(
-        color=color, transparent=alpha != 1., opacity=alpha)
-    if isinstance(shape, pydrake_geom.Box):
-        geom = meshcat_geom.Box([shape.width(), shape.depth(),
-                      shape.height()])
-    elif isinstance(shape, pydrake_geom.Sphere):
-        geom = meshcat_geom.Sphere(shape.radius())
-    elif isinstance(shape, pydrake_geom.Cylinder):
-        geom = meshcat_geom.Cylinder(shape.length(), shape.radius())
-        # In Drake, cylinders are along +z
-        # In meshcat, cylinders are along +y
-        R_GC = RotationMatrix.MakeXRotation(np.pi/2.0).matrix()
-        X_FG[0:3, 0:3] = X_FG[0:3, 0:3].dot(R_GC)
-    elif isinstance(shape, pydrake_geom.Mesh):
-        geom = meshcat_geom.ObjMeshGeometry.from_file(
-            shape.filename()[0:-3] + "obj")
-        # Attempt to find a texture for the object by looking for
-        # an identically-named *.png next to the model.
-        candidate_texture_path = shape.filename()[0:-3] + "png"
-        if os.path.exists(candidate_texture_path):
-            material = meshcat_geom.MeshLambertMaterial(
-                map=meshcat_geom.ImageTexture(image=meshcat_geomPngImage.from_file(
-                    candidate_texture_path)))
-        X_FG = X_FG.dot(meshcat_tf.scale_matrix(shape.scale()))
-    else:
-        print(f"Unsupported shape {shape} ignored")
-        return
-    vis.set_object(geom, material)
-    vis.set_transform(X_FG)
-
 def draw_clearance_geometry_meshcat(scene_tree, zmq_url=None, alpha=0.25):
     vis = meshcat.Visualizer(zmq_url=zmq_url or "tcp://127.0.0.1:6000")
     vis["clearance_geom"].delete()
 
-    # Assign functionally random colors to each new node
-    # type we discover.
+    builder, mbp, scene_graph = compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree)
+    mbp.Finalize()
+
+    vis = ConnectMeshcatVisualizer(builder, scene_graph,
+        zmq_url="default", prefix="clearance")
+    diagram = builder.Build()
+    context = diagram.CreateDefaultContext()
+    vis.load(vis.GetMyContextFromRoot(context))
+    diagram.Publish(context)
+
+
+def compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree, timestep=0.001, alpha=0.25):
+    builder = DiagramBuilder()
+    mbp, scene_graph = AddMultibodyPlantSceneGraph(
+        builder, MultibodyPlant(time_step=timestep))
+    parser = Parser(mbp)
+    world_body = mbp.world_body()
+    node_to_body_id_map = {}
+    free_body_poses = []
+    # For generating colors.
     node_class_to_color_dict = {}
     cmap = plt.cm.get_cmap('jet')
     cmap_counter = 0.
-    
-    k = 0
     for node in scene_tree.nodes:
-        if (isinstance(node, PhysicsGeometryNodeMixin) and 
-            len(node.clearance_geometry) > 0):
-            # Get a color for this class and draw the clearance
-            # geometry.
+        if isinstance(node, SpatialNodeMixin) and isinstance(node, PhysicsGeometryNodeMixin):
+            # Don't have to do anything if this does not introduce geometry.
+            has_clearance_geometry = len(node.clearance_geometry) > 0
+            if not has_clearance_geometry:
+                continue
+
+            # Add a body for this node and register the clearance geometry.
+            # TODO(gizatt) This tree body index is built in to disambiguate names.
+            # But I forsee a name-to-stuff resolution crisis when inference time comes...
+            # this might get resolved by the solution to that.
+            body = mbp.AddRigidBody(name=node.name + "_%04d" % mbp.num_bodies(),
+                                    M_BBo_B=node.spatial_inertia)
+            node_to_body_id_map[node] = body.index()
+            tf = torch_tf_to_drake_tf(node.tf)
+            print("Default pose to ", tf)
+            mbp.SetDefaultFreeBodyPose(body, tf)
+
+            # Pick out a color for this class.
             node_type_string = node.__class__.__name__
             if node_type_string in node_class_to_color_dict.keys():
                 color = node_class_to_color_dict[node_type_string]
             else:
-                color = rgb_2_hex(cmap(cmap_counter))
+                color = list(cmap(cmap_counter))
+                color[3] = alpha
                 node_class_to_color_dict[node_type_string] = color
                 cmap_counter = np.fmod(cmap_counter + np.pi*2., 1.)
 
-            for l, (tf, shape) in enumerate(node.clearance_geometry):
-                this_vis = vis["clearance_geom"][node.name + "%d" % k]["%d" % l]
-                this_tf = torch_tf_to_drake_tf(node.tf)
-                this_tf = this_tf.multiply(torch_tf_to_drake_tf(tf))
-                this_tf = this_tf.GetAsMatrix4()
-                set_meshcat_geometry_from_drake_geometry(
-                    this_vis, shape, color, alpha, this_tf)
-            k += 1
+            # Handle adding primitive geometry by adding it all to one
+            # mbp.
+            if len(node.clearance_geometry) > 0:
+                for k, (tf, geometry) in enumerate(node.clearance_geometry):
+                    mbp.RegisterCollisionGeometry(
+                        body=body,
+                        X_BG=torch_tf_to_drake_tf(tf),
+                        shape=geometry,
+                        name=node.name + "_col_%03d" % k,
+                        coulomb_friction=default_friction)
+                    mbp.RegisterVisualGeometry(
+                        body=body,
+                        X_BG=torch_tf_to_drake_tf(tf),
+                        shape=geometry,
+                        name=node.name + "_vis_%03d" % k,
+                        diffuse_color=color)
+
+    return builder, mbp, scene_graph
 
 def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
     builder = DiagramBuilder()
@@ -152,7 +161,6 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
                     weld = mbp.WeldFrames(world_body.body_frame(),
                                           body.body_frame(),
                                           tf)
-
                 else:
                     mbp.SetDefaultFreeBodyPose(body, tf)
                 for k, (tf, geometry, color) in enumerate(node.visual_geometry):
