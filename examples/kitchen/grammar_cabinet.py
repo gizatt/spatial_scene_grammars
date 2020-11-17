@@ -28,8 +28,8 @@ class Cabinet(AndNode, PhysicsGeometryNodeMixin):
     def __init__(self, name, tf):
         # Handle geometry and physics.
         PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
-        # Rotate cabinet so it opens away from the wall
-        geom_tf = pose_to_tf_matrix(torch.tensor([0., -0.15, 0., 0., 0., -np.pi/2.]))
+        # Offset cabinet geometry from the wall
+        geom_tf = pose_to_tf_matrix(torch.tensor([0.15, 0., 0., 0., 0., 0.]))
         # TODO(gizatt) Resource path management to be done here...
         model_path = "/home/gizatt/drake/examples/manipulation_station/models/cupboard.sdf"
         # Randomly open doors random amounts.
@@ -47,10 +47,11 @@ class Cabinet(AndNode, PhysicsGeometryNodeMixin):
             })
         # Add clearance geometry to indicate that shelves shouldn't
         # penetrate each other and should have clearance to open the doors.
-        # (Offset the clearance geometry forward to line up with the actual cabinet geometry.)
-        geom_tf = torch.mm(geom_tf, 
-            pose_to_tf_matrix(torch.tensor([0.15, 0., 0., 0., 0., 0.])))
-        geometry = Box(width=0.5, depth=.8, height=1.)
+        clearance_depth = 0.75
+        # Offset out from wall just a bit more to give collision detection
+        # a margin
+        geom_tf = pose_to_tf_matrix(torch.tensor([clearance_depth/2.+0.001, 0., 0., 0., 0., np.pi/2.]))
+        geometry = Box(width=0.6, depth=clearance_depth, height=1.)
         self.register_clearance_geometry(geom_tf, geometry)
 
         # Place shelf nodes.

@@ -9,6 +9,7 @@ from pydrake.all import (
     AddMultibodyPlantSceneGraph,
     DiagramBuilder,
     ConnectMeshcatVisualizer,
+    MinimumDistanceConstraint,
     MultibodyPlant,
     Parser,
     RigidTransform,
@@ -65,7 +66,6 @@ def compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree, timestep=0.0
                                     M_BBo_B=node.spatial_inertia)
             node_to_body_id_map[node] = body.index()
             tf = torch_tf_to_drake_tf(node.tf)
-            print("Default pose to ", tf)
             mbp.SetDefaultFreeBodyPose(body, tf)
 
             # Pick out a color for this class.
@@ -96,6 +96,24 @@ def compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree, timestep=0.0
                         diffuse_color=color)
 
     return builder, mbp, scene_graph
+
+def build_clearance_nonpenetration_constraint(mbp, mbp_context_in_diagram, signed_distance_threshold):
+    ''' Given an MBP/SG pair and a signed distance threshold, returns a constraint
+    function that takes a context and returns whether the MBP/SG in that configuration
+    has all bodies farther than the given threshold. '''
+    return MinimumDistanceConstraint(mbp, signed_distance_threshold, mbp_context_in_diagram)
+
+def get_collisions(mbp, mbp_context_in_diagram):
+    # Essentially the same logic as in ik/MinimumDistanceConstraint's distances evaluation.
+    query_port = mbp.get_geometry_query_input_port()
+    assert query_port.HasValue(mbp_context_in_diagram), \
+        "Either the plant geometry_query_input_port() is not properly " \
+        "connected to the SceneGraph's output port, or the plant_context_ is " \
+        "incorrect. Please refer to AddMultibodyPlantSceneGraph on connecting " \
+        "MultibodyPlant to SceneGraph."
+    query_object = query_port.Eval(mbp_context_in_diagram)
+    return query_object.ComputePointPairPenetration()
+
 
 def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
     builder = DiagramBuilder()

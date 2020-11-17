@@ -1,4 +1,5 @@
 from functools import partial
+import meshcat
 import numpy as np
 import os
 import time
@@ -25,30 +26,57 @@ from scene_grammar.src.drake_interop import *
 from grammar_room_layout import *
 
 
+def rejection_sample_feasible_tree(num_attempts=999):
+    satisfied = False
+    for attempt_k in range(num_attempts):
+        start = time.time()
+        pyro.clear_param_store()
+        trace = poutine.trace(ParseTree.generate_from_root_type).get_trace(root_node_type=Kitchen)
+        scene_tree = trace.nodes["_RETURN"]["value"]
+        end = time.time()
+
+        print("Generated tree in %f seconds." % (end - start))
+
+        # First check if it's got the right number of objects
+        target_num_cabinets = 2
+        num_cabinets = len([node for node in scene_tree.nodes if isinstance(node, Cabinet)])
+        if num_cabinets != target_num_cabinets:
+            continue
+
+        # Draw its clearance geometry for debugging.
+        draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
+
+        # Collision checking on the clearance geometry
+        builder_clearance, mbp_clearance, sg_clearance = \
+            compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree)
+        mbp_clearance.Finalize()
+        diagram_clearance = builder_clearance.Build()
+        diagram_context = diagram_clearance.CreateDefaultContext()
+        mbp_context = diagram_clearance.GetMutableSubsystemContext(mbp_clearance, diagram_context)
+        constraint = build_clearance_nonpenetration_constraint(
+            mbp_clearance, mbp_context, -0.01)
+        constraint.Eval(mbp_clearance.GetPositions(mbp_context))
+
+        q0 = mbp_clearance.GetPositions(mbp_context)
+        print("CONSTRAINT EVAL: %f <= %f <= %f" % (
+              constraint.lower_bound(),
+              constraint.Eval(mbp_clearance.GetPositions(mbp_context)),
+              constraint.upper_bound()))
+        print(len(get_collisions(mbp_clearance, mbp_context)), " bodies in collision")
+
+        if constraint.CheckSatisfied(q0):
+            satisfied = True
+            break
+    return scene_tree, satisfied
+
 if __name__ == "__main__":
     torch.set_default_tensor_type(torch.DoubleTensor)
     pyro.enable_validation(True)
 
-    # Sample an environment (wrapped in some pyro messiness so I can
-    # play with the resulting program trace.)
-    start = time.time()
-    pyro.clear_param_store()
-    trace = poutine.trace(ParseTree.generate_from_root_type).get_trace(root_node_type=Kitchen)
-    scene_tree = trace.nodes["_RETURN"]["value"]
-    end = time.time()
+    vis = meshcat.Visualizer()
+    vis.delete()
 
-    # Print out all the nodes and their transforms.
-    for node in scene_tree.nodes:
-        if isinstance(node, Node):
-            print(node.name, ": ", node.tf.tolist())
-
-    print("Generated data in %f seconds." % (end - start))
-    print("Full trace values:" )
-    for node_name in trace.nodes.keys():
-        if node_name in ["_INPUT", "_RETURN"]:
-            continue
-        print(node_name, ": ", trace.nodes[node_name]["value"].detach().numpy())
-
+    scene_tree, satisfied = rejection_sample_feasible_tree(num_attempts=10000)
 
     # Draw generated tree in meshcat.
     draw_scene_tree_meshcat(scene_tree, alpha=1.0, node_sphere_size=0.1)
@@ -73,16 +101,17 @@ if __name__ == "__main__":
     
     visualizer = ConnectMeshcatVisualizer(builder, scene_graph,
         zmq_url="default")
-
     diagram = builder.Build()
     diag_context = diagram.CreateDefaultContext()
-
+    mbp_context = diagram.GetMutableSubsystemContext(mbp, diag_context)
     # Fix input port for PR2 to zero.
     actuation_port = mbp.get_actuation_input_port(model_instance=pr2_model_id)
     nu = mbp.num_actuated_dofs(model_instance=pr2_model_id)
-    mbp_context = diagram.GetMutableSubsystemContext(mbp, diag_context)
     actuation_port.FixValue(mbp_context, np.zeros(nu))
+
 
     sim = Simulator(diagram, diag_context)
     sim.set_target_realtime_rate(1.0)
-    sim.AdvanceTo(20)
+    if not satisfied:
+        print("WARNING: SCENE TREE NOT SATISFYING CONSTRAINTS")
+    sim.AdvanceTo(20.)

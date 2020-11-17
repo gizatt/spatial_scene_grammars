@@ -125,7 +125,7 @@ class Wall(GeometricSetNode, PhysicsGeometryNodeMixin):
                                               self.width/2. - cabinet_width/2.))
         z_on_wall = pyro.sample("%s_cabinet_z" % self.name,
                                 dist.Uniform(min_cab_height, max_cab_height))
-        return pose_to_tf_matrix(torch.tensor([x_on_wall, 0., z_on_wall, 0., 0., 0.]))
+        return pose_to_tf_matrix(torch.tensor([x_on_wall, 0., z_on_wall, 0., 0., -np.pi/2.]))
 
 
 class Floor(AndNode, PhysicsGeometryNodeMixin):
