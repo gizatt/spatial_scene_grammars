@@ -65,9 +65,9 @@ class Cabinet(AndNode, PhysicsGeometryNodeMixin):
                 child_constructor=PlanarObjectRegion,
                 child_name="cabinet_level_%02d" % k,
                 relative_tf=pose_to_tf_matrix(torch.tensor(
-                    [0., -0.15, bottom_shelf_z_local+shelf_height*k, 0., 0., 0.])),
+                    [0.15, 0., bottom_shelf_z_local+shelf_height*k, 0., 0., 0.])),
                 object_production_rate=0.5,
-                bounds=((-0.2, 0.2), (-0.1, 0.1), (0., 0.2))
+                bounds=((-0.1, 0.1), (-0.2, 0.2), (0., 0.2))
             ))
         AndNode.__init__(self, name=name, production_rules=rules)
 

@@ -38,13 +38,18 @@ def rejection_sample_feasible_tree(num_attempts=999):
         print("Generated tree in %f seconds." % (end - start))
 
         # First check if it's got the right number of objects
-        target_num_cabinets = 2
+        min_num_cabinets = 1
         num_cabinets = len([node for node in scene_tree.nodes if isinstance(node, Cabinet)])
-        if num_cabinets != target_num_cabinets:
+        if num_cabinets < min_num_cabinets:
+            continue
+
+        min_num_objects = 1
+        min_num_objects = len([node for node in scene_tree.nodes if isinstance(node, Object)])
+        if min_num_objects < min_num_cabinets:
             continue
 
         # Draw its clearance geometry for debugging.
-        draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
+        # draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
 
         # Collision checking on the clearance geometry
         builder_clearance, mbp_clearance, sg_clearance = \
@@ -69,19 +74,14 @@ def rejection_sample_feasible_tree(num_attempts=999):
             break
     return scene_tree, satisfied
 
-if __name__ == "__main__":
-    torch.set_default_tensor_type(torch.DoubleTensor)
-    pyro.enable_validation(True)
-
-    vis = meshcat.Visualizer()
-    vis.delete()
-
+def do_generation_and_simulation(sim_time=10):
+    vis = meshcat.Visualizer(zmq_url="tcp://127.0.0.1:6000")
     scene_tree, satisfied = rejection_sample_feasible_tree(num_attempts=10000)
 
     # Draw generated tree in meshcat.
-    draw_scene_tree_meshcat(scene_tree, alpha=1.0, node_sphere_size=0.1)
+    #draw_scene_tree_meshcat(scene_tree, alpha=1.0, node_sphere_size=0.1)
     # Draw its clearance geometry for debugging.
-    draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
+    #draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
 
     # Simulate the resulting scene, with a PR2 for scale.
     builder, mbp, scene_graph = compile_scene_tree_to_mbp_and_sg(
@@ -114,4 +114,14 @@ if __name__ == "__main__":
     sim.set_target_realtime_rate(1.0)
     if not satisfied:
         print("WARNING: SCENE TREE NOT SATISFYING CONSTRAINTS")
-    sim.AdvanceTo(20.)
+    try:
+        sim.AdvanceTo(sim_time)
+    except RuntimeError as e:
+        print("Encountered error in sim: ", e)
+
+if __name__ == "__main__":
+    torch.set_default_tensor_type(torch.DoubleTensor)
+    pyro.enable_validation(True)
+
+    do_generation_and_simulation(sim_time=10.0)
+    
