@@ -138,9 +138,15 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
                     model_id = parser.AddModelFromFile(
                         model_path,
                         node.name + "_model_%04d" % mbp.num_model_instances())
-                    root_body = mbp.GetBodyByName(
-                        name=root_body_name,
-                        model_instance=model_id)
+                    if root_body_name is None:
+                        root_body_ind_possibilities = mbp.GetBodyIndices(model_id)
+                        assert len(root_body_ind_possibilities) == 1, \
+                            "Please supply root_body_name for model with path %s" % model_path
+                        root_body = mbp.get_body(root_body_ind_possibilities[0])
+                    else:
+                        root_body = mbp.GetBodyByName(
+                            name=root_body_name,
+                            model_instance=model_id)
                     node_tf = torch_tf_to_drake_tf(node.tf)
                     full_model_tf = node_tf.multiply(torch_tf_to_drake_tf(local_tf))
                     if node.fixed:

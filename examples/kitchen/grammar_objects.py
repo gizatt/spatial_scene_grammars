@@ -2,6 +2,7 @@ from functools import partial
 import numpy as np
 import os
 import time
+import glob
 
 import pydrake
 from pydrake.all import (
@@ -21,10 +22,8 @@ from scene_grammar.src.tree import *
 from scene_grammar.src.transform_utils import *
 from scene_grammar.src.drake_interop import *
 
-
 class Object(TerminalNode, PhysicsGeometryNodeMixin):
-    ''' Concrete object we might want to manipulate.
-        Currently just creates a green block. '''
+    ''' Concrete object we might want to manipulate. '''
     def __init__(self, name, tf):
         TerminalNode.__init__(self, name)
         PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=False)
@@ -36,6 +35,37 @@ class Object(TerminalNode, PhysicsGeometryNodeMixin):
         self.register_model_file(tf=geom_tf, model_path=model_path, root_body_name="base_link")
 
 
+class RandomYCBFoodstuff(TerminalNode, PhysicsGeometryNodeMixin):
+    '''
+    Randomly samples one of the YCBs available in drake/manipulation/models/ycb.
+
+    WARNING: At least on my computer right now, this lags out meshcat quite a lot --
+    takes a few seconds to load the scene. Probably related to Drake issue #13038.
+    '''
+    def __init__(self, name, tf):
+        TerminalNode.__init__(self, name)
+        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=False)
+
+        geom_tf = torch.eye(4)
+        # TODO(gizatt) Resource path management to be done here...
+        available_model_paths = glob.glob(
+            "/home/gizatt/drake/build/install/share/drake/manipulation/models/ycb/sdf/*.sdf"
+        )
+        assert len(available_model_paths) > 0
+        # This is a different kind of randomness than stuff being tracked
+        # within the tree -- this is a random choice affecting perceptual / 
+        # geometry grounding, not tree structure. But it does impact the
+        # tree, since it impacts physical feasibility... so is this the
+        # right place to be making this choice? Should there be a different
+        # terminal node for every geometry? (Almost certainly no to that --
+        # what would I do about continuous shape variation in that case?)
+        # Choose an available model at random.
+        model_index = pyro.sample("%s_model_type", dist.Categorical(
+            torch.ones(len(available_model_paths)))).item()
+        model_path = available_model_paths[model_index]
+        self.register_model_file(tf=geom_tf, model_path=model_path)
+
+
 class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNodeMixin):
     '''
         Produces a geometric number of objects in a bounded volume
@@ -45,9 +75,10 @@ class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNodeMixin):
             object_production_rate: Control parameter for the geometric distribution
                 over object count.
             bounds: [[x_l, x_u], [y_l, y_u], [z_l, z_u]]
+            style_group: "all", "foodstuff", "plates"
             show_geometry: Adds visual geometry indicating the object spawn region.
     '''
-    def __init__(self, name, tf, object_production_rate, bounds, show_geometry=False):
+    def __init__(self, name, tf, object_production_rate, bounds, style_group="all", show_geometry=False):
         PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
         self.x_bounds = bounds[0]
         self.y_bounds = bounds[1]

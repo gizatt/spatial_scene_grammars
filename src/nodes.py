@@ -37,7 +37,8 @@ class PhysicsGeometryNodeMixin(SpatialNodeMixin):
     Enables calls to register geometry of the following types:
         - Model files (urdf/sdf), paired with a transform from the object
           local origin, the name of the root body (which gets put at that
-          transform), and optionally, the initial joint configuration of
+          transform -- required if there's more than one body in the URDF),
+          and optionally, the initial joint configuration of
           the model (as a dict of joint names to joint states). These
           are added to the simulated scene with the specified link
           welded (or translated, if not fixed) to the node transform.
@@ -58,7 +59,7 @@ class PhysicsGeometryNodeMixin(SpatialNodeMixin):
         self.visual_geometry = []
         self.collision_geometry = []
         self.clearance_geometry = []
-    def register_model_file(self, tf, model_path, root_body_name,
+    def register_model_file(self, tf, model_path, root_body_name=None,
                             q0_dict=None):
         self.model_paths.append((tf, model_path, root_body_name, q0_dict))
     def register_geometry(self, tf, geometry, color=np.ones(4), friction=default_friction):

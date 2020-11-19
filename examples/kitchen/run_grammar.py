@@ -83,7 +83,7 @@ def rejection_sample_feasible_tree(num_attempts=999):
 
 def do_generation_and_simulation(sim_time=10):
     vis = meshcat.Visualizer(zmq_url="tcp://127.0.0.1:6000")
-    scene_tree, satisfied = rejection_sample_feasible_tree(num_attempts=10000)
+    scene_tree, satisfied = rejection_sample_feasible_tree(num_attempts=100)
 
     # Draw generated tree in meshcat.
     #draw_scene_tree_meshcat(scene_tree, alpha=1.0, node_sphere_size=0.1)
