@@ -27,12 +27,18 @@ from grammar_room_layout import *
 
 
 def rejection_sample_feasible_tree(num_attempts=999):
+    ''' Repeatedly samples trees from the grammar until
+    one satisfies some hand-coded constraints.
+
+    This will be simplified when constraint specification
+    and sampling machinery is generalized. For now, this is
+    hard-coded to work for the kitchen example. '''
+
     satisfied = False
     for attempt_k in range(num_attempts):
         start = time.time()
         pyro.clear_param_store()
-        trace = poutine.trace(ParseTree.generate_from_root_type).get_trace(root_node_type=Kitchen)
-        scene_tree = trace.nodes["_RETURN"]["value"]
+        scene_tree = ParseTree.generate_from_root_type(root_node_type=Kitchen)
         end = time.time()
 
         print("Generated tree in %f seconds." % (end - start))
@@ -51,7 +57,8 @@ def rejection_sample_feasible_tree(num_attempts=999):
         # Draw its clearance geometry for debugging.
         # draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
 
-        # Collision checking on the clearance geometry
+        # Do Collision checking on the clearance geometry, and reject
+        # scenes where the collision geometry is in collision.
         builder_clearance, mbp_clearance, sg_clearance = \
             compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree)
         mbp_clearance.Finalize()

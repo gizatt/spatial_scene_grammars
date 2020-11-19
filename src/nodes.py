@@ -92,8 +92,10 @@ class TerminalNode(Node):
 
 
 class RootNode(NonTerminalNode):
-    ''' A given grammar will have a single root node type. These should
-    provide a method for unconditionally sampling themselves. '''
+    ''' A special node type capable of unconditionally sampling
+    itself. (TODO: Does this exist for a reason? Why not just force
+    a user to either make sure the intended root node can be instantiated
+    with no arguments, or instantiate their own root node?) '''
     @staticmethod
     def sample():
         ''' Should return a RootNode instance. '''
