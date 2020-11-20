@@ -34,6 +34,22 @@ class PhysicsGeometryNodeMixin(SpatialNodeMixin):
     Contract that this class has physics and geometry info, providing
     Drake / simulator interoperation. Implies SpatialNodeMixin (and
     calls its constructor.) 
+    Args:
+        - fixed: Whether this geometry is floating in the final simulation
+            (as oppposed to welded to the world).
+        - spatial_inertia: Spatial inertia of the body. If None,
+            will adopt a default mass of 1.0kg and 0.01x0.01x0.01 diagonal
+            rotational inertia.
+        - is_container: Flag whether this object will function as a
+            container for other objects for the purpose of collision
+            and stability checks. If so, then objects below this one
+            will be isolated from collision and clearance checks for
+            objects above this one, and instead only be checked against
+            this object's collision geometry and this object's
+            childrens' geometry. Valid for e.g. a cabinet full of
+            stuff that does not interact with anything outside of
+            the cabinet.
+
     Enables calls to register geometry of the following types:
         - Model files (urdf/sdf), paired with a transform from the object
           local origin, the name of the root body (which gets put at that
@@ -51,9 +67,10 @@ class PhysicsGeometryNodeMixin(SpatialNodeMixin):
           clearance geometry: e.g., the space in front of a cabinet should
           be clear so the doors can open.
     '''
-    def __init__(self, tf, fixed=True, spatial_inertia=None):
+    def __init__(self, tf, fixed=True, spatial_inertia=None, is_container=False):
         SpatialNodeMixin.__init__(self, tf)
         self.fixed = fixed
+        self.is_container = is_container
         self.model_paths = []
         self.spatial_inertia = spatial_inertia or default_spatial_inertia
         self.visual_geometry = []
@@ -86,6 +103,7 @@ class NonTerminalNode(Node):
     def sample_production_rules(self):
         ''' returns: a list of ProductionRules '''
         raise NotImplementedError()
+
 
 class TerminalNode(Node):
     ''' The leafs of a generated scene tree will be terminal nodes. '''

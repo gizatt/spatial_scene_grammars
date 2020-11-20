@@ -22,8 +22,11 @@ from scene_grammar.src.tree import *
 from scene_grammar.src.transform_utils import *
 from scene_grammar.src.drake_interop import *
 
-class Object(TerminalNode, PhysicsGeometryNodeMixin):
+class KitchenObject():
     ''' Concrete object we might want to manipulate. '''
+    pass
+
+class MediumBoxObject(TerminalNode, PhysicsGeometryNodeMixin, KitchenObject):
     def __init__(self, name, tf):
         TerminalNode.__init__(self, name)
         PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=False)
@@ -32,10 +35,56 @@ class Object(TerminalNode, PhysicsGeometryNodeMixin):
         geom_tf = torch.eye(4)
         # TODO(gizatt) Resource path management to be done here...
         model_path = "/home/gizatt/drake/examples/kuka_iiwa_arm/models/objects/block_for_pick_and_place_mid_size.urdf"
-        self.register_model_file(tf=geom_tf, model_path=model_path, root_body_name="base_link")
+        self.register_model_file(tf=geom_tf, model_path=model_path)
 
 
-class RandomYCBFoodstuff(TerminalNode, PhysicsGeometryNodeMixin):
+class RandomKitchenStuff(TerminalNode, PhysicsGeometryNodeMixin, KitchenObject):
+    '''
+    Randomly samples sdfs of kitchen stuff. Specializably by its
+    style attribute.
+
+    TODO: Discrete attributes controlling the branching structure is dangerous...
+    somehow they feel harder to guess than continuous attributes. But I think
+    the logic is the same...
+    '''
+    foodstuffs_paths = glob.glob(
+        "/home/gizatt/projects/scene_grammar/models/foodstuffs/*/model_simplified.sdf"
+    )
+    utensils_paths = glob.glob(
+        "/home/gizatt/projects/scene_grammar/models/plates_and_things/*/model_simplified.sdf"
+    )
+    def __init__(self, name, tf, style_group="all"):
+        TerminalNode.__init__(self, name)
+        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=False)
+
+        geom_tf = torch.eye(4)
+        # TODO(gizatt) Resource path management to be done here...
+        if style_group == "all":
+            available_model_paths = self.foodstuffs_paths + self.utensils_paths
+        elif style_group == "foodstuffs":
+            available_model_paths = self.foodstuffs_paths
+        elif style_group == "utensils":
+            available_model_paths = self.utensils_paths
+        else:
+            raise ValueError("%s not a valid style_group" % style_group)
+
+        assert len(available_model_paths) > 0
+        # This is a different kind of randomness than stuff being tracked
+        # within the tree -- this is a random choice affecting perceptual / 
+        # geometry grounding, not tree structure. But it does impact the
+        # tree, since it impacts physical feasibility... so is this the
+        # right place to be making this choice? Should there be a different
+        # terminal node for every geometry? (Almost certainly no to that --
+        # what would I do about continuous shape variation in that case?)
+        # Choose an available model at random.
+        model_index = pyro.sample("%s_model_type", dist.Categorical(
+            torch.ones(len(available_model_paths)))).item()
+        model_path = available_model_paths[model_index]
+        self.register_model_file(tf=geom_tf, model_path=model_path)
+
+
+
+class RandomYCBFoodstuff(TerminalNode, PhysicsGeometryNodeMixin, KitchenObject):
     '''
     Randomly samples one of the YCBs available in drake/manipulation/models/ycb.
 
@@ -71,14 +120,15 @@ class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNodeMixin):
         Produces a geometric number of objects in a bounded volume
         by randomly sampling their placement on the surface.
 
+        Randomly chooses between being a cluster of foodstuffs or utensils.
+
         Args:
             object_production_rate: Control parameter for the geometric distribution
                 over object count.
             bounds: [[x_l, x_u], [y_l, y_u], [z_l, z_u]]
-            style_group: "all", "foodstuff", "plates"
             show_geometry: Adds visual geometry indicating the object spawn region.
     '''
-    def __init__(self, name, tf, object_production_rate, bounds, style_group="all", show_geometry=False):
+    def __init__(self, name, tf, object_production_rate, bounds, show_geometry=False):
         PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
         self.x_bounds = bounds[0]
         self.y_bounds = bounds[1]
@@ -95,9 +145,14 @@ class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNodeMixin):
         if show_geometry:
             self.register_visual_geometry(geom_tf, geometry, color=np.array([0.5, 1.0, 0.2, 0.2]))
 
+        style_group_options = ["utensils", "foodstuffs"]
+        # Do foodstuffs more often than plates and things
+        style_group_k = pyro.sample("%s_style" % name,
+                                    dist.Categorical(torch.tensor([0.3, 0.7]))).item()
+        style_group = style_group_options[style_group_k]
         # Produce a geometric number of objects within bounds.
         object_production_rule = RandomRelativePoseProductionRule(
-            Object, "%s_object" % name, self._sample_object_pose
+            RandomKitchenStuff, "%s_object" % name, self._sample_object_pose, style_group=style_group
         )
         GeometricSetNode.__init__(
             self, name=name, production_rule=object_production_rule,

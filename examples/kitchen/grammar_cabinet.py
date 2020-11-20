@@ -27,7 +27,7 @@ class Cabinet(AndNode, PhysicsGeometryNodeMixin):
     ''' Cabinets can produce objects on each internal level. '''
     def __init__(self, name, tf):
         # Handle geometry and physics.
-        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
+        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True, is_container=True)
         # Offset cabinet geometry from the wall
         geom_tf = pose_to_tf_matrix(torch.tensor([0.15, 0., 0., 0., 0., 0.]))
         # TODO(gizatt) Resource path management to be done here...

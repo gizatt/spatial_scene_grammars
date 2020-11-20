@@ -28,7 +28,7 @@ class Table(AndNode, PhysicsGeometryNodeMixin):
     produces objects on its surface. '''
     def __init__(self, name, tf):
         # Handle geometry and physics.
-        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
+        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True, is_container=True)
         geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., 0., 0., 0., 0.]))
         # TODO(gizatt) Resource path management to be done here...
         model_path = "/home/gizatt/drake/examples/kuka_iiwa_arm/models/table/extra_heavy_duty_table_surface_only_collision.sdf"

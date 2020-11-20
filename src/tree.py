@@ -3,6 +3,14 @@ from .nodes import RootNode, TerminalNode, Node
 from .rules import ProductionRule
 from pyro.contrib.autoname import scope, name_count
 
+def get_tree_root(tree):
+    # Warning: will infinite loop if this isn't a tree.
+    # I don't check...
+    root_node = list(tree.nodes)[0]
+    while len(list(tree.predecessors(root_node))) > 0:
+        root_node = tree.predecessors(root_node)[0]
+    return root_node
+
 class ParseTree(nx.DiGraph):
     def __init__(self):
         nx.DiGraph.__init__(self)
@@ -24,6 +32,12 @@ class ParseTree(nx.DiGraph):
         for node in self.nodes:
             if isinstance(node, target_type):
                 nodes.append(node)
+        return nodes
+
+    def get_recursive_children_of_node(self, node):
+        nodes = list(self.successors(node))
+        for node in nodes:
+            nodes += self.get_recursive_children_of_node(node)
         return nodes
 
     def get_tree_without_production_rules(self):

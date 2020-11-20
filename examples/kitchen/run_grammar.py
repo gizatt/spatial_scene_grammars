@@ -6,7 +6,10 @@ import time
 
 import pydrake
 from pydrake.all import (
-    Box, RollPitchYaw, RigidTransform, Parser
+    Box, RollPitchYaw, RigidTransform, Parser,
+    StaticEquilibriumProblem,
+    AddUnitQuaternionConstraintOnPlant,
+    SnoptSolver
 )
 
 import torch
@@ -34,7 +37,6 @@ def rejection_sample_feasible_tree(num_attempts=999):
     and sampling machinery is generalized. For now, this is
     hard-coded to work for the kitchen example. '''
 
-    satisfied = False
     for attempt_k in range(num_attempts):
         start = time.time()
         pyro.clear_param_store()
@@ -43,22 +45,35 @@ def rejection_sample_feasible_tree(num_attempts=999):
 
         print("Generated tree in %f seconds." % (end - start))
 
-        # First check if it's got the right number of objects
-        min_num_cabinets = 1
+        # Enforce  that there are > 0 cabinets
         num_cabinets = len([node for node in scene_tree.nodes if isinstance(node, Cabinet)])
-        if num_cabinets < min_num_cabinets:
+        if num_cabinets == 0:
+            continue
+        
+        # Enforce that there are at least 2 objects on the table
+        tables = scene_tree.find_nodes_by_type(Table)
+        table_children = sum([scene_tree.get_recursive_children_of_node(node) for node in tables], [])
+        num_objects_on_tables = len([node for node in table_children if isinstance(node, KitchenObject)])
+        print("Num objs on table: ", num_objects_on_tables)
+        if num_objects_on_tables < 2:
             continue
 
-        min_num_objects = 1
-        min_num_objects = len([node for node in scene_tree.nodes if isinstance(node, Object)])
-        if min_num_objects < min_num_cabinets:
+        # Enforce that there are at least 2 objects in cabinets
+        cabinets = scene_tree.find_nodes_by_type(Cabinet)
+        table_children = sum([scene_tree.get_recursive_children_of_node(node) for node in cabinets], [])
+        num_objects_in_cabinets = len([node for node in table_children if isinstance(node, KitchenObject)])
+        print("Num objs in cabinets: ", num_objects_in_cabinets)
+        if num_objects_in_cabinets < 2:
             continue
 
-        # Draw its clearance geometry for debugging.
-        # draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
-
+        
         # Do Collision checking on the clearance geometry, and reject
         # scenes where the collision geometry is in collision.
+        # (This could be done at subtree level, and eventually I'll do that --
+        # but for this scene it doesn't matter b/c clearance geometry is all
+        # furniture level anyway.
+        # TODO: What if I did rejection sampling for nonpenetration at the
+        # container level? Is that legit as a sampling strategy?)
         builder_clearance, mbp_clearance, sg_clearance = \
             compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree)
         mbp_clearance.Finalize()
@@ -76,14 +91,65 @@ def rejection_sample_feasible_tree(num_attempts=999):
               constraint.upper_bound()))
         print(len(get_collisions(mbp_clearance, mbp_context)), " bodies in collision")
 
-        if constraint.CheckSatisfied(q0):
-            satisfied = True
-            break
-    return scene_tree, satisfied
+        # We can draw clearance geometry for debugging.
+        #draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
+
+        # If we failed the initial clearance check, resample.
+        if not constraint.CheckSatisfied(q0):
+            continue
+            
+        # Good solution!
+        return scene_tree, True
+
+    # Bad solution :(
+    return scene_tree, False
+
+def project_tree_to_feasibility(scene_tree, num_attempts=1):
+    # Keep tree structure fixed, but try to make the objects
+    # in each container satisfy a set of feasibility constraints:
+    # that objects are nonpenetrating and statically stable.
+
+    # Do the analysis for each contained, physically independent subtree.
+    split_trees = split_tree_into_containers(scene_tree)
+    for k, tree in enumerate(split_trees):
+        print("Nodes in tree %d:" % k)
+        for node in tree:
+            if isinstance(node, Node):
+                print("\t", node.name)
+        
+        builder, mbp, scene_graph = compile_scene_tree_to_mbp_and_sg(
+                scene_tree, timestep=0.001)
+        mbp.Finalize()
+        diagram = builder.Build()
+        # Currently fails at
+        #   >  result = solver.Solve(opt.prog())
+        # With:
+        #   RuntimeError: Signed distance queries between shapes 'Box' and 'Cylinder' are not supported for scalar type drake::AutoDiffXd
+        # Can not be resolved until Drake issue #10907 is resolved.
+        #diagram_ad = diagram.ToAutoDiffXd()
+        #mbp_ad = diagram_ad.GetSubsystemByName("plant") # Default name for MBP
+        #diagram_ad_context = diagram_ad.CreateDefaultContext()
+        #mbp_ad_context = diagram_ad.GetMutableSubsystemContext(mbp_ad, diagram_ad_context)
+        #opt = StaticEquilibriumProblem(mbp_ad, mbp_ad_context, ignored_collision_pairs=set())
+        #q_vars = opt.q_vars()
+        #prog = opt.get_mutable_prog()
+        #AddUnitQuaternionConstraintOnPlant(
+        #    mbp_ad, q_vars, prog)
+        #q_targ = mbp.GetPositions(mbp.CreateDefaultContext())
+        ## Penalize deviation from target configuration
+        #prog.AddQuadraticErrorCost(np.eye(q_targ.shape[0]), q_targ, q_vars)
+        #prog.SetInitialGuess(q_vars, q_targ)
+        #solver = SnoptSolver()
+        #result = solver.Solve(opt.prog())
+        #print(result, result.is_success())
+    return scene_tree, False
+
+
 
 def do_generation_and_simulation(sim_time=10):
     vis = meshcat.Visualizer(zmq_url="tcp://127.0.0.1:6000")
-    scene_tree, satisfied = rejection_sample_feasible_tree(num_attempts=100)
+    scene_tree, satisfied_clearance = rejection_sample_feasible_tree(num_attempts=1000)
+    scene_tree, satisfied_feasibility = project_tree_to_feasibility(scene_tree, num_attempts=3)
 
     # Draw generated tree in meshcat.
     #draw_scene_tree_meshcat(scene_tree, alpha=1.0, node_sphere_size=0.1)
@@ -119,8 +185,10 @@ def do_generation_and_simulation(sim_time=10):
 
     sim = Simulator(diagram, diag_context)
     sim.set_target_realtime_rate(1.0)
-    if not satisfied:
-        print("WARNING: SCENE TREE NOT SATISFYING CONSTRAINTS")
+    if not satisfied_clearance:
+        print("WARNING: SCENE TREE NOT SATISFYING CLEARANCE")
+    if not satisfied_feasibility:
+        print("WARNING: SCENE TREE NOT SATISFYING FEASIBILITY, SIM MAY FAIL")
     try:
         sim.AdvanceTo(sim_time)
     except RuntimeError as e:

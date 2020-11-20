@@ -3,6 +3,7 @@ import meshcat.geometry as meshcat_geom
 import meshcat.transformations as meshcat_tf
 import matplotlib.pyplot as plt
 import numpy as np
+import networkx as nx
 
 import pydrake
 from pydrake.all import (
@@ -114,6 +115,40 @@ def get_collisions(mbp, mbp_context_in_diagram):
     query_object = query_port.Eval(mbp_context_in_diagram)
     return query_object.ComputePointPairPenetration()
 
+
+def expand_container_tree(full_tree, new_tree, current_node):
+    # Given the original tree for reference and a new tree
+    # that contains the current node, gets the current node's
+    # children, adds them all (with approp connections) to the
+    # new tree, and recurses on the children.
+    # Does not recurse on children that are containers,
+    # but will still add them to the tree. (Containers should
+    # appear in the tree above *and* below them.)
+    for child in full_tree.successors(current_node):
+        new_tree.add_node(child)
+        new_tree.add_edge(current_node, child)
+
+        if (isinstance(child, PhysicsGeometryNodeMixin) and
+             child.is_container):
+            continue
+        new_tree = expand_container_tree(full_tree, new_tree, child)
+    return new_tree
+
+def split_tree_into_containers(scene_tree):
+    # The roots will be each container + the root
+    # of the overall tree.
+    roots = [node for node in scene_tree.nodes if
+            (len(list(scene_tree.predecessors(node))) == 0 or
+             isinstance(node, PhysicsGeometryNodeMixin) and node.is_container)]
+    # Build the subtree from each root until it hits a terminal or
+    # or a container.
+    trees = []
+    for root in roots:
+        # Manually add the first 
+        new_tree = nx.DiGraph()
+        new_tree.add_node(root)
+        trees.append(expand_container_tree(scene_tree, new_tree, root))
+    return trees
 
 def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
     builder = DiagramBuilder()

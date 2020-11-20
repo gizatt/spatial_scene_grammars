@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from scene_grammar.src.transform_utils import *
+from scene_grammar.src.tree import get_tree_root
 
 def rgb_2_hex(rgb):
     # Turn a list of R,G,B elements (any indexable list
@@ -21,9 +22,7 @@ def draw_scene_tree_meshcat(scene_tree, zmq_url=None, alpha=1.0, node_sphere_siz
 
     # Do actual drawing in meshcat, starting from root of tree
     # So first find the root...
-    root_node = list(pruned_tree.nodes)[0]
-    while len(list(pruned_tree.predecessors(root_node))) > 0:
-        root_node = pruned_tree.predecessors(root_node)[0]
+    root_node = get_tree_root(pruned_tree)
 
     vis = meshcat.Visualizer(zmq_url=zmq_url or "tcp://127.0.0.1:6000")
     vis["scene_tree"].delete()
