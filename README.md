@@ -3,6 +3,8 @@ Spatial Scene Grammars
 
 <img src="examples/kitchen/demo_rooms.gif" 
 alt="Preview of some generated rooms" border="10" />
+<img src="examples/kitchen/scene_with_google_models.png" 
+alt="Preview of some generated rooms" border="10" />
 
 Environment generation tool using attributed stochastic scene grammars.
 

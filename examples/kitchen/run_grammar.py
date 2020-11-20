@@ -47,7 +47,7 @@ def rejection_sample_feasible_tree(num_attempts=999):
 
         # Enforce  that there are > 0 cabinets
         num_cabinets = len([node for node in scene_tree.nodes if isinstance(node, Cabinet)])
-        if num_cabinets == 0:
+        if num_cabinets != 1:
             continue
         
         # Enforce that there are at least 2 objects on the table
@@ -55,16 +55,16 @@ def rejection_sample_feasible_tree(num_attempts=999):
         table_children = sum([scene_tree.get_recursive_children_of_node(node) for node in tables], [])
         num_objects_on_tables = len([node for node in table_children if isinstance(node, KitchenObject)])
         print("Num objs on table: ", num_objects_on_tables)
-        if num_objects_on_tables < 2:
+        if num_objects_on_tables < 5:
             continue
 
         # Enforce that there are at least 2 objects in cabinets
-        cabinets = scene_tree.find_nodes_by_type(Cabinet)
-        table_children = sum([scene_tree.get_recursive_children_of_node(node) for node in cabinets], [])
-        num_objects_in_cabinets = len([node for node in table_children if isinstance(node, KitchenObject)])
-        print("Num objs in cabinets: ", num_objects_in_cabinets)
-        if num_objects_in_cabinets < 2:
-            continue
+        #cabinets = scene_tree.find_nodes_by_type(Cabinet)
+        #table_children = sum([scene_tree.get_recursive_children_of_node(node) for node in cabinets], [])
+        #num_objects_in_cabinets = len([node for node in table_children if isinstance(node, KitchenObject)])
+        #print("Num objs in cabinets: ", num_objects_in_cabinets)
+        #if num_objects_in_cabinets < 2:
+        #    continue
 
         
         # Do Collision checking on the clearance geometry, and reject
