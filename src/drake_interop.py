@@ -1,9 +1,11 @@
+from collections import namedtuple
 import meshcat
 import meshcat.geometry as meshcat_geom
 import meshcat.transformations as meshcat_tf
 import matplotlib.pyplot as plt
 import numpy as np
 import networkx as nx
+import yaml
 
 import pydrake
 from pydrake.all import (

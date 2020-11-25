@@ -90,6 +90,7 @@ class PhysicsGeometryNodeMixin(SpatialNodeMixin):
     def register_collision_geometry(self, tf, geometry, friction=default_friction):
         assert isinstance(tf, torch.Tensor) and tf.shape == (4, 4)
         assert isinstance(geometry, pydrake.geometry.Shape)
+        assert isinstance(friction, CoulombFriction)
         self.collision_geometry.append((tf, geometry, friction))
     def register_clearance_geometry(self, tf, geometry):
         assert isinstance(tf, torch.Tensor) and tf.shape == (4, 4)

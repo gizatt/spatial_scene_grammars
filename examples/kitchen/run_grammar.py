@@ -25,6 +25,7 @@ from scene_grammar.src.tree import *
 from scene_grammar.src.transform_utils import *
 from scene_grammar.src.visualization import *
 from scene_grammar.src.drake_interop import *
+from scene_grammar.src.serialization import *
 
 from grammar_room_layout import *
 
@@ -150,6 +151,8 @@ def do_generation_and_simulation(sim_time=10):
     vis = meshcat.Visualizer(zmq_url="tcp://127.0.0.1:6000")
     scene_tree, satisfied_clearance = rejection_sample_feasible_tree(num_attempts=1000)
     scene_tree, satisfied_feasibility = project_tree_to_feasibility(scene_tree, num_attempts=3)
+
+    serialize_scene_tree_to_yamls_and_sdfs(scene_tree, package_name='save', package_dir=".", remove_directory=True)
 
     # Draw generated tree in meshcat.
     #draw_scene_tree_meshcat(scene_tree, alpha=1.0, node_sphere_size=0.1)

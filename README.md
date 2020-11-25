@@ -88,6 +88,17 @@ routines -- as well as generally taking advantage of gradient info -- to make
 scene parsing and sampling under relatively amorphous, PPL-specified constraints
 work. I acknowledge it's a pretty painful startup cost, though.
 
+## YAML+SDF Packaged Output Format
+
+I try to stay close to [Drake model directives format](https://github.com/RobotLocomotion/drake/blob/master/multibody/parsing/README_model_directives.md),
+but with a few additions. So a scene can be saved out to a YAML file (using
+`serialize_scene_tree_to_yaml_and_sdfs` from `drake_interop.py`), which will produce
+an output package (as a directory), with a `package.xml` file, SDFs with any
+primitive geometry, and a top-level YAML file specifying what model files (including
+ones potentially from other packages) are included at what poses.
+
+YAML spec:
+- TODO write this down
 
 # Dependencies
 

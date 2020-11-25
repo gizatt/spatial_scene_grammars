@@ -57,7 +57,7 @@ class ParseTree(nx.DiGraph):
         return new_tree
 
     @staticmethod
-    @name_count
+    @name_count  # TODO: we should do something smarter for avoiding name collisions.
     def generate_from_root_type(root_node_type):
         ''' Generates an unconditioned parse tree from a root node class. '''
         assert issubclass(root_node_type, RootNode)
