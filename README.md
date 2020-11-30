@@ -93,12 +93,53 @@ work. I acknowledge it's a pretty painful startup cost, though.
 I try to stay close to [Drake model directives format](https://github.com/RobotLocomotion/drake/blob/master/multibody/parsing/README_model_directives.md),
 but with a few additions. So a scene can be saved out to a YAML file (using
 `serialize_scene_tree_to_yaml_and_sdfs` from `drake_interop.py`), which will produce
-an output package (as a directory), with a `package.xml` file, SDFs with any
+an output catkin package (as a directory), with a `package.xml` file, SDFs with any
 primitive geometry, and a top-level YAML file specifying what model files (including
 ones potentially from other packages) are included at what poses.
 
-YAML spec:
-- TODO write this down
+### Output package structure
+```
+<package_name>
+├── package.xml [for package <package_name>]
+├── scene_tree.yaml [top-level of scene tree model directive]
+├── [possibly other yamls that are included into the main yaml]
+├── sdf
+│   ├── *.sdf
+```
+
+### Model directive YAML spec
+The YAML file contains a top-level list of directives, each of which has expected required and optional fields as listed below. They describe a scene as a kinematic tree of frames, with models welded to specified frames.
+
+Directives:
+- `add_frame`: Adds a frame to the scene.
+  - `name`: Name of the frame.
+  - `X_PF`: Pose and parent info for the frame.
+    - `base_frame`: Name of the parent frame.
+    - `rotation`: `!AngleAxis`-tagged rotation info
+      - `angle` single float element
+      - `axis`: 3-float-element list
+    - `translation`: xyz offset as a 3-float-element list
+- `add_model`: Adds given model to the scene.
+  - `name`: Model name.
+  - `file`: Path to SDF file.
+- `add_weld`: Weldes frame (or link) `child` to frame `parent`. Usually used to weld the root link of an added model to a frame in the scene kinematic tree.
+  - `parent` String frame name
+  - `child`: String frame name
+- `set_initial_configuration`: Sets the initial joint states of an added model.
+  - `model_name`: Name of the target model
+  - `q0`: Dictionary mapping joint names to their initial values.
+    - `joint_name`: initial position as float
+- `set_initial_free_body_pose`: Sets initial pose of a floating body.
+  - `X_PF`: Pose and parent info.
+    - `base_frame`: Name of the parent frame.
+    - `rotation`: `!AngleAxis`-tagged rotation info
+      - `angle` single float element
+      - `axis`: 3-float-element list
+    - `translation`: xyz offset as a 3-float-element list
+  - `body_name`: Target body.
+
+### Hints for parsing
+I'll supply an example parser (for testing my serialization code and as an example for users) designed to operator with Drake and link it here when it works. I suspect doing it with Pybullet should be relatively straightforward as well. These directives are meant to work in tandem with a robot simulator -- hopefully the heavy lifting of kinematic tree management, SDF loading, etc can be mostly handled by your simulator internals, with each of these commands roughly mapping to a set of initialization routines you can ask of the simulator.
 
 # Dependencies
 

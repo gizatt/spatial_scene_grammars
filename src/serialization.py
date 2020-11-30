@@ -78,9 +78,11 @@ def add_weld_directive(parent_frame_name, child_frame_name):
 def set_initial_free_body_pose_directive(body_name, base_frame_name, tf):
     rel_pose_info_base = make_dict_from_tf(tf)
     rel_pose_info_base["base_frame"] = base_frame_name
-    rel_pose_info_base["body_name"] = body_name
     return {
-        "set_initial_free_body_pose": rel_pose_info_base
+        "set_initial_free_body_pose": {
+            "X_PF": rel_pose_info_base,
+            "body_name": body_name
+        }
     }
 
 def set_initial_configuration_directive(model_name, q0):
