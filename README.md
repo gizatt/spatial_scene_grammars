@@ -111,7 +111,7 @@ ones potentially from other packages) are included at what poses.
 The YAML file contains a top-level list of directives, each of which has expected required and optional fields as listed below. They describe a scene as a kinematic tree of frames, with models welded to specified frames.
 
 Directives:
-- `add_frame`: Adds a frame to the scene.
+- `add_frame`: Adds a frame to the scene at a fixed offset to a parent frame.
   - `name`: Name of the frame.
   - `X_PF`: Pose and parent info for the frame.
     - `base_frame`: Name of the parent frame.
@@ -136,7 +136,8 @@ Directives:
       - `angle` single float element
       - `axis`: 3-float-element list
     - `translation`: xyz offset as a 3-float-element list
-  - `body_name`: Target body.
+  - `body_name`: Target body name (not including model name prefix).
+  - `model_name`: Target model name.
 
 ### Hints for parsing
 I'll supply an example parser (for testing my serialization code and as an example for users) designed to operator with Drake and link it here when it works. I suspect doing it with Pybullet should be relatively straightforward as well. These directives are meant to work in tandem with a robot simulator -- hopefully the heavy lifting of kinematic tree management, SDF loading, etc can be mostly handled by your simulator internals, with each of these commands roughly mapping to a set of initialization routines you can ask of the simulator.

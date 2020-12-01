@@ -5,6 +5,7 @@ import meshcat.transformations as meshcat_tf
 import matplotlib.pyplot as plt
 import numpy as np
 import networkx as nx
+import os
 import yaml
 
 import pydrake
@@ -42,11 +43,26 @@ def draw_clearance_geometry_meshcat(scene_tree, zmq_url=None, alpha=0.25):
     diagram.Publish(context)
 
 
+def resolve_catkin_package_path(package_map, input_str):
+    if "://" in input_str:
+        elements = input_str.split("://")
+        assert len(elements) == 2, "Malformed path " + input_str
+        package_name, path_in_package = elements
+        assert package_map.Contains(package_name), "%s not in package map" % package_name
+        return os.path.join(
+            package_map.GetPath(package_name),
+            path_in_package
+        )
+    else:
+        return input_str
+
+
 def compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree, timestep=0.001, alpha=0.25):
     builder = DiagramBuilder()
     mbp, scene_graph = AddMultibodyPlantSceneGraph(
         builder, MultibodyPlant(time_step=timestep))
     parser = Parser(mbp)
+    parser.package_map().PopulateFromEnvironment("ROS_PACKAGE_PATH")
     world_body = mbp.world_body()
     node_to_body_id_map = {}
     free_body_poses = []
@@ -173,7 +189,7 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
             if has_models:
                 for local_tf, model_path, root_body_name, q0_dict in node.model_paths:
                     model_id = parser.AddModelFromFile(
-                        model_path,
+                        resolve_catkin_package_path(parser.package_map(), model_path),
                         node.name + "_model_%04d" % mbp.num_model_instances())
                     if root_body_name is None:
                         root_body_ind_possibilities = mbp.GetBodyIndices(model_id)

@@ -11,6 +11,12 @@ import torch
 
 import pydrake
 from pydrake.all import (
+    AngleAxis,
+    AddMultibodyPlantSceneGraph,
+    DiagramBuilder,
+    FixedOffsetFrame,
+    MultibodyPlant,
+    Parser,
     RigidTransform,
     RollPitchYaw,
     RotationMatrix,
@@ -19,19 +25,18 @@ import pydrake.geometry as pydrake_geom
 
 from .nodes import SpatialNodeMixin, PhysicsGeometryNodeMixin, default_friction
 from .tree import get_tree_root
-from .drake_interop import torch_tf_to_drake_tf
+from .drake_interop import torch_tf_to_drake_tf, resolve_catkin_package_path
 
 # Helper for pose serialization into YAML
-class AngleAxisTag(yaml.YAMLObject):
-    yaml_tag = u'!AngleAxis'
+class RpyTag(yaml.YAMLObject):
+    yaml_tag = u'!Rpy'
 
-    def __init__(self, rotation):
-        aa = rotation.ToAngleAxis()
-        self.angle = aa.angle()*180.0/np.pi
-        self.axis = aa.axis().tolist()
-    def __repr__(self):
-        return "%s(angle_deg=%f, axis=%s)" % (
-            self.__class__.__name__, self.angle, self.axis)
+    def __init__(self, deg):
+        self.deg = deg
+    @classmethod
+    def from_yaml(cls, loader, node):
+        info = loader.construct_mapping(node, deep=True)
+        return RpyTag(deg=info["deg"])
 
 
 def make_dict_from_tf(tf=None):
@@ -39,12 +44,17 @@ def make_dict_from_tf(tf=None):
         return {}
     assert isinstance(tf, RigidTransform)        
     translation = tf.translation().tolist()
-    rotation = AngleAxisTag(tf.rotation())
+    rpy_deg = RollPitchYaw(tf.rotation()).vector()*180./np.pi
+    rotation = RpyTag(rpy_deg.tolist())
     return {
         "translation": translation,
         "rotation": rotation
     }
 
+def make_tf_from_dict(x_pf_dict):
+    trans = x_pf_dict["translation"]
+    rpy = RollPitchYaw(np.array(x_pf_dict["rotation"].deg)*np.pi/180.)
+    return x_pf_dict["base_frame"], RigidTransform(p=trans, rpy=rpy)
 
 def add_model_directive(model_name, model_path):
     return {"add_model":
@@ -75,13 +85,14 @@ def add_weld_directive(parent_frame_name, child_frame_name):
     }
 
 
-def set_initial_free_body_pose_directive(body_name, base_frame_name, tf):
+def set_initial_free_body_pose_directive(model_name, body_name, base_frame_name, tf):
     rel_pose_info_base = make_dict_from_tf(tf)
     rel_pose_info_base["base_frame"] = base_frame_name
     return {
         "set_initial_free_body_pose": {
             "X_PF": rel_pose_info_base,
-            "body_name": body_name
+            "body_name": body_name,
+            "model_name": model_name
         }
     }
 
@@ -199,7 +210,7 @@ def save_sdf_with_node_geometry(node, path, root_link_name):
     et.ElementTree(sdf_root).write(path, pretty_print=True)
     return True
 
-def build_directives_for_node_geometry(node, base_frame_name, package_name, package_dir):
+def build_directives_for_node_geometry(node, base_frame_name, package_name, package_parent_dir):
     assert isinstance(node, PhysicsGeometryNodeMixin)
     directives = []
     # For disambiguating naming
@@ -211,21 +222,21 @@ def build_directives_for_node_geometry(node, base_frame_name, package_name, pack
     
     # Spit out an SDF with all of the visual / geometry info, if there's any
     primitive_tf = torch.eye(4)
-    within_package_model_path = os.path.join(package_name, "sdf", "%s::model_prims.sdf" % base_frame_name)
+    within_package_model_path = os.path.join("sdf", "%s::model_prims.sdf" % base_frame_name)
     # Replace :: with __ to make a safer filename
     # within_package_model_path = within_package_model_path.replace("::", "__")
     primitive_root_body = "root_link"
     if (save_sdf_with_node_geometry(
-            node,os.path.join(package_dir, within_package_model_path),
+            node, os.path.join(package_parent_dir, package_name, within_package_model_path),
             primitive_root_body)):
-        primitive_model_path_with_pkg = "package://" + within_package_model_path
+        primitive_model_path_with_pkg = "%s://%s" % (package_name, within_package_model_path)
         model_info_to_add.append((
             primitive_tf, primitive_model_path_with_pkg, primitive_root_body, None
         ))
 
     for (tf, model_path, root_body_name, q0_dict) in model_info_to_add:
         # Add the model itself
-        model_name = "%s::model_%d" % (base_frame_name, model_k)
+        model_name = "%s::%s_model_%d" % (base_frame_name, node.name, model_k)
         full_body_name = "%s::%s" % (model_name, root_body_name)
         model_k += 1
         directives.append(add_model_directive(
@@ -247,7 +258,8 @@ def build_directives_for_node_geometry(node, base_frame_name, package_name, pack
         else:
             # Just supply an initial pose for the body.
             directives.append(set_initial_free_body_pose_directive(
-                body_name=full_body_name,
+                model_name=model_name,
+                body_name=root_body_name,
                 base_frame_name=base_frame_name,
                 tf=torch_tf_to_drake_tf(tf)
             ))
@@ -263,7 +275,7 @@ def build_directives_for_node_geometry(node, base_frame_name, package_name, pack
 
 def build_directives_for_node(
     scene_tree, node, base_frame_name, tf,
-    prefix, package_name, package_dir):
+    prefix, package_name, package_parent_dir):
     # Given a node, will build directives and write files to:
     # - Add a base frame for self, relative to parent, if existing
     # - Add models for primitive + existing-model geometry
@@ -281,7 +293,7 @@ def build_directives_for_node(
         if isinstance(node, PhysicsGeometryNodeMixin):
             directives += build_directives_for_node_geometry(node, my_frame_name, 
                 package_name=package_name,
-                package_dir=package_dir)
+                package_parent_dir=package_parent_dir)
     
     # For each child, call recursively.
     for rule in scene_tree.successors(node):
@@ -293,11 +305,11 @@ def build_directives_for_node(
                 child_rel_tf = my_tf.multiply(child_tf.inverse()) # maybe other way around
             directives += build_directives_for_node(
                 scene_tree, child_node,
-                base_frame_name=my_frame_name or "world",
+                base_frame_name=my_frame_name or "WorldBody",
                 tf=child_rel_tf,
                 prefix=prefix,
                 package_name=package_name,
-                package_dir=package_dir
+                package_parent_dir=package_parent_dir
             )
     return directives
 
@@ -307,13 +319,13 @@ def get_frame_name_for_node(scene_tree, node, prefix=None):
     # Generates a unique frame name for the node.
     # TODO This should be done by the tree itself somehow...
     k = 0
-    def get_candidate_name(node, k, prefix):
+    def get_candidate_name(node, l, prefix):
         if prefix:
-            return "%s::%s_%d" % (prefix, node.name, k)
+            return "%s::%s_%d" % (prefix, node.name, l)
         else:
-            return "%s_%d" % (node.name, k)
+            return "%s_%d" % (node.name, l)
     name = get_candidate_name(node, k, prefix)
-    while node.name in _used_names:
+    while name in _used_names:
         k += 1
         name = get_candidate_name(node, k, prefix)
     _used_names.append(name)
@@ -334,9 +346,9 @@ def make_default_package_xml(package_name, path):
     with open(path, "w") as f:
         f.write(template_str % package_name)
 
-def serialize_scene_tree_to_yamls_and_sdfs(
+def serialize_scene_tree_to_package(
         scene_tree, package_name="saved_scene_tree",
-        package_dir="./out/",
+        package_parent_dir="./out/",
         remove_directory=False):
     ''' Given a scene tree, serializes it out to a top-level YAML that
     lists out SDF/URDF models, specifies the transform (and indicates
@@ -351,19 +363,144 @@ def serialize_scene_tree_to_yamls_and_sdfs(
     scene. '''
 
     if remove_directory:
-        shutil.rmtree(os.path.join(package_dir, package_name), ignore_errors=True)
+        shutil.rmtree(os.path.join(package_parent_dir, package_name), ignore_errors=True)
 
     directives = build_directives_for_node(
         scene_tree, get_tree_root(scene_tree),
-        tf=RigidTransform(), prefix=None, base_frame_name="world",
-        package_name=package_name, package_dir=package_dir)
+        tf=RigidTransform(), prefix=None, base_frame_name="WorldBody",
+        package_name=package_name, package_parent_dir=package_parent_dir)
+
     # Save that out as the model directions YAML
-    with open(os.path.join(package_dir, package_name, "scene_tree.yaml"), "w") as f:
+    os.makedirs(os.path.join(package_parent_dir, package_name), exist_ok=True)
+    with open(os.path.join(package_parent_dir, package_name, "scene_tree.yaml"), "w") as f:
         yaml.dump(directives, f, default_flow_style=False)
 
     # Create a simple package.xml so the generated SDFs
-    # can be referred to by "package://"
+    # can be referred to by "<package_name>://<internal path>"
     make_default_package_xml(
         package_name=package_name,
-        path=os.path.join(package_dir, package_name, "package.xml")
+        path=os.path.join(package_parent_dir, package_name, "package.xml")
     )
+
+
+def get_frame_from_full_name(mbp, full_name):
+    # Figures out of a frame name like XX:YY:ZZ
+    # is referring to a frame by name "XX:YY:ZZ"
+    # or a model "XX:YY" with frame "ZZ"
+    try:
+        return mbp.GetFrameByName(full_name)
+    except RuntimeError:
+        pass
+    parts = full_name.split("::")
+    model_name = parts[:-1]
+    frame_name = parts[-1]
+    # If there's no model name, let Drake throw the
+    # error that this frame doesn't exist.
+    if len(model_name) == 0:
+        return mbp.GetFrameByName(frame_name)
+    # Otherwise get the indicated model and subframe.
+    model_id = mbp.GetModelInstanceByName("::".join(model_name))
+    return mbp.GetFrameByName(model_instance=model_id, name=frame_name)
+
+class PackageToMbpAndSgBuilder():
+    def __init__(self, package_dir, timestep=0.001):
+        # Builds a MBP from a scene tree serialized as a catkin
+        # package and model directive yaml.
+        try:
+            from yaml import CLoader as Loader, CDumper as Dumper
+        except ImportError:
+            from yaml import Loader, Dumper
+        scene_tree_yaml_path = os.path.join(package_dir, "scene_tree.yaml")
+        assert os.path.isfile(scene_tree_yaml_path)
+
+        # Set up the MBP we'll be building up.
+        builder = DiagramBuilder()
+        mbp, scene_graph = AddMultibodyPlantSceneGraph(
+            builder, MultibodyPlant(time_step=timestep))
+        parser = Parser(mbp)
+        # Make sure Parser looks for everything on ROS_PACKAGE_PATH
+        print(os.environ['ROS_PACKAGE_PATH'])
+        parser.package_map().PopulateFromEnvironment("ROS_PACKAGE_PATH")
+        world_body = mbp.world_body()
+
+        # Keep track of body poses we need to update
+        self.free_body_poses = []
+
+        # Register AngleAxis type with the YAML loader.
+        yaml.SafeLoader.add_constructor(
+            RpyTag.yaml_tag,
+            RpyTag.from_yaml)
+        with open(scene_tree_yaml_path, "r") as f:
+            scene_tree_yaml = yaml.safe_load(f)
+        
+        # Each directive maps directly to an MBP command, so step through and apply them.
+        for directive in scene_tree_yaml:
+            keys = list(directive.keys())
+            assert len(keys) == 1, "Malformed directives file: directive has 0 or > 1 keys."
+            key = keys[0]
+            vals = directive[key]
+
+            if key == "add_frame":
+                # TODO: What model instance should I add each frame to? Currently
+                # they all wind up in world, I think...
+                base_frame_name, tf = make_tf_from_dict(vals["X_PF"])
+                parent_frame = get_frame_from_full_name(mbp, base_frame_name)
+                new_frame = FixedOffsetFrame(name=vals["name"], P=parent_frame, X_PF=tf)
+                mbp.AddFrame(new_frame)
+            elif key == "add_weld":
+                mbp.WeldFrames(
+                    get_frame_from_full_name(mbp, vals["parent"]),
+                    get_frame_from_full_name(mbp, vals["child"])
+                )
+            elif key == "add_model":
+                parser.AddModelFromFile(
+                    resolve_catkin_package_path(parser.package_map(), vals["file"]),
+                    vals["name"]
+                )
+            elif key == "set_initial_configuration":
+                q0_dict = vals['q0_dict']
+                model_id = mbp.GetModelInstanceByName(vals["model_name"])
+                for joint_name in list(q0_dict.keys()):
+                    q0_this = q0_dict[joint_name]
+                    joint = mbp.GetMutableJointByName(
+                        joint_name, model_instance=model_id)
+                    # Reshape to make Drake happy.
+                    q0_this = q0_this.reshape(joint.num_positions(), 1)
+                    joint.set_default_positions(q0_this)
+            elif key == "set_initial_free_body_pose":
+                model_id = mbp.GetModelInstanceByName(vals["model_name"])
+                if "body_name" in vals and vals["body_name"] is not None:
+                    body_name = vals["body_name"]
+                    body = mbp.GetBodyByName(name=body_name, model_instance=model_id)
+                # Try to guess body name if it wasn't provided.
+                else:
+                    body_ind_possibilities = mbp.GetBodyIndices(model_id)
+                    assert len(body_ind_possibilities) == 1, \
+                        "Please supply root_body_name for model with path %s" % model_path
+                    body = mbp.get_body(body_ind_possibilities[0])
+                # Unfortunately SetDefaultFreeBodyPose does not support frames other
+                # than the world frame; we'll have to set these up later once we know
+                # the full tree structure.
+                base_frame_name, offset_tf = make_tf_from_dict(vals["X_PF"])
+                self.free_body_poses.append((offset_tf, base_frame_name, body))
+
+            else:
+                raise NotImplementedError("Unsupported directive %s" % key)
+        
+            self.mbp = mbp
+            self.builder = builder
+            self.scene_graph = scene_graph
+
+    def Finalize(self):
+        # Because of the weirdness with MBP, we can't set free body
+        # poses until we finalize the MBP. When that's ready to be
+        # done (all other additions / modifications to the MBP are done),
+        # this method handles finalization and setting the default free
+        # body poses correctly.
+        self.mbp.Finalize()
+        context = self.mbp.CreateDefaultContext()
+        for (offset_tf, base_frame_name, body) in self.free_body_poses:
+            base_tf = self.mbp.CalcRelativeTransform(
+                context, self.mbp.world_frame(),
+                get_frame_from_full_name(self.mbp, base_frame_name))
+            self.mbp.SetDefaultFreeBodyPose(body, base_tf.multiply(offset_tf))

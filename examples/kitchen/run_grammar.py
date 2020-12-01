@@ -1,4 +1,3 @@
-from functools import partial
 import meshcat
 import numpy as np
 import os
@@ -152,7 +151,7 @@ def do_generation_and_simulation(sim_time=10):
     scene_tree, satisfied_clearance = rejection_sample_feasible_tree(num_attempts=1000)
     scene_tree, satisfied_feasibility = project_tree_to_feasibility(scene_tree, num_attempts=3)
 
-    serialize_scene_tree_to_yamls_and_sdfs(scene_tree, package_name='save', package_dir=".", remove_directory=True)
+    serialize_scene_tree_to_package(scene_tree, package_name='save', package_parent_dir=".", remove_directory=True)
 
     # Draw generated tree in meshcat.
     #draw_scene_tree_meshcat(scene_tree, alpha=1.0, node_sphere_size=0.1)
