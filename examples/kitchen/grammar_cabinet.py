@@ -21,7 +21,7 @@ from scene_grammar.src.tree import *
 from scene_grammar.src.transform_utils import *
 from scene_grammar.src.drake_interop import *
 
-from grammar_objects import *
+from .grammar_objects import *
 
 class Cabinet(AndNode, PhysicsGeometryNode):
     ''' Cabinets can produce objects on each internal level. '''

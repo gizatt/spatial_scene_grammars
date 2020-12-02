@@ -15,7 +15,7 @@ from scene_grammar.src.visualization import *
 from scene_grammar.src.drake_interop import *
 from scene_grammar.src.serialization import *
 
-from grammar_room_layout import *
+from scene_grammar.examples.kitchen.grammar_room_layout import *
 
 torch.set_default_tensor_type(torch.DoubleTensor)
 pyro.enable_validation(True)
@@ -28,7 +28,11 @@ class FixedSeedKitchenGrammarTests(unittest.TestCase):
         pyro.clear_param_store()
         torch.manual_seed(cls.fixed_seed)
 
-        model = lambda: ParseTree.generate_from_root_type(root_node_type=Kitchen)
+        model = lambda: ParseTree.generate_from_root_type(
+            root_node_type=Kitchen,
+            tf=torch.eye(4),
+            name="kitchen"
+        )
         cls.trace = pyro.poutine.trace(model).get_trace()
         cls.scene_tree = cls.trace.nodes["_RETURN"]["value"]
 
