@@ -1,0 +1,7 @@
+numpy
+matplotlib
+networkx
+codecov
+pyro
+pytorch
+meshcat
