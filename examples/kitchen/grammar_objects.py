@@ -26,11 +26,11 @@ class KitchenObject():
     ''' Concrete object we might want to manipulate. '''
     pass
 
-class MediumBoxObject(TerminalNode, PhysicsGeometryNodeMixin, KitchenObject):
+class MediumBoxObject(TerminalNode, PhysicsGeometryNode, KitchenObject):
     def __init__(self, name, tf):
-        TerminalNode.__init__(self, name)
-        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=False)
+        super().__init__(name=name, tf=tf, fixed=False)
 
+    def _setup(self):
         # Rotate cabinet so it opens away from the wall
         geom_tf = torch.eye(4)
         # TODO(gizatt) Resource path management to be done here...
@@ -38,7 +38,7 @@ class MediumBoxObject(TerminalNode, PhysicsGeometryNodeMixin, KitchenObject):
         self.register_model_file(tf=geom_tf, model_path=model_path)
 
 
-class RandomKitchenStuff(TerminalNode, PhysicsGeometryNodeMixin, KitchenObject):
+class RandomKitchenStuff(TerminalNode, PhysicsGeometryNode, KitchenObject):
     '''
     Randomly samples sdfs of kitchen stuff. Specializably by its
     style attribute.
@@ -54,9 +54,9 @@ class RandomKitchenStuff(TerminalNode, PhysicsGeometryNodeMixin, KitchenObject):
         "/home/gizatt/projects/scene_grammar/models/plates_and_things/*/model_simplified.sdf"
     )
     def __init__(self, name, tf, style_group="all"):
-        TerminalNode.__init__(self, name)
-        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=False)
+        super().__init__(name=name, tf=tf, style_group="all", fixed=False)
 
+    def _setup(self, style_group):
         geom_tf = torch.eye(4)
         # TODO(gizatt) Resource path management to be done here...
         if style_group == "all":
@@ -77,14 +77,13 @@ class RandomKitchenStuff(TerminalNode, PhysicsGeometryNodeMixin, KitchenObject):
         # terminal node for every geometry? (Almost certainly no to that --
         # what would I do about continuous shape variation in that case?)
         # Choose an available model at random.
-        model_index = pyro.sample("%s_model_type", dist.Categorical(
+        model_index = pyro.sample("model_type", dist.Categorical(
             torch.ones(len(available_model_paths)))).item()
         model_path = available_model_paths[model_index]
         self.register_model_file(tf=geom_tf, model_path=model_path)
 
 
-
-class RandomYCBFoodstuff(TerminalNode, PhysicsGeometryNodeMixin, KitchenObject):
+class RandomYCBFoodstuff(TerminalNode, PhysicsGeometryNode, KitchenObject):
     '''
     Randomly samples one of the YCBs available in drake/manipulation/models/ycb.
 
@@ -92,9 +91,9 @@ class RandomYCBFoodstuff(TerminalNode, PhysicsGeometryNodeMixin, KitchenObject):
     takes a few seconds to load the scene. Probably related to Drake issue #13038.
     '''
     def __init__(self, name, tf):
-        TerminalNode.__init__(self, name)
-        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=False)
+        super().__init__(name=name, tf=tf, fixed=False)
 
+    def _setup(self):
         geom_tf = torch.eye(4)
         # TODO(gizatt) Resource path management to be done here...
         available_model_paths = glob.glob(
@@ -109,13 +108,13 @@ class RandomYCBFoodstuff(TerminalNode, PhysicsGeometryNodeMixin, KitchenObject):
         # terminal node for every geometry? (Almost certainly no to that --
         # what would I do about continuous shape variation in that case?)
         # Choose an available model at random.
-        model_index = pyro.sample("%s_model_type", dist.Categorical(
+        model_index = pyro.sample("model_type", dist.Categorical(
             torch.ones(len(available_model_paths)))).item()
         model_path = available_model_paths[model_index]
         self.register_model_file(tf=geom_tf, model_path=model_path)
 
 
-class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNodeMixin):
+class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNode):
     '''
         Produces a geometric number of objects in a bounded volume
         by randomly sampling their placement on the surface.
@@ -129,7 +128,11 @@ class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNodeMixin):
             show_geometry: Adds visual geometry indicating the object spawn region.
     '''
     def __init__(self, name, tf, object_production_rate, bounds, show_geometry=False):
-        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
+        super().__init__(
+            name=name, tf=tf, object_production_rate=object_production_rate,
+            bounds=bounds, show_geometry=show_geometry, fixed=True)
+        
+    def _setup(self, object_production_rate, bounds, show_geometry):
         self.x_bounds = bounds[0]
         self.y_bounds = bounds[1]
         self.z_bounds = bounds[2]
@@ -147,27 +150,30 @@ class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNodeMixin):
 
         style_group_options = ["utensils", "foodstuffs"]
         # Do foodstuffs more often than plates and things
-        style_group_k = pyro.sample("%s_style" % name,
+        style_group_k = pyro.sample("style",
                                     dist.Categorical(torch.tensor([0.3, 0.7]))).item()
         style_group = style_group_options[style_group_k]
         # Produce a geometric number of objects within bounds.
-        object_production_rule = RandomRelativePoseProductionRule(
-            RandomKitchenStuff, "%s_object" % name, self._sample_object_pose, style_group=style_group
-        )
-        GeometricSetNode.__init__(
-            self, name=name, production_rule=object_production_rule,
+        self.register_production_rules(
+            production_rule_type=RandomRelativePoseProductionRule,
+            production_rule_kwargs={
+                "child_constructor": RandomKitchenStuff,
+                "child_name": "object",
+                "relative_tf_sampler": self._sample_object_pose,
+                "style_group": style_group
+            },
             geometric_prob=object_production_rate
         )
 
     def _sample_object_pose(self):
         # For now, hard-code cabinet size to help it not intersect the other walls...
-        x_on_shelf = pyro.sample("%s_object_x" % self.name,
+        x_on_shelf = pyro.sample("object_x",
                                 dist.Uniform(self.x_bounds[0],
                                              self.x_bounds[1]))
-        y_on_shelf = pyro.sample("%s_object_y" % self.name,
+        y_on_shelf = pyro.sample("object_y",
                                 dist.Uniform(self.y_bounds[0],
                                              self.y_bounds[1]))
-        yaw = pyro.sample("%s_object_yaw" % self.name,
+        yaw = pyro.sample("object_yaw",
                           dist.Uniform(0., np.pi*2.))
         return pose_to_tf_matrix(torch.tensor([x_on_shelf, y_on_shelf, np.mean(self.z_bounds),
                                                0., 0., yaw]))

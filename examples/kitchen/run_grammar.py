@@ -16,7 +16,6 @@ import torch.distributions.constraints as constraints
 import pyro
 import pyro.distributions as dist
 from pyro import poutine
-from pyro.contrib.autoname import name_count
 
 from scene_grammar.src.nodes import *
 from scene_grammar.src.rules import *
@@ -40,7 +39,10 @@ def rejection_sample_feasible_tree(num_attempts=999):
     for attempt_k in range(num_attempts):
         start = time.time()
         pyro.clear_param_store()
-        scene_tree = ParseTree.generate_from_root_type(root_node_type=Kitchen)
+        scene_tree = ParseTree.generate_from_root_type(
+            root_node_type=Kitchen,
+            name="kitchen",
+            tf=torch.eye(4))
         end = time.time()
 
         print("Generated tree in %f seconds." % (end - start))
@@ -50,15 +52,18 @@ def rejection_sample_feasible_tree(num_attempts=999):
         if num_cabinets != 1:
             continue
         
-        # Enforce that there are at least 2 objects on the table
+        # Enforce that there are at least a few objects on the table
         tables = scene_tree.find_nodes_by_type(Table)
+        print("Tables: ", tables)
         table_children = sum([scene_tree.get_recursive_children_of_node(node) for node in tables], [])
+        print("Table children: ", table_children)
+        print("Objects on tables: ", [node for node in table_children if isinstance(node, KitchenObject)])
         num_objects_on_tables = len([node for node in table_children if isinstance(node, KitchenObject)])
         print("Num objs on table: ", num_objects_on_tables)
-        if num_objects_on_tables < 5:
+        if num_objects_on_tables < 3:
             continue
 
-        # Enforce that there are at least 2 objects in cabinets
+        # Enforce that there are at least a fews objects in cabinets
         #cabinets = scene_tree.find_nodes_by_type(Cabinet)
         #table_children = sum([scene_tree.get_recursive_children_of_node(node) for node in cabinets], [])
         #num_objects_in_cabinets = len([node for node in table_children if isinstance(node, KitchenObject)])
@@ -92,7 +97,7 @@ def rejection_sample_feasible_tree(num_attempts=999):
         print(len(get_collisions(mbp_clearance, mbp_context)), " bodies in collision")
 
         # We can draw clearance geometry for debugging.
-        #draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
+        # draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
 
         # If we failed the initial clearance check, resample.
         if not constraint.CheckSatisfied(q0):
@@ -152,6 +157,10 @@ def do_generation_and_simulation(sim_time=10):
     scene_tree, satisfied_feasibility = project_tree_to_feasibility(scene_tree, num_attempts=3)
 
     serialize_scene_tree_to_package(scene_tree, package_name='save', package_parent_dir=".", remove_directory=True)
+
+    A = nx.nx_agraph.to_agraph(scene_tree)
+    A.layout('dot', args='-Nfontsize=10 -Nwidth=".2" -Nheight=".2" -Nmargin=0 -Gfontsize=8')
+    A.draw('test.png')
 
     # Draw generated tree in meshcat.
     #draw_scene_tree_meshcat(scene_tree, alpha=1.0, node_sphere_size=0.1)

@@ -23,12 +23,14 @@ from scene_grammar.src.drake_interop import *
 
 from grammar_objects import *
 
-class Table(AndNode, PhysicsGeometryNodeMixin):
+class Table(AndNode, PhysicsGeometryNode):
     ''' Table (using the extra heavy duty table from Drake) that
     produces objects on its surface. '''
     def __init__(self, name, tf):
         # Handle geometry and physics.
-        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True, is_container=True)
+        super().__init__(name=name, tf=tf, fixed=True, is_container=True)
+
+    def _setup(self):
         geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., 0., 0., 0., 0.]))
         # TODO(gizatt) Resource path management to be done here...
         model_path = "/home/gizatt/drake/examples/kuka_iiwa_arm/models/table/extra_heavy_duty_table_surface_only_collision.sdf"
@@ -47,4 +49,4 @@ class Table(AndNode, PhysicsGeometryNodeMixin):
                 object_production_rate=0.5,
                 bounds=((-0.25, 0.25), (-0.25, 0.25), (0., 0.2))
         ))
-        AndNode.__init__(self, name=name, production_rules=rules)
+        self.register_production_rules(production_rules=rules)

@@ -23,7 +23,7 @@ from pydrake.all import (
 )
 import pydrake.geometry as pydrake_geom
 
-from .nodes import SpatialNodeMixin, PhysicsGeometryNodeMixin, default_friction
+from .nodes import SpatialNode, PhysicsGeometryNode, default_friction
 from .tree import get_tree_root
 from .drake_interop import torch_tf_to_drake_tf, resolve_catkin_package_path
 
@@ -211,7 +211,7 @@ def save_sdf_with_node_geometry(node, path, root_link_name):
     return True
 
 def build_directives_for_node_geometry(node, base_frame_name, package_name, package_parent_dir):
-    assert isinstance(node, PhysicsGeometryNodeMixin)
+    assert isinstance(node, PhysicsGeometryNode)
     directives = []
     # For disambiguating naming
     model_k = 0
@@ -283,14 +283,14 @@ def build_directives_for_node(
     # - Add initial pose commands for non-fixed geometry
     directives = []
     my_frame_name = None
-    if isinstance(node, SpatialNodeMixin):
+    if isinstance(node, SpatialNode):
         my_frame_name = get_frame_name_for_node(scene_tree, node)
         # Create our own root frame.
         directives.append(add_frame_directive(
             my_frame_name, base_frame_name, tf
         ))
         # TODO: Do I need to weld that frame?
-        if isinstance(node, PhysicsGeometryNodeMixin):
+        if isinstance(node, PhysicsGeometryNode):
             directives += build_directives_for_node_geometry(node, my_frame_name, 
                 package_name=package_name,
                 package_parent_dir=package_parent_dir)
@@ -299,7 +299,7 @@ def build_directives_for_node(
     for rule in scene_tree.successors(node):
         for child_node in scene_tree.successors(rule):
             child_rel_tf = None
-            if isinstance(child_node, SpatialNodeMixin) and isinstance(node, SpatialNodeMixin):
+            if isinstance(child_node, SpatialNode) and isinstance(node, SpatialNode):
                 my_tf = torch_tf_to_drake_tf(node.tf)
                 child_tf = torch_tf_to_drake_tf(child_node.tf)
                 child_rel_tf = my_tf.multiply(child_tf.inverse()) # maybe other way around

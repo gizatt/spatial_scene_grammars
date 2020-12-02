@@ -25,13 +25,13 @@ from grammar_objects import *
 from grammar_table import *
 from grammar_cabinet import *
 
-class Kitchen(AndNode, RootNode, SpatialNodeMixin):
+class Kitchen(AndNode, SpatialNode):
     ''' Implements a square-footprint kitchen of varying length/width/height,
     with four walls and a floor. '''
-    def __init__(self):
-        SpatialNodeMixin.__init__(self, tf=torch.eye(4))
+    def __init__(self, name, tf):
+        super().__init__(name=name, tf=tf)
 
-        # TODO(gizatt) pyro @scope for local variable naming?
+    def _setup(self):
         kitchen_height = pyro.sample("kitchen_height", dist.Uniform(2.0, 3.0))
         kitchen_width = pyro.sample("kitchen_width", dist.Uniform(2.0, 4.0)) # x axis
         kitchen_length = pyro.sample("kitchen_length", dist.Uniform(2.0, 4.0)) # y axis
@@ -73,27 +73,22 @@ class Kitchen(AndNode, RootNode, SpatialNodeMixin):
             length=kitchen_length
         )
         
-        AndNode.__init__(self, name="kitchen",
-                         production_rules=[
-                            n_wall_rule,
-                            e_wall_rule,
-                            #w_wall_rule,
-                            #s_wall_rule,
-                            floor_rule])
+        self.register_production_rules(
+            production_rules=[
+                n_wall_rule,
+                e_wall_rule,
+                #w_wall_rule,
+                #s_wall_rule,
+                floor_rule])
 
-    @staticmethod
-    def sample():
-        # The root node should be able to sample itself; in this case,
-        # because Kitchen takes no arguments, this is easy.
-        return Kitchen()
-
-
-class Wall(GeometricSetNode, PhysicsGeometryNodeMixin):
+class Wall(GeometricSetNode, PhysicsGeometryNode):
     ''' Each wall can produce some number of cabinets on its surface and
     random (feasible) positions. '''
 
     def __init__(self, name, tf, height, width):
-        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
+        super().__init__(name=name, tf=tf, height=height, width=width, fixed=True)
+
+    def _setup(self, height, width):
         # Handle geometry and physics.
         self.wall_thickness = 0.1
         self.width = width
@@ -107,11 +102,13 @@ class Wall(GeometricSetNode, PhysicsGeometryNodeMixin):
         self.register_clearance_geometry(geom_tf, geometry)
 
         # This node produces a geometric number of cabinets on its surface.
-        cabinet_production_rule = RandomRelativePoseProductionRule(
-            Cabinet, "%s_cabinet" % name, self._sample_cabinet_pose_on_wall
-        )
-        GeometricSetNode.__init__(
-            self, name=name, production_rule=cabinet_production_rule,
+        self.register_production_rules(
+            production_rule_type=RandomRelativePoseProductionRule,
+            production_rule_kwargs={
+                "child_constructor": Cabinet,
+                "child_name": "cabinet",
+                "relative_tf_sampler": self._sample_cabinet_pose_on_wall
+            },
             geometric_prob=0.5
         )
 
@@ -120,17 +117,19 @@ class Wall(GeometricSetNode, PhysicsGeometryNodeMixin):
         min_cab_height = 0.5
         max_cab_height = 1.5
         cabinet_width = 0.6
-        x_on_wall = pyro.sample("%s_cabinet_x" % self.name,
+        x_on_wall = pyro.sample("cabinet_x",
                                 dist.Uniform(-self.width/2. + cabinet_width/2.,
                                               self.width/2. - cabinet_width/2.))
-        z_on_wall = pyro.sample("%s_cabinet_z" % self.name,
+        z_on_wall = pyro.sample("cabinet_z",
                                 dist.Uniform(min_cab_height, max_cab_height))
         return pose_to_tf_matrix(torch.tensor([x_on_wall, 0., z_on_wall, 0., 0., -np.pi/2.]))
 
 
-class Floor(AndNode, PhysicsGeometryNodeMixin):
+class Floor(AndNode, PhysicsGeometryNode):
     def __init__(self, name, tf, width, length):
-        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
+        super().__init__(name=name, tf=tf, width=width, length=length)
+
+    def _setup(self, width, length):
         floor_depth = 0.1
         # Move the collision geometry so the surface is at z=0
         geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., -floor_depth/2., 0., 0., 0.]))
@@ -141,27 +140,29 @@ class Floor(AndNode, PhysicsGeometryNodeMixin):
         # (Currently just for testing item placement.)
         table_spawn_rule = DeterministicRelativePoseProductionRule(
             child_constructor=Table,
-            child_name="%s_table" % name,
+            child_name="table",
             relative_tf=pose_to_tf_matrix(torch.tensor([1., 0., 0., 0., 0., 0.]))
         )
         robot_spawn_rule = DeterministicRelativePoseProductionRule(
             child_constructor=RobotSpawnLocation,
-            child_name="%s_robot_spawn" % name,
+            child_name="robot_spawn",
             relative_tf=pose_to_tf_matrix(torch.tensor([-1, 0., 0., 0., 0., 0.]))
         )
-        AndNode.__init__(self, name=name, production_rules=[
-            table_spawn_rule, robot_spawn_rule])
+        self.register_production_rules(
+            production_rules=[table_spawn_rule,
+                              robot_spawn_rule]
+        )
 
 
-class RobotSpawnLocation(TerminalNode, PhysicsGeometryNodeMixin):
+class RobotSpawnLocation(TerminalNode, PhysicsGeometryNode):
     ''' Node with clearance geometry to indicate where the robot should
     spawn in. '''
     def __init__(self, name, tf):
-        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True)
+        super().__init__(name=name, tf=tf)
+
+    def _setup(self):
         # Only has clearance geometry: indicates robot start location, and
         # ensures that there's space to put a robot into this scene.
         geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., 1., 0., 0., 0.]))
         geometry = Box(width=1., depth=1., height=2., )
         self.register_clearance_geometry(geom_tf, geometry)
-
-        TerminalNode.__init__(self, name=name)

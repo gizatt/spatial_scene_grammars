@@ -23,21 +23,22 @@ from scene_grammar.src.drake_interop import *
 
 from grammar_objects import *
 
-class Cabinet(AndNode, PhysicsGeometryNodeMixin):
+class Cabinet(AndNode, PhysicsGeometryNode):
     ''' Cabinets can produce objects on each internal level. '''
     def __init__(self, name, tf):
-        # Handle geometry and physics.
-        PhysicsGeometryNodeMixin.__init__(self, tf=tf, fixed=True, is_container=True)
+        super().__init__(name=name, tf=tf, fixed=True, is_container=True)
+        
+    def _setup(self):
         # Offset cabinet geometry from the wall
         geom_tf = pose_to_tf_matrix(torch.tensor([0.15, 0., 0., 0., 0., 0.]))
         # TODO(gizatt) Resource path management to be done here...
         model_path = "/home/gizatt/drake/examples/manipulation_station/models/cupboard.sdf"
         # Randomly open doors random amounts.
         # Left door is straight  open at -pi/2 and closed at 0.
-        left_door_state = pyro.sample("%s_left_door_state" % name,
+        left_door_state = pyro.sample("left_door_state",
                                       dist.Uniform(-np.pi/2., 0.))
         # Right door is straight open at pi/2 and closed at 0.
-        right_door_state = pyro.sample("%s_right_door_state" % name,
+        right_door_state = pyro.sample("right_door_state",
                                       dist.Uniform(0.0, np.pi/2.))
         self.register_model_file(
             tf=geom_tf, model_path=model_path, root_body_name="cupboard_body",
@@ -69,5 +70,5 @@ class Cabinet(AndNode, PhysicsGeometryNodeMixin):
                 object_production_rate=0.5,
                 bounds=((-0.1, 0.1), (-0.2, 0.2), (0., 0.2))
             ))
-        AndNode.__init__(self, name=name, production_rules=rules)
+        self.register_production_rules(production_rules=rules)
 

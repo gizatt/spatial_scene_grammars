@@ -22,7 +22,7 @@ from pydrake.all import (
 )
 import pydrake.geometry as pydrake_geom
 
-from .nodes import SpatialNodeMixin, PhysicsGeometryNodeMixin, default_friction
+from .nodes import SpatialNode, PhysicsGeometryNode, default_friction
 from .visualization import rgb_2_hex
 
 def torch_tf_to_drake_tf(tf):
@@ -71,7 +71,7 @@ def compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree, timestep=0.0
     cmap = plt.cm.get_cmap('jet')
     cmap_counter = 0.
     for node in scene_tree.nodes:
-        if isinstance(node, SpatialNodeMixin) and isinstance(node, PhysicsGeometryNodeMixin):
+        if isinstance(node, SpatialNode) and isinstance(node, PhysicsGeometryNode):
             # Don't have to do anything if this does not introduce geometry.
             has_clearance_geometry = len(node.clearance_geometry) > 0
             if not has_clearance_geometry:
@@ -146,7 +146,7 @@ def expand_container_tree(full_tree, new_tree, current_node):
         new_tree.add_node(child)
         new_tree.add_edge(current_node, child)
 
-        if (isinstance(child, PhysicsGeometryNodeMixin) and
+        if (isinstance(child, PhysicsGeometryNode) and
              child.is_container):
             continue
         new_tree = expand_container_tree(full_tree, new_tree, child)
@@ -157,7 +157,7 @@ def split_tree_into_containers(scene_tree):
     # of the overall tree.
     roots = [node for node in scene_tree.nodes if
             (len(list(scene_tree.predecessors(node))) == 0 or
-             isinstance(node, PhysicsGeometryNodeMixin) and node.is_container)]
+             isinstance(node, PhysicsGeometryNode) and node.is_container)]
     # Build the subtree from each root until it hits a terminal or
     # or a container.
     trees = []
@@ -177,7 +177,7 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
     node_to_model_id_map = {}
     free_body_poses = []
     for node in scene_tree.nodes:
-        if isinstance(node, SpatialNodeMixin) and isinstance(node, PhysicsGeometryNodeMixin):
+        if isinstance(node, SpatialNode) and isinstance(node, PhysicsGeometryNode):
             # Don't have to do anything if this does not introduce geometry.
             has_models = len(node.model_paths) > 0
             has_prim_geometry = (len(node.visual_geometry) + len(node.collision_geometry)) > 0

@@ -1,6 +1,6 @@
 import torch
 
-from .nodes import SpatialNodeMixin
+from .nodes import SpatialNode
 
 class ProductionRule(object):
     ''' Abstract interface for a production rule, which samples
@@ -23,7 +23,7 @@ class RandomRelativePoseProductionRule(ProductionRule):
     def __init__(self, child_constructor, child_name, relative_tf_sampler, **kwargs):
         ''' Args:
                 child_constructor: Callable that takes `name` and `tf` args,
-                    and produces a Node with SpatialNodeMixin.
+                    and produces a Node with SpatialNode.
                 child_name: string name to be assigned to the new node.
                 relative_tf_sampler: callable that samples a 4x4 tf.
         '''
@@ -33,9 +33,12 @@ class RandomRelativePoseProductionRule(ProductionRule):
         self.kwargs = kwargs
 
     def sample_products(self, parent):
-        assert(isinstance(parent, SpatialNodeMixin))
+        assert(isinstance(parent, SpatialNode))
         new_tf = torch.mm(parent.tf, self.relative_tf_sampler())
-        return [self.child_constructor(name=self.child_name, tf=new_tf, **self.kwargs)]
+        return [self.child_constructor(
+            name=self.child_name,
+            tf=new_tf,
+            **self.kwargs)]
 
 class DeterministicRelativePoseProductionRule(RandomRelativePoseProductionRule):
     ''' Helper ProductionRule type representing
@@ -46,7 +49,7 @@ class DeterministicRelativePoseProductionRule(RandomRelativePoseProductionRule):
     def __init__(self, child_constructor, child_name, relative_tf, **kwargs):
         ''' Args:
                 child_constructor: Callable that takes `name` and `tf` args,
-                    and produces a Node with SpatialNodeMixin.
+                    and produces a Node with SpatialNode.
                 child_name: string name to be assigned to the new node.
                 relative_tf: 4x4 torch tf matrix.
         '''

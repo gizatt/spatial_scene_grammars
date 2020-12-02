@@ -1,6 +1,8 @@
+from copy import deepcopy
 import numpy as np
 import pyro
 import pyro.distributions as dist
+from pyro.contrib.autoname import scope
 import torch
 
 import pydrake
@@ -10,18 +12,30 @@ from pydrake.all import (
     UnitInertia
 )
 
-class Node(object):
+class Node():
     ''' Most abstract form of a node / symbol in the grammar. '''
-    def __init__(self, name):
+    def __init__(self, name, **kwargs):
         self.name = name
+        # Is it right to not pass **kwargs in here? Will all
+        # constructors always get called? Multiple inheritance
+        # is too hard...
+        super().__init__()
+        # Setup can only safely be done once *all* other init methods
+        # have been called. Doing it after super().__init() is
+        # enough to guarantee that.
+        with scope(prefix=self.name):
+            with scope(prefix="params"):
+                self._setup(**kwargs)
+    def _setup(self):
+        raise NotImplementedError()
 
-
-class SpatialNodeMixin(object):
+class SpatialNode(Node):
     ''' Contract that a class with this mixin has a 'tf' attribute,
     which is a 4x4 tf matrix representing the node's pose in world
     frame. '''
-    def __init__(self, tf):
+    def __init__(self, tf, **kwargs):
         self.tf = tf
+        super().__init__(**kwargs)
 
 
 default_spatial_inertia = SpatialInertia(
@@ -29,10 +43,10 @@ default_spatial_inertia = SpatialInertia(
     p_PScm_E=np.zeros(3), G_SP_E=UnitInertia(0.01, 0.01, 0.01)
 )
 default_friction = CoulombFriction(0.9, 0.8)
-class PhysicsGeometryNodeMixin(SpatialNodeMixin):
+class PhysicsGeometryNode(SpatialNode):
     '''
     Contract that this class has physics and geometry info, providing
-    Drake / simulator interoperation. Implies SpatialNodeMixin (and
+    Drake / simulator interoperation. Implies SpatialNode (and
     calls its constructor.) 
     Args:
         - fixed: Whether this geometry is floating in the final simulation
@@ -67,8 +81,7 @@ class PhysicsGeometryNodeMixin(SpatialNodeMixin):
           clearance geometry: e.g., the space in front of a cabinet should
           be clear so the doors can open.
     '''
-    def __init__(self, tf, fixed=True, spatial_inertia=None, is_container=False):
-        SpatialNodeMixin.__init__(self, tf)
+    def __init__(self, fixed=True, spatial_inertia=None, is_container=False, **kwargs):
         self.fixed = fixed
         self.is_container = is_container
         self.model_paths = []
@@ -76,6 +89,8 @@ class PhysicsGeometryNodeMixin(SpatialNodeMixin):
         self.visual_geometry = []
         self.collision_geometry = []
         self.clearance_geometry = []
+        super().__init__(**kwargs)
+
     def register_model_file(self, tf, model_path, root_body_name=None,
                             q0_dict=None):
         self.model_paths.append((tf, model_path, root_body_name, q0_dict))
@@ -100,10 +115,30 @@ class PhysicsGeometryNodeMixin(SpatialNodeMixin):
 
 class NonTerminalNode(Node):
     ''' Abstract interface for nonterminal nodes, which are responsible
-    for sampling a set of production rules to produce new nodes. '''
+    for sampling a set of production rules to produce new nodes. Designed
+    for deferred registration of production rules. '''
+    def __init__(self, **kwargs):
+        self.rules_registered = False
+        super().__init__(**kwargs)
+        
+    def _register_production_rules_impl(self, **kwargs):
+        raise NotImplementedError()
+
+    def register_production_rules(self, **kwargs):
+        with scope(prefix=self.name + "_register"):
+            self._register_production_rules_impl(**kwargs)
+        self.rules_registered = True
+
+    def _sample_production_rules_impl(self):
+        raise NotImplementedError()
+
     def sample_production_rules(self):
         ''' returns: a list of ProductionRules '''
-        raise NotImplementedError()
+        assert self.rules_registered, "No call to register_production_rules for node %s" % name
+
+        with scope(prefix=self.name):
+            with scope(prefix="sample_rules"):
+                return self._sample_production_rules_impl()
 
 
 class TerminalNode(Node):
@@ -111,21 +146,10 @@ class TerminalNode(Node):
     pass
 
 
-class RootNode(NonTerminalNode):
-    ''' A special node type capable of unconditionally sampling
-    itself. (TODO: Does this exist for a reason? Why not just force
-    a user to either make sure the intended root node can be instantiated
-    with no arguments, or instantiate their own root node?) '''
-    @staticmethod
-    def sample():
-        ''' Should return a RootNode instance. '''
-        raise NotImplementedError()
-
-
 class OrNode(NonTerminalNode):
     ''' Convenience specialization of a nonterminal node: will choose one
-    of the available rules with probabilities given by the production weights. '''
-    def __init__(self, name, production_rules, production_weights):
+    of the available rules with probabilities given by the production weights.'''
+    def _register_production_rules_impl(self, production_rules, production_weights):
         if len(production_weights) != len(production_rules):
             raise ValueError("# of production rules and weights must match.")
         if len(production_weights) == 0:
@@ -133,21 +157,21 @@ class OrNode(NonTerminalNode):
         self.production_rules = production_rules
         self.production_weights = production_weights
         self.production_dist = dist.Categorical(production_weights)
-        NonTerminalNode.__init__(self, name=name)
 
-    def sample_production_rules(self):
-        active_rule = pyro.sample(self.name + "_or_sample", self.production_dist)
+    def _sample_production_rules_impl(self):
+        active_rule = pyro.sample("or_sample", self.production_dist)
         return [self.production_rules[active_rule]]
 
 
 class AndNode(NonTerminalNode):
     ''' Convenience specialization of a nonterminal node: will choose all
     of the available rules with probabilities all the time.'''
-    def __init__(self, name, production_rules):
+    def _register_production_rules_impl(self, production_rules):
         self.production_rules = production_rules
-        Node.__init__(self, name=name)
+        self.rules_registered = True
 
-    def sample_production_rules(self):
+    def _sample_production_rules_impl(self):
+        assert self.rules_registered, "No call to register_production_rules for node %s" % name
         return self.production_rules
 
 
@@ -185,8 +209,8 @@ class CovaryingSetNode(NonTerminalNode):
             init_weights[combination_index] = val
         init_weights /= torch.sum(init_weights)
         return init_weights
-        
-    def __init__(self, name, production_rules, init_weights):
+
+    def _register_production_rules_impl(self, production_rules, init_weights):
         ''' Make a categorical distribution over
            every possible combination of production rules
            that could be active, with a separate weight
@@ -195,12 +219,12 @@ class CovaryingSetNode(NonTerminalNode):
         self.exhaustive_set_weights = init_weights
         self.production_dist = dist.Categorical(
             logits=torch.log(self.exhaustive_set_weights / (1. - self.exhaustive_set_weights)))
-        NonTerminalNode.__init__(self, name=name)
+        self.rules_registered = True
 
-    def sample_production_rules(self):
+    def _sample_production_rules_impl(self):
         # Select out the appropriate rules
         selected_rules = pyro.sample(
-            self.name + "_exhaustive_set_sample",
+            self.name + "::exhaustive_set_sample",
             self.production_dist)
         output = []
         for k, rule in enumerate(self.production_rules):
@@ -213,19 +237,17 @@ class IndependentSetNode(NonTerminalNode):
     ''' Convenience specialization of a nonterminal node: given a set of
     production rules, can activate each rule as an independent Bernoulli
     trial (with specified probabilities of activation). '''
-    def __init__(self, name, production_rules,
-                 production_probs):
+    def _register_production_rules_impl(self, production_rules, production_probs):
         if len(production_probs) != len(production_rules):
             raise ValueError("Must have same number of production probs "
                              "as rules.")
         self.production_probs = production_probs
         self.production_dist = dist.Bernoulli(production_probs).to_event(1)
         self.production_rules = production_rules
-        NonTerminalNode.__init__(self, name=name)
 
-    def sample_production_rules(self):
+    def _sample_production_rules_impl(self):
         selected_rules = pyro.sample(
-            self.name + "_independent_set_sample",
+            "independent_set_sample",
             self.production_dist)
         # Select out the appropriate rules
         output = []
@@ -239,15 +261,20 @@ class GeometricSetNode(NonTerminalNode):
     ''' Convenience specialization of a nonterminal node: given a single production
     rule, can reapply it a number of times following a geometric distribution
     with a given repeat probability.'''
-    def __init__(self, name, production_rule,
-                 geometric_prob):
+    def _register_production_rules_impl(
+            self, production_rule_type, production_rule_kwargs, geometric_prob):
         self.production_dist = dist.Geometric(geometric_prob)
-        self.production_rule = production_rule
-        NonTerminalNode.__init__(self, name=name)
+        self.production_rule_type = production_rule_type
+        self.production_rule_kwargs = production_rule_kwargs
 
-    def sample_production_rules(self):
+    def _sample_production_rules_impl(self):
         num_repeats = pyro.sample(
-            self.name + "_geometric_set_sample",
+            "geometric_set_sample",
             self.production_dist)
         # Select out the appropriate rules
-        return [self.production_rule] * int(num_repeats.item())
+        out = []
+        for k in range(int(num_repeats.item())):
+            # Ensure they're different instantiations of the rule so
+            # the scene tree is still a tree.
+            out.append(self.production_rule_type(**self.production_rule_kwargs))
+        return out

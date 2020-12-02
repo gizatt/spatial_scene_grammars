@@ -1,5 +1,5 @@
 import networkx as nx
-from .nodes import RootNode, TerminalNode, Node
+from .nodes import TerminalNode, Node
 from .rules import ProductionRule
 from pyro.contrib.autoname import scope, name_count
 
@@ -36,9 +36,10 @@ class ParseTree(nx.DiGraph):
 
     def get_recursive_children_of_node(self, node):
         nodes = list(self.successors(node))
+        out = [node]
         for node in nodes:
-            nodes += self.get_recursive_children_of_node(node)
-        return nodes
+            out += self.get_recursive_children_of_node(node)
+        return out
 
     def get_tree_without_production_rules(self):
         # Returns a raw nx.DiGraph of the same nodes
@@ -57,27 +58,33 @@ class ParseTree(nx.DiGraph):
         return new_tree
 
     @staticmethod
-    @name_count  # TODO: we should do something smarter for avoiding name collisions.
-    def generate_from_root_type(root_node_type):
-        ''' Generates an unconditioned parse tree from a root node class. '''
-        assert issubclass(root_node_type, RootNode)
-        unexpanded_nodes = [ root_node_type.sample() ]
-        parse_tree = ParseTree()
-        parse_tree.add_node(unexpanded_nodes[0])
-        while len(unexpanded_nodes)>  0:
-            parent_node = unexpanded_nodes.pop(0)
-            if isinstance(parent_node, TerminalNode):
-                # Nothing more to do with this node
-                pass
-            else:
-                # Expand by picking a production rule
-                production_rules = parent_node.sample_production_rules()
+    def _generate_from_node_recursive(parse_tree, parent_node):
+        if isinstance(parent_node, TerminalNode):
+            return parse_tree
+        else:
+            with scope(prefix=parent_node.name):
+                with scope(prefix="rules"):
+                    production_rules = parent_node.sample_production_rules()
                 for i, rule in enumerate(production_rules):
                     parse_tree.add_node(rule)
                     parse_tree.add_edge(parent_node, rule)
-                    new_nodes = rule.sample_products(parent_node)
-                    for new_node in new_nodes:
-                        parse_tree.add_node(new_node)
-                        parse_tree.add_edge(rule, new_node)
-                    unexpanded_nodes += new_nodes
+
+                    with scope(prefix="prod_%d" % i):
+                        new_nodes = rule.sample_products(parent_node)
+                        for new_node in new_nodes:
+                            parse_tree.add_node(new_node)
+                            parse_tree.add_edge(rule, new_node)
+                            parse_tree = ParseTree._generate_from_node_recursive(parse_tree, new_node)
+
         return parse_tree
+
+    @staticmethod
+    def generate_from_root_type(root_node_type, **kwargs):
+        '''
+        Generates an unconditioned parse tree from a root node type
+        and a list of any arguments required to instantiate it.
+        '''
+        root_node = root_node_type(**kwargs)
+        parse_tree = ParseTree()
+        parse_tree.add_node(root_node)
+        return ParseTree._generate_from_node_recursive(parse_tree, root_node)
