@@ -1,16 +1,16 @@
 Spatial Scene Grammars
 -------------
 
-<img src="examples/kitchen/demo_rooms.gif" 
+<img src="spatial_scene_grammars_examples/kitchen/demo_rooms.gif" 
 alt="Preview of some generated rooms" border="10" />
-<img src="examples/kitchen/scene_with_google_models.png" 
+<img src="spatial_scene_grammars_examples/kitchen/scene_with_google_models.png" 
 alt="Preview of some generated rooms" border="10" />
 
 Environment generation tool using attributed stochastic scene grammars.
 
 # Overview
 
-See [`examples/kitchen`](examples/kitchen/README.md) for a demo of programmatically specifying a grammar
+See [`examples/kitchen`](spatial_scene_grammars_examples/kitchen/README.md) for a demo of programmatically specifying a grammar
 and using it to generate scenes.
 
 ## Grammar Details: Nodes and Rules

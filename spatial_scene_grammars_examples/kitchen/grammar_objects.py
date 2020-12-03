@@ -16,11 +16,11 @@ import pyro.distributions as dist
 from pyro import poutine
 from pyro.contrib.autoname import name_count
 
-from scene_grammar.src.nodes import *
-from scene_grammar.src.rules import *
-from scene_grammar.src.tree import *
-from scene_grammar.src.transform_utils import *
-from scene_grammar.src.drake_interop import *
+from spatial_scene_grammars.nodes import *
+from spatial_scene_grammars.rules import *
+from spatial_scene_grammars.tree import *
+from spatial_scene_grammars.transform_utils import *
+from spatial_scene_grammars.drake_interop import *
 
 class KitchenObject():
     ''' Concrete object we might want to manipulate. '''
@@ -148,19 +148,21 @@ class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNode):
         if show_geometry:
             self.register_visual_geometry(geom_tf, geometry, color=np.array([0.5, 1.0, 0.2, 0.2]))
 
-        style_group_options = ["utensils", "foodstuffs"]
+        # Overriding style choices to just make simple boxes
+        # so I can dev some collision stuff.
+        #style_group_options = ["utensils", "foodstuffs"]
         # Do foodstuffs more often than plates and things
-        style_group_k = pyro.sample("style",
-                                    dist.Categorical(torch.tensor([0.3, 0.7]))).item()
-        style_group = style_group_options[style_group_k]
+        # style_group_k = pyro.sample("style",
+        #                            dist.Categorical(torch.tensor([0.3, 0.7]))).item()
+        #style_group = style_group_options[style_group_k]
         # Produce a geometric number of objects within bounds.
         self.register_production_rules(
             production_rule_type=RandomRelativePoseProductionRule,
             production_rule_kwargs={
-                "child_constructor": RandomKitchenStuff,
+                "child_constructor": MediumBoxObject,
                 "child_name": "object",
                 "relative_tf_sampler": self._sample_object_pose,
-                "style_group": style_group
+        #        "style_group": style_group
             },
             geometric_prob=object_production_rate
         )

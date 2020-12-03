@@ -15,11 +15,11 @@ import pyro.distributions as dist
 from pyro import poutine
 from pyro.contrib.autoname import name_count
 
-from scene_grammar.src.nodes import *
-from scene_grammar.src.rules import *
-from scene_grammar.src.tree import *
-from scene_grammar.src.transform_utils import *
-from scene_grammar.src.drake_interop import *
+from spatial_scene_grammars.nodes import *
+from spatial_scene_grammars.rules import *
+from spatial_scene_grammars.tree import *
+from spatial_scene_grammars.transform_utils import *
+from spatial_scene_grammars.drake_interop import *
 
 from .grammar_objects import *
 

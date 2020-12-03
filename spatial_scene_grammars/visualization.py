@@ -3,8 +3,8 @@ import meshcat.geometry as meshcat_geom
 import matplotlib.pyplot as plt
 import numpy as np
 
-from scene_grammar.src.transform_utils import *
-from scene_grammar.src.tree import get_tree_root
+from spatial_scene_grammars.transform_utils import *
+from spatial_scene_grammars.tree import get_tree_root
 
 def rgb_2_hex(rgb):
     # Turn a list of R,G,B elements (any indexable list

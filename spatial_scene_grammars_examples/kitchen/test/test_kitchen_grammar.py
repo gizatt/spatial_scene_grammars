@@ -7,15 +7,15 @@ import numpy as np
 import torch
 import pyro
 
-from scene_grammar.src.nodes import *
-from scene_grammar.src.rules import *
-from scene_grammar.src.tree import *
-from scene_grammar.src.transform_utils import *
-from scene_grammar.src.visualization import *
-from scene_grammar.src.drake_interop import *
-from scene_grammar.src.serialization import *
+from spatial_scene_grammars.nodes import *
+from spatial_scene_grammars.rules import *
+from spatial_scene_grammars.tree import *
+from spatial_scene_grammars.transform_utils import *
+from spatial_scene_grammars.visualization import *
+from spatial_scene_grammars.drake_interop import *
+from spatial_scene_grammars.serialization import *
 
-from scene_grammar.examples.kitchen.grammar_room_layout import *
+from spatial_scene_grammars_examples.kitchen.grammar_room_layout import *
 
 torch.set_default_tensor_type(torch.DoubleTensor)
 pyro.enable_validation(True)
@@ -28,7 +28,7 @@ class FixedSeedKitchenGrammarTests(unittest.TestCase):
         pyro.clear_param_store()
         torch.manual_seed(cls.fixed_seed)
 
-        model = lambda: ParseTree.generate_from_root_type(
+        model = lambda: ParseTree.forward_sample_from_root_type(
             root_node_type=Kitchen,
             tf=torch.eye(4),
             name="kitchen"

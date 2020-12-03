@@ -17,15 +17,15 @@ import pyro
 import pyro.distributions as dist
 from pyro import poutine
 
-from scene_grammar.src.nodes import *
-from scene_grammar.src.rules import *
-from scene_grammar.src.tree import *
-from scene_grammar.src.transform_utils import *
-from scene_grammar.src.visualization import *
-from scene_grammar.src.drake_interop import *
-from scene_grammar.src.serialization import *
+from spatial_scene_grammars.nodes import *
+from spatial_scene_grammars.rules import *
+from spatial_scene_grammars.tree import *
+from spatial_scene_grammars.transform_utils import *
+from spatial_scene_grammars.visualization import *
+from spatial_scene_grammars.drake_interop import *
+from spatial_scene_grammars.serialization import *
 
-from grammar_room_layout import *
+from spatial_scene_grammars_examples.kitchen.grammar_room_layout import *
 
 
 def rejection_sample_feasible_tree(num_attempts=999):
@@ -39,7 +39,7 @@ def rejection_sample_feasible_tree(num_attempts=999):
     for attempt_k in range(num_attempts):
         start = time.time()
         pyro.clear_param_store()
-        scene_tree = ParseTree.generate_from_root_type(
+        scene_tree = ParseTree.forward_sample_from_root_type(
             root_node_type=Kitchen,
             name="kitchen",
             tf=torch.eye(4))
