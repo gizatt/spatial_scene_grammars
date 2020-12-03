@@ -17,7 +17,7 @@ if __name__ == "__main__":
     torch.manual_seed(42)
     pyro.clear_param_store()
     trace = pyro.poutine.trace(
-        ParseTree.forward_sample_from_root_type).get_trace(
+        SceneTree.forward_sample_from_root_type).get_trace(
         root_node_type=Kitchen,
         name="kitchen",
         tf=torch.eye(4))

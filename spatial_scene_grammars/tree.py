@@ -11,7 +11,7 @@ def get_tree_root(tree):
         root_node = tree.predecessors(root_node)[0]
     return root_node
 
-class ParseTree(nx.DiGraph):
+class SceneTree(nx.DiGraph):
     def __init__(self):
         nx.DiGraph.__init__(self)
 
@@ -74,7 +74,7 @@ class ParseTree(nx.DiGraph):
                         for new_node in new_nodes:
                             parse_tree.add_node(new_node)
                             parse_tree.add_edge(rule, new_node)
-                            parse_tree = ParseTree._generate_from_node_recursive(parse_tree, new_node)
+                            parse_tree = SceneTree._generate_from_node_recursive(parse_tree, new_node)
 
         return parse_tree
 
@@ -85,7 +85,7 @@ class ParseTree(nx.DiGraph):
         and a list of any arguments required to instantiate it.
         '''
         root_node = root_node_type(**kwargs)
-        parse_tree = ParseTree()
+        parse_tree = SceneTree()
         parse_tree.add_node(root_node)
-        return ParseTree._generate_from_node_recursive(parse_tree, root_node)
+        return SceneTree._generate_from_node_recursive(parse_tree, root_node)
 

@@ -39,7 +39,7 @@ def rejection_sample_feasible_tree(num_attempts=999):
     for attempt_k in range(num_attempts):
         start = time.time()
         pyro.clear_param_store()
-        scene_tree = ParseTree.forward_sample_from_root_type(
+        scene_tree = SceneTree.forward_sample_from_root_type(
             root_node_type=Kitchen,
             name="kitchen",
             tf=torch.eye(4))

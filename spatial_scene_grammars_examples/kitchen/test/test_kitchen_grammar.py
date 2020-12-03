@@ -28,7 +28,7 @@ class FixedSeedKitchenGrammarTests(unittest.TestCase):
         pyro.clear_param_store()
         torch.manual_seed(cls.fixed_seed)
 
-        model = lambda: ParseTree.forward_sample_from_root_type(
+        model = lambda: SceneTree.forward_sample_from_root_type(
             root_node_type=Kitchen,
             tf=torch.eye(4),
             name="kitchen"
