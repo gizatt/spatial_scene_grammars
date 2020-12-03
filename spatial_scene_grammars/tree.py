@@ -79,7 +79,7 @@ class ParseTree(nx.DiGraph):
         return parse_tree
 
     @staticmethod
-    def generate_from_root_type(root_node_type, **kwargs):
+    def forward_sample_from_root_type(root_node_type, **kwargs):
         '''
         Generates an unconditioned parse tree from a root node type
         and a list of any arguments required to instantiate it.
@@ -88,3 +88,4 @@ class ParseTree(nx.DiGraph):
         parse_tree = ParseTree()
         parse_tree.add_node(root_node)
         return ParseTree._generate_from_node_recursive(parse_tree, root_node)
+
