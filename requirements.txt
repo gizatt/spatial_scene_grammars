@@ -1,7 +1,8 @@
 numpy
+scipy
 matplotlib
 networkx
 codecov
-pyro
-pytorch
+pytest-cov
+pyro-ppl # implies torch
 meshcat
