@@ -25,6 +25,7 @@ from .grammar_objects import *
 from .grammar_table import *
 from .grammar_cabinet import *
 
+
 class Kitchen(AndNode, SpatialNode):
     ''' Implements a square-footprint kitchen of varying length/width/height,
     with four walls and a floor. '''
@@ -80,6 +81,7 @@ class Kitchen(AndNode, SpatialNode):
                 #w_wall_rule,
                 #s_wall_rule,
                 floor_rule])
+
 
 class Wall(GeometricSetNode, PhysicsGeometryNode):
     ''' Each wall can produce some number of cabinets on its surface and

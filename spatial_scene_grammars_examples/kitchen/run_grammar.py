@@ -163,9 +163,9 @@ def do_generation_and_simulation(sim_time=10):
     A.draw('test.png')
 
     # Draw generated tree in meshcat.
-    #draw_scene_tree_meshcat(scene_tree, alpha=1.0, node_sphere_size=0.1)
+    draw_scene_tree_meshcat(scene_tree, alpha=0.5, node_sphere_size=0.05)
     # Draw its clearance geometry for debugging.
-    #draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
+    draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
 
     # Simulate the resulting scene, with a PR2 for scale.
     builder, mbp, scene_graph = compile_scene_tree_to_mbp_and_sg(

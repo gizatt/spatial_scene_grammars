@@ -22,9 +22,11 @@ from spatial_scene_grammars.tree import *
 from spatial_scene_grammars.transform_utils import *
 from spatial_scene_grammars.drake_interop import *
 
+
 class KitchenObject():
     ''' Concrete object we might want to manipulate. '''
     pass
+
 
 class MediumBoxObject(TerminalNode, PhysicsGeometryNode, KitchenObject):
     def __init__(self, name, tf):
@@ -150,19 +152,19 @@ class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNode):
 
         # Overriding style choices to just make simple boxes
         # so I can dev some collision stuff.
-        #style_group_options = ["utensils", "foodstuffs"]
+        style_group_options = ["utensils", "foodstuffs"]
         # Do foodstuffs more often than plates and things
-        # style_group_k = pyro.sample("style",
-        #                            dist.Categorical(torch.tensor([0.3, 0.7]))).item()
-        #style_group = style_group_options[style_group_k]
+        style_group_k = pyro.sample("style",
+                                    dist.Categorical(torch.tensor([0.3, 0.7]))).item()
+        style_group = style_group_options[style_group_k]
         # Produce a geometric number of objects within bounds.
         self.register_production_rules(
             production_rule_type=RandomRelativePoseProductionRule,
             production_rule_kwargs={
-                "child_constructor": MediumBoxObject,
+                "child_constructor": RandomKitchenStuff,
                 "child_name": "object",
                 "relative_tf_sampler": self._sample_object_pose,
-        #        "style_group": style_group
+                "style_group": style_group
             },
             geometric_prob=object_production_rate
         )
