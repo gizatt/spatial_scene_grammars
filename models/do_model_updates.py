@@ -19,9 +19,25 @@ from pydrake.all import (
 )
 
 def do_visual_mesh_simplification(input_obj_path, target_tris=1000):
-    # Update the visual mesh, and possible its neighboring MTL
-    # and any referenced textures. No existing files will be changed --
-    # new files will be placed alongside.
+    '''
+    Given an obj path, simplifies the geometry and texture so
+    it renders more easily in meshcat / drake vis by:
+    - Creates a (possibly simplified) mesh alongside it, with a 
+    "_simple_vis.obj" post-fox.
+    - Looks for a texture file at a fixed relative path
+    (../material/textures/texture.png), resizes it to max edge length
+    1024 to decrease size, and saves it alongside the new saved visual
+    mesh with a .png extension.
+
+    No existing files changed -- just new ones added.
+
+    Args:
+    - input_obj_path: String path to obj file
+    - target_tris: Currently unusued, but would be target for mesh decimation.
+
+    Returns:
+    - output obj file path
+    '''
     output_obj_path = input_obj_path[:-4] + "_simple_vis.obj"
     output_texture_path = output_obj_path[:-4] + ".png"
     print("Output path: ", output_texture_path)
@@ -75,9 +91,19 @@ def do_visual_mesh_simplification(input_obj_path, target_tris=1000):
     return output_obj_path
 
 def do_collision_mesh_simplification(input_obj_path, show=False):
-    # Returns a list of new meshs for collision.
-    # These'll be the convex decomp components of the original
-    # mesh.
+    '''
+    Given an obj, performs a convex decomposition of it with
+    trimesh _ vhacd, saving all the parts in a subfolder.
+    
+    Args:
+    - input_obj_path: String path to obj file to decompose
+    - show: Whether to open (and block on) a window to preview
+    the decomposition.
+
+    Returns: (out_paths, inertia)
+    - out_paths: List of generated obj files
+    - inertia: total inertia of the obj, assuming density of 2000 kg/m^3
+    '''
 
     # Create a subdir for the convex decomp parts, as
     # there might be many.
@@ -134,6 +160,21 @@ def do_collision_mesh_simplification(input_obj_path, show=False):
 
 
 def update_sdf_with_convex_decomp(input_file):
+    '''
+    Given an SDF from IgnitionRobotics, produces a new SDF that:
+    - For each visual item, replaces it with a simplified
+    visual item with a simplified texture saved alongside,
+    which are auto-generated next to the original
+    model.
+    - For each collision item, replaces it with a convex
+    decomp of the collision geometry, which is auto-generated
+    next to the original model.
+    - Inserts inertia for each link, calculated from the
+    collision geometry with an assumed constant density.
+    and saves this SDF alongside the original with a
+    "_simplified.sdf" suffix.
+    '''
+
     this_file_path, _ = os.path.split(input_file)
 
     # Open up the SDF as an XML
@@ -219,10 +260,23 @@ if __name__ == "__main__":
     # attach to logger so trimesh messages will be printed to console
     #trimesh.util.attach_to_log()
 
-    #to_update = [
-    #    "Chefmate_8_Frypan/model.sdf"
-    #]
-    to_update = glob.glob("*/*/model.sdf")
+    # Set to_update to grab the model SDFs from extracted
+    # downloaded IgnitionRobotics SDFs.
+    # I assume here that you've downloaded a set of model archives
+    # from the site, and put them each in their own folder in a
+    # data directory somewhere. Each subfolder should have a
+    # model.sdf file next to "meshes" and "materials" folders.
+
+    # e.g. the following directories exist:
+    # <my data dir>/<model name>/model.sdf
+    # <my data dir>/<other>/model.sdf
+
+    data_folder = "/home/gizatt/projects/scene_grammar/models/"
+    # Update a specific model by name.
+    to_update = glob.glob(data_folder + "/*/Chefmate_8_Frypan/model.sdf")
+    # Update all models.
+    #to_update = glob.glob(data_folder + "/*/*/model.sdf")
+    print(to_update)
     for file in to_update:
         print("Processing %s" % file)
         update_sdf_with_convex_decomp(file)
