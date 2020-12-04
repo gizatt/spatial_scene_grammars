@@ -26,3 +26,12 @@ models and objects. No original files are altered -- new ones are made next to t
 This whole pipeline is subject to significant change very soon -- probably to make
 it create ROS-package-wrapped model data folders rather than mixing in the newly
 created assets with the originals.
+
+# Software prereqs
+
+Install trimesh with `pip install trimesh`.
+
+You'll need a backend that can do convex decomposition, too -- IIRC, having
+`blender` on your path *might* be enough. But I usually copy the code out of
+[this setup file from trimesh](https://github.com/mikedh/trimesh/blob/master/docker/builds/vhacd.bash)
+and download a `VHACD` binary and just install it to my system path.
