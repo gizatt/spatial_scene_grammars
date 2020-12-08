@@ -1,0 +1,9 @@
+<package format="2">
+<name>spatial_grammar_models</name>
+<version>0.0.1</version>
+<description>
+	Some of the models used in the kitchen grammar example.
+</description>
+<maintainer email="gizatt@mit.edu">Greg Izatt</maintainer>
+<license>MIT</license>
+</package>

@@ -13,6 +13,8 @@ class PackageHandlingTest(unittest.TestCase):
         # Make a dummy package
         make_default_package_xml("test_package", "/tmp/pkg/test_package/package.xml")
         # See if we can recover the package from ROS_PACKAGE_PATH.
+        if "ROS_PACKAGE_PATH" not in os.environ.keys():
+            os.environ["ROS_PACKAGE_PATH"] = ""
         os.environ["ROS_PACKAGE_PATH"] += ":/tmp/pkg/"
         package_map.PopulateFromEnvironment("ROS_PACKAGE_PATH")
         

@@ -6,6 +6,7 @@ python:
 env:
   global:
   - PYTHONPATH="/opt/drake/lib/python3.6/site-packages"
+  - ROS_PACKAGE_PATH="/opt/drake/share/drake/examples"
   matrix:
   - DRAKE_URL="https://drake-packages.csail.mit.edu/drake/nightly/drake-latest-bionic.tar.gz"
 
@@ -16,6 +17,7 @@ install:
   - pip install .
 
 script:
+  - source ./setup.sh
   - pytest --cov=./
   
 after_success:

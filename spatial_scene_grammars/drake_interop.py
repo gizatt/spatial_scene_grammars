@@ -173,6 +173,7 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
     mbp, scene_graph = AddMultibodyPlantSceneGraph(
         builder, MultibodyPlant(time_step=timestep))
     parser = Parser(mbp)
+    parser.package_map().PopulateFromEnvironment("ROS_PACKAGE_PATH")
     world_body = mbp.world_body()
     node_to_model_id_map = {}
     free_body_poses = []

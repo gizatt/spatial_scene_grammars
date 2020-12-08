@@ -411,7 +411,6 @@ class PackageToMbpAndSgBuilder():
             builder, MultibodyPlant(time_step=timestep))
         parser = Parser(mbp)
         # Make sure Parser looks for everything on ROS_PACKAGE_PATH
-        print(os.environ['ROS_PACKAGE_PATH'])
         parser.package_map().PopulateFromEnvironment("ROS_PACKAGE_PATH")
         world_body = mbp.world_body()
 

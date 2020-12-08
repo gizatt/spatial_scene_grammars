@@ -50,6 +50,8 @@ class FixedSeedKitchenGrammarTests(unittest.TestCase):
     def test_model_directive_serialize_deserialize(self):
         # Can we serialize + deserialize to the model directive format,
         # and recover the same scene (as far as a Drake MBP is concerned)?
+        if "ROS_PACKAGE_PATH" not in os.environ.keys():
+            os.environ["ROS_PACKAGE_PATH"] = ""
         os.environ['ROS_PACKAGE_PATH'] = os.environ['ROS_PACKAGE_PATH'] + ":/tmp/pkg"
         with self.subTest("serialization"):
             # Make sure we can spit out the appropriate files.
