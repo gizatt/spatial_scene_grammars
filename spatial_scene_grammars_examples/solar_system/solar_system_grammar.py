@@ -29,7 +29,7 @@ class OrbitalBody(GeometricSetNode):
 
     class ChildProductionRule(ProductionRule):
         ''' Randomly produces a child planet from a parent planet. '''
-        def sample_products(self, parent):
+        def sample_products(self, parent, child_names):
             # Child planet location and size is a function of the parent.
             # Both are saved associated with the rule to make writing
             # the neighborhood constraint more convenient.
@@ -39,7 +39,7 @@ class OrbitalBody(GeometricSetNode):
                 dist.Uniform(parent.min_child_radius, parent.max_child_radius))
             child_x = parent.x + self.child_orbital_radius
             return [OrbitalBody(
-                name="orbital_body",
+                name=child_names[0],
                 x=child_x,
                 radius=self.child_radius)]
 
@@ -65,7 +65,7 @@ class OrbitalBody(GeometricSetNode):
         
         self.register_production_rules(
             production_rule_type=OrbitalBody.ChildProductionRule,
-            production_rule_kwargs={},
+            production_rule_kwargs={"child_types":[OrbitalBody]},
             geometric_prob= 1.-reproduction_prob
         )
 
@@ -192,6 +192,14 @@ def sample_and_plot_solar_system():
 if __name__ == "__main__":
     torch.set_default_tensor_type(torch.DoubleTensor)
     pyro.enable_validation(True)
+
+    # Print a trace of a solar system generation
+    trace = pyro.poutine.trace(
+        SceneTree.forward_sample_from_root_type).get_trace(
+        root_node_type=OrbitalBody,
+        radius=torch.tensor(100.),
+        x=torch.tensor(0.))
+    print(trace.format_shapes())
 
     for k in range(10):
         sample_and_plot_solar_system()

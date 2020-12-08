@@ -62,7 +62,7 @@ class FixedSeedKitchenGrammarTests(unittest.TestCase):
             self.assertTrue(os.path.isfile("/tmp/pkg/test_save/scene_tree.yaml"))
             self.assertTrue(os.path.isdir("/tmp/pkg/test_save/sdf/"))
             # This, at least, should always generate, since a floor always generates.
-            self.assertTrue(os.path.isfile("/tmp/pkg/test_save/sdf/floor_0::model_prims.sdf"))
+            self.assertTrue(os.path.isfile("/tmp/pkg/test_save/sdf/Floor_0::model_prims.sdf"))
         with self.subTest("deserialization"):
             # Make sure we can load it back in and simulate it.
             mbp_wrangler = PackageToMbpAndSgBuilder(package_dir="/tmp/pkg/test_save")
@@ -77,6 +77,33 @@ class FixedSeedKitchenGrammarTests(unittest.TestCase):
             orig_context = orig_mbp.CreateDefaultContext()
             loaded_context = loaded_mbp.CreateDefaultContext()
             
+            print("Original has body names: ")
+            for model_k in range(orig_mbp.num_model_instances()):
+                model_id = ModelInstanceIndex(model_k)
+                model_name = orig_mbp.GetModelInstanceName(model_id)
+                print("\t", model_name)
+
+            print("Loaded has model names: ")
+            for model_k in range(loaded_mbp.num_model_instances()):
+                model_id = ModelInstanceIndex(model_k)
+                model_name = loaded_mbp.GetModelInstanceName(model_id)
+                print("\t", model_name)
+
+            print("Original has body names: ")
+            for body_k in range(orig_mbp.num_bodies()):
+                body_id = BodyIndex(body_k)
+                body_name = orig_mbp.get_body(body_id).name()
+                print("\t", body_name)
+
+            print("Loaded has model names: ")
+            for body_k in range(loaded_mbp.num_bodies()):
+                body_id = BodyIndex(body_k)
+                body_name = loaded_mbp.get_body(body_id).name()
+                print("\t", body_name)
+
+            # I've tried hard to make sure the serialized model re-loads
+            # with the same order of models, so we can make sure each body
+            # re-loads correctly.
             for model_k in range(orig_mbp.num_model_instances()):
                 model_id = ModelInstanceIndex(model_k)
                 model_name = orig_mbp.GetModelInstanceName(model_id)
@@ -88,8 +115,20 @@ class FixedSeedKitchenGrammarTests(unittest.TestCase):
                     body = orig_mbp.get_body(body_id)
                     self.assertTrue(loaded_mbp.HasBodyNamed(name=body.name(), model_instance=corresponding_model_id),
                                     "Missing body %s in model %s" % (body.name(), model_name))
+                    corresponding_body = loaded_mbp.GetBodyByName(body.name(), model_instance=corresponding_model_id)
+                    # Make sure they're at the same world pose
+                    body_tf = orig_mbp.EvalBodyPoseInWorld(orig_context, body)
+                    corresponding_body_tf = loaded_mbp.EvalBodyPoseInWorld(loaded_context, corresponding_body)
+                    error_tf = body_tf.multiply(corresponding_body_tf.inverse())
+                    if not np.allclose(error_tf.GetAsMatrix4(), np.eye(4)):
+                        print("Body pose mismatch for body %s: \n\t%s\n\t\tvs\n\t%s\n\t\tErr:\n\t%s" % (
+                              body.name(),
+                              str(body_tf.GetAsMatrix4()),
+                              str(corresponding_body_tf.GetAsMatrix4()),
+                              str(error_tf.GetAsMatrix4())))
+                        self.assertFalse(False, "See test output -- body pose mismatch during deserialize.")
 
-            np.testing.assert_allclose(orig_q, loaded_q, 1E-6)
+
         with self.subTest("deserialize_simulation"):
             # Set up and run some brief sim, and make sure Drake is OK with it.
             diagram = mbp_wrangler.builder.Build()

@@ -206,7 +206,6 @@ def save_sdf_with_node_geometry(node, path, root_link_name):
 
     need_dir, _ = os.path.split(path)
     os.makedirs(need_dir, exist_ok=True)
-    print("Out path: ", path)
     et.ElementTree(sdf_root).write(path, pretty_print=True)
     return True
 
@@ -222,10 +221,10 @@ def build_directives_for_node_geometry(node, base_frame_name, package_name, pack
     
     # Spit out an SDF with all of the visual / geometry info, if there's any
     primitive_tf = torch.eye(4)
-    within_package_model_path = os.path.join("sdf", "%s::model_prims.sdf" % base_frame_name)
+    within_package_model_path = os.path.join("sdf", "%s::model_prims.sdf" % node.name)
     # Replace :: with __ to make a safer filename
     # within_package_model_path = within_package_model_path.replace("::", "__")
-    primitive_root_body = "root_link"
+    primitive_root_body = node.name
     if (save_sdf_with_node_geometry(
             node, os.path.join(package_parent_dir, package_name, within_package_model_path),
             primitive_root_body)):
@@ -236,8 +235,10 @@ def build_directives_for_node_geometry(node, base_frame_name, package_name, pack
 
     for (tf, model_path, root_body_name, q0_dict) in model_info_to_add:
         # Add the model itself
-        model_name = "%s::%s_model_%d" % (base_frame_name, node.name, model_k)
+        model_name = "%s::model_%d" % (node.name, model_k)
         full_body_name = "%s::%s" % (model_name, root_body_name)
+        print("Adding ", full_body_name)
+        
         model_k += 1
         directives.append(add_model_directive(
             model_name=model_name,
@@ -284,7 +285,7 @@ def build_directives_for_node(
     directives = []
     my_frame_name = None
     if isinstance(node, SpatialNode):
-        my_frame_name = get_frame_name_for_node(scene_tree, node)
+        my_frame_name = node.name + "_frame"
         # Create our own root frame.
         directives.append(add_frame_directive(
             my_frame_name, base_frame_name, tf
@@ -302,7 +303,7 @@ def build_directives_for_node(
             if isinstance(child_node, SpatialNode) and isinstance(node, SpatialNode):
                 my_tf = torch_tf_to_drake_tf(node.tf)
                 child_tf = torch_tf_to_drake_tf(child_node.tf)
-                child_rel_tf = my_tf.multiply(child_tf.inverse()) # maybe other way around
+                child_rel_tf = child_tf.multiply(my_tf.inverse())
             directives += build_directives_for_node(
                 scene_tree, child_node,
                 base_frame_name=my_frame_name or "WorldBody",
@@ -312,24 +313,6 @@ def build_directives_for_node(
                 package_parent_dir=package_parent_dir
             )
     return directives
-
-
-_used_names = []
-def get_frame_name_for_node(scene_tree, node, prefix=None):
-    # Generates a unique frame name for the node.
-    # TODO This should be done by the tree itself somehow...
-    k = 0
-    def get_candidate_name(node, l, prefix):
-        if prefix:
-            return "%s::%s_%d" % (prefix, node.name, l)
-        else:
-            return "%s_%d" % (node.name, l)
-    name = get_candidate_name(node, k, prefix)
-    while name in _used_names:
-        k += 1
-        name = get_candidate_name(node, k, prefix)
-    _used_names.append(name)
-    return name
 
 def make_default_package_xml(package_name, path):
     template_str = """<package format="2">
@@ -403,9 +386,19 @@ def get_frame_from_full_name(mbp, full_name):
     return mbp.GetFrameByName(model_instance=model_id, name=frame_name)
 
 class PackageToMbpAndSgBuilder():
+    ''' Builds an MBP from a scene tree serialized as a catkin
+    package and model directive YAML. '''
     def __init__(self, package_dir, timestep=0.001):
-        # Builds a MBP from a scene tree serialized as a catkin
-        # package and model directive yaml.
+        '''
+        Args:
+            - package_dir: Directory that contains at least `scene_tree.yaml`
+            and `package.xml` files.
+            - timestep: Simulation timestep for Drake MBP.
+        
+        Will initialize an object of this class with mbp, scene_graph, and
+        builder (DiagramBuilder) members to be used by someone else
+        to build up a diagram for sim.
+        '''
         try:
             from yaml import CLoader as Loader, CDumper as Dumper
         except ImportError:

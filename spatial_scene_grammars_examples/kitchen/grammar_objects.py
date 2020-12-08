@@ -161,8 +161,7 @@ class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNode):
         self.register_production_rules(
             production_rule_type=RandomRelativePoseProductionRule,
             production_rule_kwargs={
-                "child_constructor": RandomKitchenStuff,
-                "child_name": "object",
+                "child_type": RandomKitchenStuff,
                 "relative_tf_sampler": self._sample_object_pose,
                 "style_group": style_group
             },

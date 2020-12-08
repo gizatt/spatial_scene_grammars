@@ -39,36 +39,35 @@ class Kitchen(AndNode, SpatialNode):
         # North is +y
         # East is +x
         n_wall_rule = DeterministicRelativePoseProductionRule(
-            child_constructor=Wall,
-            child_name="north_wall",
+            child_type=Wall,
+            child_postfix="_north",
             relative_tf=pose_to_tf_matrix(torch.tensor([0., kitchen_length/2., 0., 0., 0., 0.])),
             height=kitchen_height,
             width=kitchen_width
         )
         e_wall_rule = DeterministicRelativePoseProductionRule(
-            child_constructor=Wall,
-            child_name="east_wall",
+            child_type=Wall,
+            child_postfix="_east",
             relative_tf=pose_to_tf_matrix(torch.tensor([kitchen_width/2., 0., 0., 0., 0., -np.pi/2.])),
             height=kitchen_height,
             width=kitchen_length
         )
         w_wall_rule = DeterministicRelativePoseProductionRule(
-            child_constructor=Wall,
-            child_name="west_wall",
+            child_type=Wall,
+            child_postfix="_west",
             relative_tf=pose_to_tf_matrix(torch.tensor([-kitchen_width/2., 0., 0., 0., 0., np.pi/2.])),
             height=kitchen_height,
             width=kitchen_length
         )
         s_wall_rule = DeterministicRelativePoseProductionRule(
-            child_constructor=Wall,
-            child_name="south_wall",
+            child_type=Wall,
+            child_postfix="_south",
             relative_tf=pose_to_tf_matrix(torch.tensor([0., -kitchen_length/2., 0., 0., 0., np.pi])),
             height=kitchen_height,
             width=kitchen_width
         )
         floor_rule = DeterministicRelativePoseProductionRule(
-            child_constructor=Floor,
-            child_name="floor",
+            child_type=Floor,
             relative_tf=torch.eye(4),
             width=kitchen_width,
             length=kitchen_length
@@ -107,8 +106,7 @@ class Wall(GeometricSetNode, PhysicsGeometryNode):
         self.register_production_rules(
             production_rule_type=RandomRelativePoseProductionRule,
             production_rule_kwargs={
-                "child_constructor": Cabinet,
-                "child_name": "cabinet",
+                "child_type": Cabinet,
                 "relative_tf_sampler": self._sample_cabinet_pose_on_wall
             },
             geometric_prob=0.5
@@ -141,13 +139,11 @@ class Floor(AndNode, PhysicsGeometryNode):
         # Spawn a table at a determined location.
         # (Currently just for testing item placement.)
         table_spawn_rule = DeterministicRelativePoseProductionRule(
-            child_constructor=Table,
-            child_name="table",
+            child_type=Table,
             relative_tf=pose_to_tf_matrix(torch.tensor([1., 0., 0., 0., 0., 0.]))
         )
         robot_spawn_rule = DeterministicRelativePoseProductionRule(
-            child_constructor=RobotSpawnLocation,
-            child_name="robot_spawn",
+            child_type=RobotSpawnLocation,
             relative_tf=pose_to_tf_matrix(torch.tensor([-1, 0., 0., 0., 0., 0.]))
         )
         self.register_production_rules(

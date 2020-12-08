@@ -60,16 +60,16 @@ def rejection_sample_feasible_tree(num_attempts=999):
         print("Objects on tables: ", [node for node in table_children if isinstance(node, KitchenObject)])
         num_objects_on_tables = len([node for node in table_children if isinstance(node, KitchenObject)])
         print("Num objs on table: ", num_objects_on_tables)
-        if num_objects_on_tables < 3:
+        if num_objects_on_tables < 1:
             continue
 
         # Enforce that there are at least a fews objects in cabinets
-        #cabinets = scene_tree.find_nodes_by_type(Cabinet)
-        #table_children = sum([scene_tree.get_recursive_children_of_node(node) for node in cabinets], [])
-        #num_objects_in_cabinets = len([node for node in table_children if isinstance(node, KitchenObject)])
-        #print("Num objs in cabinets: ", num_objects_in_cabinets)
-        #if num_objects_in_cabinets < 2:
-        #    continue
+        cabinets = scene_tree.find_nodes_by_type(Cabinet)
+        table_children = sum([scene_tree.get_recursive_children_of_node(node) for node in cabinets], [])
+        num_objects_in_cabinets = len([node for node in table_children if isinstance(node, KitchenObject)])
+        print("Num objs in cabinets: ", num_objects_in_cabinets)
+        if num_objects_in_cabinets < 3:
+            continue
 
         
         # Do Collision checking on the clearance geometry, and reject

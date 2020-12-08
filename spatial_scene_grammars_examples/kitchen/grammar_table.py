@@ -42,8 +42,7 @@ class Table(AndNode, PhysicsGeometryNode):
         # Put an object spawning volume on the table surface.
         rules = []
         rules.append(DeterministicRelativePoseProductionRule(
-                child_constructor=PlanarObjectRegion,
-                child_name="table_object_region",
+                child_type=PlanarObjectRegion,
                 relative_tf=pose_to_tf_matrix(torch.tensor(
                     [0., 0., 0.8, 0., 0., 0.])),
                 object_production_rate=0.5,

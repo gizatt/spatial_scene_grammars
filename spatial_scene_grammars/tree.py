@@ -14,6 +14,7 @@ def get_tree_root(tree):
 class SceneTree(nx.DiGraph):
     def __init__(self):
         nx.DiGraph.__init__(self)
+        self._used_node_names = set()
 
     def get_node_parent_or_none(self, node):
         parents = list(self.predecessors(node))
@@ -57,6 +58,19 @@ class SceneTree(nx.DiGraph):
                     new_tree.add_edge(parent, child)
         return new_tree
 
+    def get_unique_name_for_node_type(self, node_type):
+        # Generates a unique name for a new instance of a given
+        # node type.
+        k = 0
+        def get_candidate_name(l):
+            return "%s_%d" % (node_type.__name__, l)
+        name = get_candidate_name(k)
+        while name in self._used_node_names:
+            k += 1
+            name = get_candidate_name(k)
+        self._used_node_names.add(name)
+        return name
+
     @staticmethod
     def _generate_from_node_recursive(parse_tree, parent_node):
         if isinstance(parent_node, TerminalNode):
@@ -70,7 +84,9 @@ class SceneTree(nx.DiGraph):
                     parse_tree.add_edge(parent_node, rule)
 
                     with scope(prefix="prod_%d" % i):
-                        new_nodes = rule.sample_products(parent_node)
+                        new_node_names = [parse_tree.get_unique_name_for_node_type(node_type)
+                                          for node_type in rule.child_types]
+                        new_nodes = rule.sample_products(parent_node, new_node_names)
                         for new_node in new_nodes:
                             parse_tree.add_node(new_node)
                             parse_tree.add_edge(rule, new_node)
@@ -84,8 +100,12 @@ class SceneTree(nx.DiGraph):
         Generates an unconditioned parse tree from a root node type
         and a list of any arguments required to instantiate it.
         '''
-        root_node = root_node_type(**kwargs)
         parse_tree = SceneTree()
+        if "name" not in kwargs.keys():
+            kwargs["name"] = parse_tree.get_unique_name_for_node_type(root_node_type)
+        else:
+            parse_tree._used_node_names.add(kwargs["name"])
+        root_node = root_node_type(**kwargs)
         parse_tree.add_node(root_node)
         return SceneTree._generate_from_node_recursive(parse_tree, root_node)
 
