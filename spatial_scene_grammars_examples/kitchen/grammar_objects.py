@@ -1,4 +1,5 @@
 from functools import partial
+import matplotlib.pyplot as plt
 import numpy as np
 import os
 import time
@@ -35,19 +36,27 @@ class MediumBoxObject(TerminalNode, PhysicsGeometryNode, KitchenObject):
     def _setup(self):
         # Rotate cabinet so it opens away from the wall
         geom_tf = torch.eye(4)
-        # TODO(gizatt) Resource path management to be done here...
-        model_path = "/home/gizatt/drake/examples/kuka_iiwa_arm/models/objects/block_for_pick_and_place_mid_size.urdf"
-        self.register_model_file(tf=geom_tf, model_path=model_path)
 
+        self.width = pyro.sample("width", dist.Uniform(0.05, 0.1))
+        self.height = pyro.sample("height", dist.Uniform(0.05, 0.1))
+        self.depth = pyro.sample("depth", dist.Uniform(0.05, 0.1))
+        self.color = pyro.sample("color", dist.Uniform(0., 1.))
+
+        geometry = Box(width=self.width, depth=self.depth, height=self.height)
+        self.register_geometry(geom_tf, geometry,
+                               color=plt.cm.get_cmap("viridis")(self.color.item()))
+        
 
 class RandomKitchenStuff(TerminalNode, PhysicsGeometryNode, KitchenObject):
     '''
     Randomly samples sdfs of kitchen stuff. Specializably by its
     style attribute.
 
-    TODO: Discrete attributes controlling the branching structure is dangerous...
-    somehow they feel harder to guess than continuous attributes. But I think
-    the logic is the same...
+    TODO: Discrete attributes should be only in sample_rules by my design.
+    But this is some form of discrete shape variation that doesn't alter
+    the tree structure -- so should this be OK, or should I force myself
+    to use an intermediate shape-indeterminant node? (It should be trivial
+    to parse either way...)
     '''
     foodstuffs_paths = glob.glob(
         "/home/gizatt/projects/scene_grammar/models/foodstuffs/*/model_simplified.sdf"
@@ -152,18 +161,18 @@ class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNode):
 
         # Overriding style choices to just make simple boxes
         # so I can dev some collision stuff.
-        style_group_options = ["utensils", "foodstuffs"]
+        #style_group_options = ["utensils", "foodstuffs"]
         # Do foodstuffs more often than plates and things
-        style_group_k = pyro.sample("style",
-                                    dist.Categorical(torch.tensor([0.3, 0.7]))).item()
-        style_group = style_group_options[style_group_k]
+        #style_group_k = pyro.sample("style",
+        #                            dist.Categorical(torch.tensor([0.3, 0.7]))).item()
+        #style_group = style_group_options[style_group_k]
         # Produce a geometric number of objects within bounds.
         self.register_production_rules(
             production_rule_type=RandomRelativePoseProductionRule,
             production_rule_kwargs={
-                "child_type": RandomKitchenStuff,
+                "child_type": MediumBoxObject, #RandomKitchenStuff,
                 "relative_tf_sampler": self._sample_object_pose,
-                "style_group": style_group
+                #"style_group": style_group
             },
             geometric_prob=object_production_rate
         )
