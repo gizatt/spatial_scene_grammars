@@ -136,8 +136,8 @@ class FixedSeedKitchenGrammarTests(unittest.TestCase):
             # Set up and run some brief sim, and make sure Drake is OK with it, and visualize for human
             # check.
 
-            visualizer = ConnectMeshcatVisualizer(mbp_wrangler.builder, mbp_wrangler.scene_graph,
-                zmq_url="default")
+            visualizer = ConnectMeshcatVisualizer(mbp_wrangler.builder, mbp_wrangler.scene_graph
+                zmq_url="new")
             diagram = mbp_wrangler.builder.Build()
             diag_context = diagram.CreateDefaultContext()
             sim = Simulator(diagram)
