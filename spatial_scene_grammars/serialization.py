@@ -236,10 +236,9 @@ def build_directives_for_node_geometry(node, base_frame_name, package_name, pack
     for (tf, model_path, root_body_name, q0_dict) in model_info_to_add:
         # Add the model itself
         model_name = "%s::model_%d" % (node.name, model_k)
-        full_body_name = "%s::%s" % (model_name, root_body_name)
-        print("Adding ", full_body_name)
-        
         model_k += 1
+        full_body_name = "%s::%s" % (model_name, root_body_name)
+        
         directives.append(add_model_directive(
             model_name=model_name,
             model_path=model_path
@@ -290,7 +289,6 @@ def build_directives_for_node(
         directives.append(add_frame_directive(
             my_frame_name, base_frame_name, tf
         ))
-        # TODO: Do I need to weld that frame?
         if isinstance(node, PhysicsGeometryNode):
             directives += build_directives_for_node_geometry(node, my_frame_name, 
                 package_name=package_name,
@@ -303,7 +301,7 @@ def build_directives_for_node(
             if isinstance(child_node, SpatialNode) and isinstance(node, SpatialNode):
                 my_tf = torch_tf_to_drake_tf(node.tf)
                 child_tf = torch_tf_to_drake_tf(child_node.tf)
-                child_rel_tf = child_tf.multiply(my_tf.inverse())
+                child_rel_tf = my_tf.inverse().multiply(child_tf)
             directives += build_directives_for_node(
                 scene_tree, child_node,
                 base_frame_name=my_frame_name or "WorldBody",
@@ -385,6 +383,7 @@ def get_frame_from_full_name(mbp, full_name):
     model_id = mbp.GetModelInstanceByName("::".join(model_name))
     return mbp.GetFrameByName(model_instance=model_id, name=frame_name)
 
+
 class PackageToMbpAndSgBuilder():
     ''' Builds an MBP from a scene tree serialized as a catkin
     package and model directive YAML. '''
@@ -435,7 +434,8 @@ class PackageToMbpAndSgBuilder():
 
             if key == "add_frame":
                 # TODO: What model instance should I add each frame to? Currently
-                # they all wind up in world, I think...
+                # they all wind up in world, I think... which is fine, because
+                # they all have unique full names.
                 base_frame_name, tf = make_tf_from_dict(vals["X_PF"])
                 parent_frame = get_frame_from_full_name(mbp, base_frame_name)
                 new_frame = FixedOffsetFrame(name=vals["name"], P=parent_frame, X_PF=tf)
@@ -496,4 +496,6 @@ class PackageToMbpAndSgBuilder():
             base_tf = self.mbp.CalcRelativeTransform(
                 context, self.mbp.world_frame(),
                 get_frame_from_full_name(self.mbp, base_frame_name))
+            print(base_tf.GetAsMatrix4())
+            print(offset_tf.GetAsMatrix4())
             self.mbp.SetDefaultFreeBodyPose(body, base_tf.multiply(offset_tf))

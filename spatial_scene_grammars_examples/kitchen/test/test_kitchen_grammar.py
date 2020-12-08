@@ -120,23 +120,27 @@ class FixedSeedKitchenGrammarTests(unittest.TestCase):
                     body_tf = orig_mbp.EvalBodyPoseInWorld(orig_context, body)
                     corresponding_body_tf = loaded_mbp.EvalBodyPoseInWorld(loaded_context, corresponding_body)
                     error_tf = body_tf.multiply(corresponding_body_tf.inverse())
-                    if not np.allclose(error_tf.GetAsMatrix4(), np.eye(4)):
-                        print("Body pose mismatch for body %s: \n\t%s\n\t\tvs\n\t%s\n\t\tErr:\n\t%s" % (
-                              body.name(),
+                    if not np.allclose(error_tf.GetAsMatrix4(), np.eye(4), 1E-6):
+                        print("Body pose mismatch for body %s in model %s: \n\t%s\n\t\tvs\n\t%s\n\t\tErr:\n\t%s" % (
+                              body.name(), model_name,
                               str(body_tf.GetAsMatrix4()),
                               str(corresponding_body_tf.GetAsMatrix4()),
                               str(error_tf.GetAsMatrix4())))
-                        self.assertFalse(False, "See test output -- body pose mismatch during deserialize.")
+                        self.assertTrue(False, "See test output -- body pose mismatch during deserialize.")
+
 
 
         with self.subTest("deserialize_simulation"):
-            # Set up and run some brief sim, and make sure Drake is OK with it.
+            # Set up and run some brief sim, and make sure Drake is OK with it, and visualize for human
+            # check.
+
+            visualizer = ConnectMeshcatVisualizer(mbp_wrangler.builder, mbp_wrangler.scene_graph,
+                zmq_url="default")
             diagram = mbp_wrangler.builder.Build()
             diag_context = diagram.CreateDefaultContext()
             sim = Simulator(diagram)
             sim.set_target_realtime_rate(1.0)
             sim.AdvanceTo(0.001)
-
 
 
 if __name__ == '__main__':
