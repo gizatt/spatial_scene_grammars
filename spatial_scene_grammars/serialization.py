@@ -245,14 +245,13 @@ def build_directives_for_node_geometry(node, base_frame_name, package_name, pack
         ))
         if node.fixed:
             # Weld the root body of the model to the pose specified.
-            model_name = model_name + "_frame"
             directives.append(add_frame_directive(
-                frame_name=model_name,
+                frame_name=model_name + "_frame",
                 base_frame_name=base_frame_name,
                 tf=torch_tf_to_drake_tf(tf)
             ))
             directives.append(add_weld_directive(
-                parent_frame_name=model_name,
+                parent_frame_name=model_name + "_frame",
                 child_frame_name=full_body_name
             ))
         else:
@@ -450,13 +449,13 @@ class PackageToMbpAndSgBuilder():
                     vals["name"]
                 )
             elif key == "set_initial_configuration":
-                q0_dict = vals['q0_dict']
+                q0_dict = vals['q0']
                 model_id = mbp.GetModelInstanceByName(vals["model_name"])
                 for joint_name in list(q0_dict.keys()):
-                    q0_this = q0_dict[joint_name]
                     joint = mbp.GetMutableJointByName(
                         joint_name, model_instance=model_id)
                     # Reshape to make Drake happy.
+                    q0_this = np.array(q0_dict[joint_name])
                     q0_this = q0_this.reshape(joint.num_positions(), 1)
                     joint.set_default_positions(q0_this)
             elif key == "set_initial_free_body_pose":
