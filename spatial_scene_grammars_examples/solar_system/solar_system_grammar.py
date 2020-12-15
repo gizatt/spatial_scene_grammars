@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import time
+import sys
 
 import torch
 import torch.distributions.constraints as constraints
@@ -30,6 +31,11 @@ class OrbitalBody(GeometricSetNode):
     class ChildProductionRule(ProductionRule):
         ''' Randomly produces a child planet from a parent planet. '''
         def sample_products(self, parent, child_names):
+            self.trace = pyro.poutine.trace(self._sample_products).get_trace(parent, child_names)
+            print("Self trace: ", self.trace.format_shapes())
+            return self.trace.nodes["_RETURN"]["value"]
+
+        def _sample_products(self, parent, child_names):
             # Child planet location and size is a function of the parent.
             # Both are saved associated with the rule to make writing
             # the neighborhood constraint more convenient.
@@ -201,6 +207,7 @@ if __name__ == "__main__":
         x=torch.tensor(0.))
     print(trace.format_shapes())
 
+    sys.exit(0)
     for k in range(10):
         sample_and_plot_solar_system()
         plt.savefig("solar_system_%03d.png" % k,

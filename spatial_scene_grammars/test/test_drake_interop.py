@@ -5,7 +5,7 @@ from pydrake.all import (
 )
 
 from spatial_scene_grammars.drake_interop import *
-from spatial_scene_grammars.serialization import *
+from spatial_scene_grammars.serialization_model_directive import *
 
 class PackageHandlingTest(unittest.TestCase):
     def test_package_uri_resolving(self):

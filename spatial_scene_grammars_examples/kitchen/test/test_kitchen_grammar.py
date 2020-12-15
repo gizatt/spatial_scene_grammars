@@ -13,7 +13,7 @@ from spatial_scene_grammars.tree import *
 from spatial_scene_grammars.transform_utils import *
 from spatial_scene_grammars.visualization import *
 from spatial_scene_grammars.drake_interop import *
-from spatial_scene_grammars.serialization import *
+from spatial_scene_grammars.serialization_model_directive import *
 
 from spatial_scene_grammars_examples.kitchen.grammar_room_layout import *
 
