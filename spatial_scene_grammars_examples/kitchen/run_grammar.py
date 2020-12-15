@@ -68,7 +68,7 @@ def rejection_sample_feasible_tree(num_attempts=999):
         table_children = sum([scene_tree.get_recursive_children_of_node(node) for node in cabinets], [])
         num_objects_in_cabinets = len([node for node in table_children if isinstance(node, KitchenObject)])
         print("Num objs in cabinets: ", num_objects_in_cabinets)
-        if num_objects_in_cabinets < 3:
+        if num_objects_in_cabinets < 1:
             continue
 
         
@@ -156,7 +156,7 @@ def do_generation_and_simulation(sim_time=10):
     scene_tree, satisfied_clearance = rejection_sample_feasible_tree(num_attempts=1000)
     scene_tree, satisfied_feasibility = project_tree_to_feasibility(scene_tree, num_attempts=3)
 
-    serialize_scene_tree_to_package(scene_tree, package_name='save', package_parent_dir=".", remove_directory=True)
+    serialize_scene_tree_to_package_and_model_directive(scene_tree, package_name='save', package_parent_dir=".", remove_directory=True)
 
     A = nx.nx_agraph.to_agraph(scene_tree)
     A.layout('dot', args='-Nfontsize=10 -Nwidth=".2" -Nheight=".2" -Nmargin=0 -Gfontsize=8')

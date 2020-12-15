@@ -125,13 +125,13 @@ def build_directives_for_node_geometry(node, base_frame_name, package_name, pack
     within_package_model_path = os.path.join("sdf", "%s::model_prims.sdf" % node.name)
     # Replace :: with __ to make a safer filename
     # within_package_model_path = within_package_model_path.replace("::", "__")
-    primitive_root_body = node.name
-    if (save_sdf_with_node_geometry(
-            node, os.path.join(package_parent_dir, package_name, within_package_model_path),
-            primitive_root_body)):
+    new_sdf_path = os.path.join(package_parent_dir, package_name, within_package_model_path)
+    # Important to ignore_static here, since we'll be specifying a weld manually in the
+    # model directive file.
+    if (save_sdf_with_node_geometry(node, new_sdf_path, node.name, ignore_static=True)):
         primitive_model_path_with_pkg = "%s://%s" % (package_name, within_package_model_path)
         model_info_to_add.append((
-            primitive_tf, primitive_model_path_with_pkg, primitive_root_body, None
+            primitive_tf, primitive_model_path_with_pkg, node.name, None
         ))
 
     for (tf, model_path, root_body_name, q0_dict) in model_info_to_add:
@@ -227,7 +227,7 @@ def make_default_package_xml(package_name, path):
     with open(path, "w") as f:
         f.write(template_str % package_name)
 
-def serialize_scene_tree_to_package(
+def serialize_scene_tree_to_package_and_model_directive(
         scene_tree, package_name="saved_scene_tree",
         package_parent_dir="./out/",
         remove_directory=False):

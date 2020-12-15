@@ -42,7 +42,6 @@ def draw_clearance_geometry_meshcat(scene_tree, zmq_url=None, alpha=0.25):
     vis.load(vis.GetMyContextFromRoot(context))
     diagram.Publish(context)
 
-
 def resolve_catkin_package_path(package_map, input_str):
     if "://" in input_str:
         elements = input_str.split("://")
@@ -55,7 +54,6 @@ def resolve_catkin_package_path(package_map, input_str):
         )
     else:
         return input_str
-
 
 def compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree, timestep=0.001, alpha=0.25):
     builder = DiagramBuilder()

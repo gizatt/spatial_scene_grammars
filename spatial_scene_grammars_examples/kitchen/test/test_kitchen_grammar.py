@@ -14,13 +14,14 @@ from spatial_scene_grammars.transform_utils import *
 from spatial_scene_grammars.visualization import *
 from spatial_scene_grammars.drake_interop import *
 from spatial_scene_grammars.serialization_model_directive import *
+from spatial_scene_grammars.serialization_sdf import *
 
 from spatial_scene_grammars_examples.kitchen.grammar_room_layout import *
 
 torch.set_default_tensor_type(torch.DoubleTensor)
 pyro.enable_validation(True)
 
-@pytest.fixture(params=range(10))
+@pytest.fixture(params=range(1))
 def trace(request):
     pyro.clear_param_store()
     torch.manual_seed(request.param)
@@ -56,7 +57,7 @@ def test_model_directive_serialize_deserialize(scene_tree, subtests):
     os.environ['ROS_PACKAGE_PATH'] = os.environ['ROS_PACKAGE_PATH'] + ":/tmp/pkg"
     with subtests.test("serialization"):
         # Make sure we can spit out the appropriate files.
-        serialize_scene_tree_to_package(
+        serialize_scene_tree_to_package_and_model_directive(
             scene_tree,
             package_name='test_save',
             package_parent_dir="/tmp/pkg/",
@@ -66,11 +67,11 @@ def test_model_directive_serialize_deserialize(scene_tree, subtests):
         assert os.path.isdir("/tmp/pkg/test_save/sdf/")
         # This, at least, should always generate, since a floor always generates.
         assert os.path.isfile("/tmp/pkg/test_save/sdf/Floor_0::model_prims.sdf")
-    with subtests.test("serialization"):
+    with subtests.test("deserialization"):
         # Make sure we can load it back in and simulate it.
         mbp_wrangler = PackageToMbpAndSgBuilder(package_dir="/tmp/pkg/test_save")
         mbp_wrangler.Finalize()
-    with subtests.test("serialization"):
+    with subtests.test("mbp_matching"):
         # Double check the set of bodies and frames are identical, and
         # all frames are at the same position.
         _, orig_mbp, _ = compile_scene_tree_to_mbp_and_sg(scene_tree)
@@ -133,13 +134,47 @@ def test_model_directive_serialize_deserialize(scene_tree, subtests):
 
 
 
-    with subtests.test("serialization"):
+    with subtests.test("simulation"):
         # Set up and run some brief sim, and make sure Drake is OK with it, and visualize for human
         # check.
 
         visualizer = ConnectMeshcatVisualizer(mbp_wrangler.builder, mbp_wrangler.scene_graph,
             zmq_url="new", open_browser=False)
         diagram = mbp_wrangler.builder.Build()
+        diag_context = diagram.CreateDefaultContext()
+        sim = Simulator(diagram)
+        sim.set_target_realtime_rate(1.0)
+        sim.AdvanceTo(0.001)
+
+def test_sdf_serialize_deserialize(scene_tree, subtests):
+    # Can we serialize + deserialize to the model directive format,
+    # and recover the same scene (as far as a Drake MBP is concerned)?
+    if "ROS_PACKAGE_PATH" not in os.environ.keys():
+        os.environ["ROS_PACKAGE_PATH"] = ""
+    os.environ['ROS_PACKAGE_PATH'] = os.environ['ROS_PACKAGE_PATH'] + ":/tmp/pkg"
+    out_sdf_name = "/tmp/out_sdf.sdf"
+    with subtests.test("serialization"):
+        # Make sure we can spit out the appropriate files.
+        serialize_scene_tree_to_package_and_single_sdf(
+            scene_tree,
+            out_sdf_name=out_sdf_name)
+        assert os.path.isfile(out_sdf_name)
+
+    with subtests.test("deserialization"):
+        # Make sure we can load it back in and simulate it.
+        builder = DiagramBuilder()
+        loaded_mbp, loaded_scene_graph = AddMultibodyPlantSceneGraph(builder, 0.001)
+        parser = Parser(loaded_mbp)
+        loaded_model_ids = parser.AddAllModelsFromFile(out_sdf_name)
+
+    with subtests.test("simulation"):
+        # Set up and run some brief sim, and make sure Drake is OK with it, and visualize for human
+        # check.
+
+        visualizer = ConnectMeshcatVisualizer(builder, loaded_scene_graph,
+            zmq_url="default", open_browser=False)
+        loaded_mbp.Finalize()
+        diagram = builder.Build()
         diag_context = diagram.CreateDefaultContext()
         sim = Simulator(diagram)
         sim.set_target_realtime_rate(1.0)
