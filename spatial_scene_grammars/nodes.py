@@ -92,7 +92,7 @@ class PhysicsGeometryNode(SpatialNode):
         super().__init__(**kwargs)
 
     def register_model_file(self, tf, model_path, root_body_name=None,
-                            q0_dict=None):
+                            q0_dict={}):
         self.model_paths.append((tf, model_path, root_body_name, q0_dict))
     def register_geometry(self, tf, geometry, color=np.ones(4), friction=default_friction):
         # Shorthand for registering the same geometry as collision + visual.

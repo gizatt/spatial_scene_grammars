@@ -19,7 +19,12 @@ if __name__ == "__main__":
     scene_tree, satisfied_clearance = rejection_sample_feasible_tree(num_attempts=1000)
     #scene_tree, satisfied_feasibility = project_tree_to_feasibility(scene_tree, num_attempts=3)
 
-    serialize_scene_tree_to_package_and_single_sdf(scene_tree, "test.sdf")
+    serialize_scene_tree_to_package_and_single_sdf(
+        scene_tree, "test.sdf",
+        include_static_tag=False, 
+        include_model_files=True,
+        pybullet_compat=False
+    )
 
     builder = DiagramBuilder()
     plant, scene_graph = AddMultibodyPlantSceneGraph(builder, 0.0)
@@ -31,4 +36,4 @@ if __name__ == "__main__":
     diag_context = diagram.CreateDefaultContext()
     sim = Simulator(diagram)
     sim.set_target_realtime_rate(1.0)
-    sim.AdvanceTo(0.001)
+    sim.AdvanceTo(1.0)

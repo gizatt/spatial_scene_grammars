@@ -9,13 +9,18 @@ if __name__ == "__main__":
     pyro.enable_validation(True)
 
     scene_tree, satisfied_clearance = rejection_sample_feasible_tree(num_attempts=1000)
-    #scene_tree, satisfied_feasibility = project_tree_to_feasibility(scene_tree, num_attempts=3)
 
-    serialize_scene_tree_to_package_and_single_sdf(scene_tree, "test.sdf")
+    serialize_scene_tree_to_package_and_single_sdf(
+        scene_tree, "test.sdf",
+        include_static_tag=True, 
+        include_model_files=True,
+        pybullet_compat=True
+    )
+
 
     physicsClient = pybullet.connect(pybullet.GUI)
     pybullet.setGravity(0,0,-9.81)
-    planeId = pybullet.loadSDF("test.sdf")
+    pybullet.loadSDF("test.sdf")
     pybullet.setRealTimeSimulation(1)
     while 1:
         pass

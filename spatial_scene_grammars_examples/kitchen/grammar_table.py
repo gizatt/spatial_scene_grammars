@@ -32,7 +32,7 @@ class Table(AndNode, PhysicsGeometryNode):
 
     def _setup(self):
         geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., 0., 0., 0., 0.]))
-        model_path = "spatial_grammar_models://table/extra_heavy_duty_table_surface_only_collision.sdf"
+        model_path = "spatial_grammar_models://kitchen_models/extra_heavy_duty_table_surface_only_collision.sdf"
         self.register_model_file(tf=geom_tf, model_path=model_path, root_body_name="link")
         geom_tf = pose_to_tf_matrix(torch.tensor([0., 0., 0.6251, 0., 0., 0.]))
         self.register_clearance_geometry(

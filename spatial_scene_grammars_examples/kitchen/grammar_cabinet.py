@@ -31,7 +31,7 @@ class Cabinet(AndNode, PhysicsGeometryNode):
     def _setup(self):
         # Offset cabinet geometry from the wall
         geom_tf = pose_to_tf_matrix(torch.tensor([0.15, 0., 0., 0., 0., 0.]))
-        model_path = "manipulation_station://cupboard.sdf"
+        model_path = "spatial_grammar_models://kitchen_models/cupboard.sdf"
         # Randomly open doors random amounts.
         # Left door is straight  open at -pi/2 and closed at 0.
         left_door_state = pyro.sample("left_door_state",

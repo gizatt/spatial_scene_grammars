@@ -127,8 +127,10 @@ def build_directives_for_node_geometry(node, base_frame_name, package_name, pack
     # within_package_model_path = within_package_model_path.replace("::", "__")
     new_sdf_path = os.path.join(package_parent_dir, package_name, within_package_model_path)
     # Important to ignore_static here, since we'll be specifying a weld manually in the
-    # model directive file.
-    if (save_sdf_with_node_geometry(node, new_sdf_path, node.name, ignore_static=True)):
+    # model directive file. Also important to not copy in the additional model info
+    # into the SDF, since we're handling that separately.
+    if (save_sdf_with_node_geometry(node, new_sdf_path, node.name,
+                                    ignore_static=True, include_model_files=False)):
         primitive_model_path_with_pkg = "%s://%s" % (package_name, within_package_model_path)
         model_info_to_add.append((
             primitive_tf, primitive_model_path_with_pkg, node.name, None
