@@ -34,6 +34,14 @@ def make_sdf_root():
     return sdf_root
 
 
+def tf_from_pose_tag(pose_tag):
+    if "relative_to" in pose_tag.attrib.keys():
+        raise NotImplementedError("Relative to pose not handled")
+    nums = [float(x) for x in pose_tag.text.split()]
+    print(pose_tag.text, "::", nums)
+    return RigidTransform(p=nums[:3], rpy=RollPitchYaw(nums[-3:]))
+
+
 def add_pose_tag(parent_item, tf, relative_to=None):
     assert isinstance(tf, RigidTransform)
     attrib = {}
@@ -208,7 +216,6 @@ def add_node_to_sdf_root(sdf_root, node, link_name, include_static_tag=True,
             # Go set the default joint state of nodes specified in q0_dict.
             for joint_name in list(q0_dict.keys()):
                 q0 = np.array(q0_dict[joint_name]).flatten()
-                print(q0, type(q0), q0.shape)
                 assert len(q0) == 1 or len(q0) == 2, (joint_name, q0)
                 joint_items = model_item.xpath("//joint[@name='%s']" % joint_name)
                 assert len(joint_items) == 1, "Found %d instances of joint named %s" % (len(joint_items), joint_name)
@@ -224,6 +231,58 @@ def add_node_to_sdf_root(sdf_root, node, link_name, include_static_tag=True,
                     assert len(axis_items) == 1
                     initial_position_item = et.SubElement(axis_items[0], "initial_position")
                     initial_position_item.text = str(q0[1])
+
+            # Apply a patch to the joints to deal with pybullet issue #2651: joint poses are ignored.
+            # Instead, we'll insert a very-low-inertia dummy link between the joint
+            # and the child link, positioned such that it acts like the joint offset.
+            if pybullet_compat:
+                for joint_item in model_item.findall(".//joint"):
+                    pose_item = joint_item.find("pose")
+                    if pose_item is not None:
+                        assert "relative_to" not in pose_item.attrib.keys()
+
+                        # Find the corresponding child element.
+                        child_name_item = joint_item.find("child")
+                        assert child_name_item is not None, "Joint %s has no child" % joint_item.attrib["name"]
+
+                        child_items = model_item.xpath("//link[@name='%s']" % child_name_item.text)
+                        assert len(child_items) == 1
+                        child_item = child_items[0]
+
+                        # Extract its pose and calculate desired pose offset
+                        # for the dummy link.
+                        child_pose_item = child_item.find("pose")
+                        if child_pose_item is not None:
+                            child_tf = tf_from_pose_tag(child_pose_item)
+                        else:
+                            child_tf = RigidTransform()
+                        joint_tf = tf_from_pose_tag(pose_item)
+                        # The joint's pose is defined in child link frame by default,
+                        # while a link is defined in the model frame. So figure out what
+                        # the model-frame pose of the joint was supposed to be by multiply
+                        # it into the child pose.
+                        desired_dummy_link_tf = child_tf.multiply(joint_tf)
+
+                        # Add corresponding dummy link at the joint's intended pose offset,
+                        # and remove pose from the joint.
+                        new_link_name = "%s_pose_dummy_link" % joint_item.attrib["name"]
+                        dummy_link_item = et.Element("link", name=new_link_name)
+                        add_pose_tag(dummy_link_item, desired_dummy_link_tf)
+                        joint_item.remove(pose_item)
+                        # Add the new link item before the joint.
+                        model_item.insert(model_item.getchildren().index(joint_item), dummy_link_item)
+
+                        # Weld dummy link to actual child object.
+                        dummy_weld_item = et.Element("joint", name=new_link_name + "_weld", type="fixed")
+                        parent_item = et.SubElement(dummy_weld_item, "parent")
+                        parent_item.text = new_link_name
+                        child_item = et.SubElement(dummy_weld_item, "child")
+                        child_item.text = child_name_item.text
+                        # Add weld in after the dummy link and before the real link.
+                        model_item.insert(model_item.getchildren().index(joint_item), dummy_weld_item)
+
+                        # Finally, set child of joint to our new dummy link.
+                        child_name_item.text = new_link_name
 
 
             sdf_root.append(model_item)
