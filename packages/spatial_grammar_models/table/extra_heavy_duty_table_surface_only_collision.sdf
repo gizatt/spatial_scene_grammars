@@ -1,7 +1,7 @@
+<?xml version="1.0"?>
 <!-- Copied directly from drake/examples/kuka_iiwa_arm/models/table/*.
      Copyright them, etc etc.
      https://github.com/RobotLocomotion/drake/ -->
-<?xml version="1.0"?>
 <sdf version="1.7">
   <model name="extra_heavy_duty_table_surface_only_collision">
     <!--
