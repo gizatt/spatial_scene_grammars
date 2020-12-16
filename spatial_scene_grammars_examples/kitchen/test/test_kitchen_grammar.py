@@ -21,7 +21,7 @@ from spatial_scene_grammars_examples.kitchen.grammar_room_layout import *
 torch.set_default_tensor_type(torch.DoubleTensor)
 pyro.enable_validation(True)
 
-@pytest.fixture(params=range(1))
+@pytest.fixture(params=range(10))
 def trace(request):
     pyro.clear_param_store()
     torch.manual_seed(request.param)
@@ -157,7 +157,11 @@ def test_sdf_serialize_deserialize(scene_tree, subtests):
         # Make sure we can spit out the appropriate files.
         serialize_scene_tree_to_package_and_single_sdf(
             scene_tree,
-            out_sdf_name=out_sdf_name)
+            out_sdf_name=out_sdf_name,
+            include_static_tag=False, 
+            include_model_files=True,
+            pybullet_compat=False
+        )
         assert os.path.isfile(out_sdf_name)
 
     with subtests.test("deserialization"):
@@ -172,7 +176,7 @@ def test_sdf_serialize_deserialize(scene_tree, subtests):
         # check.
 
         visualizer = ConnectMeshcatVisualizer(builder, loaded_scene_graph,
-            zmq_url="default", open_browser=False)
+            zmq_url="new", open_browser=False)
         loaded_mbp.Finalize()
         diagram = builder.Build()
         diag_context = diagram.CreateDefaultContext()

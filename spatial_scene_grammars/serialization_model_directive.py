@@ -129,8 +129,11 @@ def build_directives_for_node_geometry(node, base_frame_name, package_name, pack
     # Important to ignore_static here, since we'll be specifying a weld manually in the
     # model directive file. Also important to not copy in the additional model info
     # into the SDF, since we're handling that separately.
-    if (save_sdf_with_node_geometry(node, new_sdf_path, node.name,
-                                    ignore_static=True, include_model_files=False)):
+    if (save_sdf_with_node_geometry(
+            node, new_sdf_path, node.name,
+            include_static_tag=False, 
+            include_model_files=False,
+            pybullet_compat=False)):
         primitive_model_path_with_pkg = "%s://%s" % (package_name, within_package_model_path)
         model_info_to_add.append((
             primitive_tf, primitive_model_path_with_pkg, node.name, None
