@@ -182,9 +182,9 @@ def add_node_to_sdf_root(sdf_root, node, link_name, include_static_tag=True,
         # And make an XML parser for reading the SDFs
         parser = et.XMLParser(remove_blank_text=True)
         for k, (tf, model_path, root_body_name, q0_dict) in enumerate(node.model_paths):
-            print("Including in %s: " % node.name, tf, model_path, root_body_name, q0_dict)
             # Open up the indicated SDF as XML
             full_model_path = resolve_catkin_package_path(dummy_parser.package_map(), model_path)
+
             data = et.parse(full_model_path, parser=parser)
             imported_sdf_root = data.getroot()
             model_items = imported_sdf_root.findall('.//model')
@@ -212,6 +212,15 @@ def add_node_to_sdf_root(sdf_root, node, link_name, include_static_tag=True,
                     link_items = model_item.findall(".//link")
                     assert len(link_items) == 1, "Specify root_body_name in model %s with more than 1 link" % model_path
                     child_item.text = link_items[0].attrib["name"]
+
+            # Update all uris:
+            for uri_item in model_item.findall(".//uri"):
+                uri = uri_item.text
+                # If it doesn't have a package prefix, and it's not a global path,
+                # it's a relative path to the SDF.
+                if "://" not in uri and uri[0] != "/":
+                    uri = os.path.join(os.path.split(full_model_path)[0], uri)
+                    uri_item.text = uri
 
             # Go set the default joint state of nodes specified in q0_dict.
             for joint_name in list(q0_dict.keys()):

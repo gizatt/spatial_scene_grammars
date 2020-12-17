@@ -1,4 +1,8 @@
-from spatial_scene_grammars_examples.kitchen.run_grammar import rejection_sample_feasible_tree
+from spatial_scene_grammars_examples.kitchen.run_grammar import (
+    rejection_sample_feasible_tree,
+    project_tree_to_feasibility
+)
+
 from spatial_scene_grammars.serialization_sdf import serialize_scene_tree_to_package_and_single_sdf
 import torch
 import pyro
@@ -16,21 +20,28 @@ if __name__ == "__main__":
     torch.set_default_tensor_type(torch.DoubleTensor)
     pyro.enable_validation(True)
 
+    scene_sdf_path = "/tmp/kitchen_scene.sdf"
+
     scene_tree, satisfied_clearance = rejection_sample_feasible_tree(num_attempts=1000)
-    #scene_tree, satisfied_feasibility = project_tree_to_feasibility(scene_tree, num_attempts=3)
+    if not satisfied_clearance:
+        print("WARNING: SCENE TREE NOT SATISFYING CLEARANCE")
+    
+    scene_tree, satisfied_feasibility = project_tree_to_feasibility(scene_tree, num_attempts=3)
+    if not satisfied_feasibility:
+        print("WARNING: SCENE TREE NOT SATISFYING FEASIBILITY, SIM MAY FAIL")
 
     serialize_scene_tree_to_package_and_single_sdf(
-        scene_tree, "test.sdf",
-        include_static_tag=False, 
+        scene_tree, scene_sdf_path,
+        include_static_tag=True, 
         include_model_files=True,
         pybullet_compat=False
     )
 
     builder = DiagramBuilder()
-    plant, scene_graph = AddMultibodyPlantSceneGraph(builder, 0.0)
+    plant, scene_graph = AddMultibodyPlantSceneGraph(builder, 0.001)
     parser = Parser(plant)
-    parser.AddAllModelsFromFile("test.sdf")
-    meshcat_vis = ConnectMeshcatVisualizer(builder, scene_graph, zmq_url="default")
+    parser.AddAllModelsFromFile(scene_sdf_path)
+    meshcat_vis = ConnectMeshcatVisualizer(builder, scene_graph, zmq_url="default", geometry_role_type="proximity")
     plant.Finalize()
     diagram = builder.Build()
     diag_context = diagram.CreateDefaultContext()
