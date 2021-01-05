@@ -242,15 +242,12 @@ def update_sdf_with_convex_decomp(input_file):
             mass_item.text = '{:.2E}'.format(inertia.get_mass())
             I = [['{:.4E}'.format(y) for y in x]  # NOQA
                  for x in inertia.CalcRotationalInertia().CopyToFullMatrix3()[:]]
-            ET.SubElement(
-                inertial,
-                'inertia',
-                ixx=I[0][0],
-                ixy=I[0][1],
-                ixz=I[0][2],
-                iyy=I[1][1],
-                iyz=I[1][2],
-                izz=I[2][2])
+            inertia_item = ET.SubElement(inertial, 'inertia')
+            for key, value in zip(
+                    ["ixx", "ixy", "ixz", "iyy", "iyz", "izz"],
+                    [I[0][0], I[0][1], I[0][2], I[1][1], I[1][2], I[2][2]]):
+                item = ET.SubElement(inertia_item, key)
+                item.text = value
 
 
     output_path = input_file[:-4] + "_simplified.sdf"
@@ -275,7 +272,7 @@ if __name__ == "__main__":
     # Update a specific model by name.
     to_update = glob.glob(data_folder + "/*/Chefmate_8_Frypan/model.sdf")
     # Update all models.
-    #to_update = glob.glob(data_folder + "/*/*/model.sdf")
+    to_update = glob.glob(data_folder + "/*/*/model.sdf")
     print(to_update)
     for file in to_update:
         print("Processing %s" % file)
