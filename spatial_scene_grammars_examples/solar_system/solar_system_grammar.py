@@ -1,3 +1,4 @@
+from functools import partial
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -30,17 +31,13 @@ class OrbitalBody(GeometricSetNode):
 
     class ChildProductionRule(ProductionRule):
         ''' Randomly produces a child planet from a parent planet. '''
-        def sample_products(self, parent, child_names):
-            self.trace = pyro.poutine.trace(self._sample_products).get_trace(parent, child_names)
-            print("Self trace: ", self.trace.format_shapes())
-            return self.trace.nodes["_RETURN"]["value"]
-
         def _sample_products(self, parent, child_names):
             # Child planet location and size is a function of the parent.
             # Both are saved associated with the rule to make writing
             # the neighborhood constraint more convenient.
             self.child_orbital_radius = pyro.sample("child_orbital_radius", 
-                dist.Uniform(parent.min_child_orbital_radius, parent.max_child_orbital_radius))
+                dist.Uniform(parent.min_child_orbital_radius,
+                             parent.max_child_orbital_radius))
             self.child_radius = pyro.sample("child_radius",
                 dist.Uniform(parent.min_child_radius, parent.max_child_radius))
             child_x = parent.x + self.child_orbital_radius
@@ -67,7 +64,7 @@ class OrbitalBody(GeometricSetNode):
         # chance of stopping at each new planet)
         # when the radius hits 0.7.
         assert self.radius > 0.
-        reproduction_prob = torch.min(self.radius, torch.tensor(0.7))
+        reproduction_prob = torch.min(self.radius, torch.tensor(0.5))
         
         self.register_production_rules(
             production_rule_type=OrbitalBody.ChildProductionRule,
@@ -76,7 +73,7 @@ class OrbitalBody(GeometricSetNode):
         )
 
 
-class ClearNeighborhoodConstraint(Constraint):
+class ClearNeighborhoodConstraint(ContinuousVariableConstraint):
     def __init__(self):
         # Hard-coded "neighborhood" size
         self.neighborhood_size_ratio = 15.0
@@ -115,7 +112,7 @@ class ClearNeighborhoodConstraint(Constraint):
         print("Min SDF: ", min(signed_dist))
         return min(signed_dist)
 
-class PlanetCountConstraint(Constraint):
+class PlanetCountConstraint(TopologyConstraint):
     def __init__(self):
         super().__init__(lower_bound=torch.tensor(2.0), upper_bound=torch.tensor(np.inf))
     def eval(self, scene_tree):
@@ -124,9 +121,9 @@ class PlanetCountConstraint(Constraint):
         print("Num planets: ", len(list(scene_tree.successors(sun))))
         return torch.tensor(len(list(scene_tree.successors(sun))))
 
-class MoonCountConstraint(Constraint):
+class MoonCountConstraint(TopologyConstraint):
     def __init__(self):
-        super().__init__(lower_bound=torch.tensor(1.0), upper_bound=torch.tensor(np.inf))
+        super().__init__(lower_bound=torch.tensor(1.0), upper_bound=torch.tensor(2.))
     def eval(self, scene_tree):
         # Counts how many moons each planet has
         simplified_tree = scene_tree.get_tree_without_production_rules()
@@ -141,42 +138,27 @@ class MoonCountConstraint(Constraint):
         print("Num children per child: ", num_children_per_child)
         return torch.min(num_children_per_child)
 
-def sample_and_plot_solar_system():
-    # Create clear-your-neighborhood constraint
-    scene_tree, success = sample_tree_from_root_type_with_constraints(
-            root_node_type=OrbitalBody,
-            root_node_type_kwargs={
-                "name":"sun",
-                "radius": torch.tensor(100.),
-                "x": torch.tensor(0.)
-            },
-            constraints=[
-                ClearNeighborhoodConstraint(),
-                PlanetCountConstraint(),
-                MoonCountConstraint()
-            ],
-            max_num_attempts=1000
-    )
-    if not success:
-        print("WARNING: SAMPLING UNSUCCESSFUL")
-
+def draw_solar_system(scene_tree, fig=None, ax=None):
     sun = get_tree_root(scene_tree)
     # Override sun color to yellow
     sun.color = torch.tensor(1.0)
     all_bodies = scene_tree.find_nodes_by_type(OrbitalBody)
     
     planet_locations = np.vstack([planet.x.item() for planet in all_bodies])
-    print(planet_locations.shape)
     planet_radii = [planet.radius.item() for planet in all_bodies]
     planet_colors = [planet.color.item() for planet in all_bodies]
 
-    fig = plt.figure(dpi=300, facecolor='black').set_size_inches(13, 2)
-    ax = plt.gca()
+    if not fig:
+        print("New fig")
+        fig = plt.figure(dpi=300, facecolor='black')
+        fig.set_size_inches(13, 2)
+    if not ax:
+        ax = plt.gca()
+    else:
+        ax.clear()
     cm = plt.get_cmap("viridis")
 
-    print("Radii: ", planet_radii)
-
-    plt.axhline(0., linestyle="--", color="white", linewidth=1, zorder=-1)
+    ax.axhline(0., linestyle="--", color="white", linewidth=1, zorder=-1)
     # For each planet, plot the orbits of the children and the planet istelf
     for k, planet in enumerate(all_bodies):
         child_rules = list(scene_tree.successors(planet))
@@ -189,31 +171,60 @@ def sample_and_plot_solar_system():
         ax.add_artist(
             plt.Circle([planet_locations[k, :], 0.], planet_radii[k], color=cm(planet_colors[k]))
         )
-    plt.xlim(-100, 1100)
-    plt.ylim(-100, 100)
+    ax.set_xlim(-100, 1100)
+    ax.set_ylim(-100, 100)
     ax.axis("off")
     ax.set_aspect('equal')
-    plt.pause(0.1)
+    plt.pause(0.01)
+    #plt.waitforbuttonpress()
+
+def sample_and_plot_solar_system():
+    # Create clear-your-neighborhood constraint
+
+    fig = plt.figure(dpi=300, facecolor='black')
+    fig.set_size_inches(13, 2)
+    ax = plt.gca()
+
+    scene_tree, success = sample_tree_from_root_type_with_constraints(
+            root_node_type=OrbitalBody,
+            root_node_type_kwargs={
+                "name":"sun",
+                "radius": torch.tensor(100.),
+                "x": torch.tensor(0.)
+            },
+            constraints=[
+                ClearNeighborhoodConstraint(),
+                PlanetCountConstraint(),
+                MoonCountConstraint()
+            ],
+            max_num_attempts=1000,
+            backend="rejection_then_hmc",
+            callback=partial(draw_solar_system, fig=fig, ax=ax)
+    )
+    if not success:
+        print("WARNING: SAMPLING UNSUCCESSFUL")
+    draw_solar_system(scene_tree)
+    
 
 if __name__ == "__main__":
     torch.set_default_tensor_type(torch.DoubleTensor)
     pyro.enable_validation(True)
 
     # Print a trace of a solar system generation
-    trace = pyro.poutine.trace(
-        SceneTree.forward_sample_from_root_type).get_trace(
-        root_node_type=OrbitalBody,
-        radius=torch.tensor(100.),
-        x=torch.tensor(0.))
-    print(trace.format_shapes())
-
-    sys.exit(0)
-    for k in range(10):
+    #trace = pyro.poutine.trace(
+    #    SceneTree.forward_sample_from_root_type).get_trace(
+    #    root_node_type=OrbitalBody,
+    #    radius=torch.tensor(100.),
+    #    x=torch.tensor(0.))
+    #print(trace.format_shapes())
+#
+    #sys.exit(0)
+    for k in range(1):
         sample_and_plot_solar_system()
         plt.savefig("solar_system_%03d.png" % k,
                     facecolor=plt.gcf().get_facecolor(), edgecolor='none',
                     pad_inches=0., dpi=300, bbox_inches='tight')
-        #plt.show()
+        plt.show()
         #plt.waitforbuttonpress()
-        plt.close(plt.gcf())
+        #plt.close(plt.gcf())
     

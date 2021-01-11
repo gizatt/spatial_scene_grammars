@@ -1,9 +1,24 @@
 import numpy as np
 import networkx as nx
 import torch
+import pyro
+import pyro.distributions as dist
 from .nodes import Node
-from .factors import ExtraSceneFactor
+from .rules import ProductionRule
+from .factors import TopologyConstraint, ContinuousVariableConstraint
 from .tree import SceneTree
+
+
+def eval_total_constraint_set_violation(scene_tree, constraints):
+    # Returns the total violation across all constraints, summed
+    # into one number.
+    total_violation = 0.
+    for constraint in constraints:
+        max_violation, lower_violation, upper_violation = constraint.eval_violation(scene_tree)
+        total_violation += torch.sum(torch.clamp(lower_violation, 0., np.inf))
+        total_violation += torch.sum(torch.clamp(upper_violation, 0., np.inf))
+    return total_violation
+
 
 def _sample_backend_rejection(
         root_node_type, root_node_type_kwargs,
@@ -14,24 +29,9 @@ def _sample_backend_rejection(
     current_best_scene_tree = None
     current_best_violation = torch.tensor(np.inf)
     for k in range(max_num_attempts):
-        print("Attempt %d" % k)
         scene_tree = SceneTree.forward_sample_from_root_type(
             root_node_type, **root_node_type_kwargs)
-        total_violation = 0.
-        for constraint in constraints:
-            val = constraint.eval(scene_tree)
-            # If the lower bound is -inf, go ahead and say no violation here.
-            # TODO: This'll break for vector-valued constraints...
-            if torch.isinf(constraint.lower_bound) and constraint.lower_bound < 0:
-                lower_violation = torch.tensor(0.)
-            else:
-                lower_violation = torch.max(constraint.lower_bound - val)
-            if torch.isinf(constraint.upper_bound) and constraint.upper_bound > 0:
-                upper_violation = torch.tensor(0.)
-            else:
-                upper_violation = torch.max(val - constraint.upper_bound)
-            max_violation = torch.max(lower_violation, upper_violation)
-            total_violation += torch.max(max_violation, torch.tensor(0.0))
+        total_violation = eval_total_constraint_set_violation(scene_tree, constraints)
         if total_violation <= torch.tensor(0.0):
             return scene_tree, True
         if torch.isinf(current_best_violation) or total_violation <= current_best_violation:
@@ -41,6 +41,102 @@ def _sample_backend_rejection(
     print("Current best tree has violation ", current_best_violation)
     return current_best_scene_tree, False
 
+
+def _sample_backend_rejection_and_hmc(
+        root_node_type, root_node_type_kwargs,
+        constraints, max_num_attempts=100, callback=None):
+    # Rejection sample to get a feasible configuration w.r.t. topology
+    # constraints, and then perform HMC for the continuous constraints.
+    # CRITICAL TODO: I don't think this is actually sampling from the
+    # constrained distribution properly if it doesn't circle back after
+    # the HMC and resample the tree structure in a blocked Gibbs sampler
+    # sort of scheme. Though I'm not 100% sure of that... this strategy is
+    # what prior work uses occasionally.
+
+    # Start out sampling a tree with rejection sampling, but only
+    # check the topology-related constraints.
+    topology_constraints = []
+    continuous_constraints = []
+    for c in constraints:
+        if isinstance(c, TopologyConstraint):
+            topology_constraints.append(c)
+        elif isinstance(c, ContinuousVariableConstraint):
+            continuous_constraints.append(c)
+        else:
+            raise ValueError("Bad constraint: not a topology or continuous variable constraint.")
+
+    scene_tree = None
+    current_best_violation = torch.tensor(np.inf)
+    topology_feasible = False
+    for k in range(max_num_attempts):
+        orig_trace = pyro.poutine.trace(
+            SceneTree.forward_sample_from_root_type).get_trace(
+                root_node_type, **root_node_type_kwargs)
+        scene_tree = orig_trace.nodes["_RETURN"]["value"]
+        total_violation = eval_total_constraint_set_violation(scene_tree, topology_constraints)
+        if total_violation <= torch.tensor(0.0):
+            topology_feasible = True
+            break
+        if torch.isinf(current_best_violation) or total_violation <= current_best_violation:
+            current_best_violation = total_violation
+
+    if not topology_feasible:
+        print("Couldn't achieve even just the topology constraints on their own via rejection sampling.")
+        return scene_tree, False
+
+    # Now do HMC on the continuous variables that are involved
+    # in the constraints.
+
+    # 1) Separate out a list of all of the site names of continuous variables that can affect
+    # the continuous constraints.
+    continuous_var_names = []
+    for node in scene_tree:
+        if isinstance(node, ProductionRule):
+            continuous_var_names += node.get_local_variable_names()
+
+    # 2) Create a sub-model for HMC by conditioning the original forward model on the
+    # remaining variables, and adding additional factors to the sub-model implementing
+    # the continuous variable constraints as Gibbs factors.
+    discrete_var_names_and_vals = {}
+    for key, value in orig_trace.nodes.items():
+        if key not in ["_RETURN", "_INPUT"] and key not in continuous_var_names:
+            discrete_var_names_and_vals[key] = value["value"]
+
+    def hmc_model():
+        # This handle runs the continuous model forward, conditioning all the same
+        # discrete choices to be made.
+        only_continuous_model = pyro.poutine.condition(
+                SceneTree.forward_sample_from_root_type,
+                data=discrete_var_names_and_vals)
+        scene_tree = only_continuous_model(root_node_type, **root_node_type_kwargs)
+
+        err_distribution = dist.Exponential(rate=100.)
+        for k, c in enumerate(continuous_constraints):
+            # TODO: How do I actually score these factors properly?
+            # A factor graph / Gibbs distribution approach is not easily
+            # normalizable here... for now, I'm doing something "not right"
+            # / not normalized, and I think Pyro will handle it and do something
+            # approximately correct, but this isn't clean.
+            max_violation, _, _ = c.eval_violation(scene_tree)
+            # Score the violation numbers themselves with an exponential that falls
+            # off rapidly as the violation goes positive.
+            positive_violations = torch.clamp(max_violation, 0., np.inf)
+            pyro.sample("dist_%d_err", err_distribution, obs=positive_violations)
+            print("positive_violations: ", positive_violations)
+
+        if callback:
+            callback(scene_tree)
+
+    # 3) Run HMC.
+    #init_params, potential_fn, transforms, _ = pyro.infer.mcmc.util.initialize_model(hmc_model, model_args=())
+    #hmc_kernel = pyro.infer.mcmc.NUTS(potential_fn=potential_fn, target_accept_prob=0.3, adapt_step_size=True)
+    hmc_kernel = pyro.infer.mcmc.HMC(hmc_model, num_steps=5, step_size=0.1, adapt_step_size=True)
+    mcmc = pyro.infer.mcmc.MCMC(hmc_kernel, num_samples=50)
+    mcmc.run()
+    samples = mcmc.get_samples()
+
+    print("Winning trace: ", orig_trace.nodes)
+    return scene_tree, False
 
 def sample_tree_from_root_type_with_constraints(
         root_node_type,
@@ -82,6 +178,8 @@ def sample_tree_from_root_type_with_constraints(
 
     if backend == "rejection":
         backend_handler = _sample_backend_rejection
+    elif backend == "rejection_then_hmc":
+        backend_handler = _sample_backend_rejection_and_hmc
     else:
         raise ValueError("Backend type %s" % backend)
 

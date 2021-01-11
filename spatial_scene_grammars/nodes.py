@@ -29,6 +29,7 @@ class Node():
     def _setup(self):
         raise NotImplementedError()
 
+
 class SpatialNode(Node):
     ''' Contract that a class with this mixin has a 'tf' attribute,
     which is a 4x4 tf matrix representing the node's pose in world

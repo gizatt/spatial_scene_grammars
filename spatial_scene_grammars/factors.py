@@ -3,6 +3,22 @@ import networkx as nx
 import torch
 from .nodes import TerminalNode, Node
 
+
+'''
+
+Clearly, this is gonna be an important and hard part of this system
+to get right.
+
+Unorganized thoughts:
+- HMC should work for factors on continuous properties, I think?
+  - How do I tell which registered constraints can be HMC-d? What if
+  a node's continuous properties affect the way it'll produce children?
+- Simple "existence of node" or "existence of subtree" constraints
+may be an easier class than general topology constraints?
+
+'''
+
+
 class Constraint():
     '''
     To be used in combination with constraint-wrapping
@@ -19,40 +35,29 @@ class Constraint():
     def eval(self, scene_tree):
         raise NotImplementedError()
 
+    def eval_violation(self, scene_tree):
+        # Return (max violation, lower_violation, upper_violation) vectors
+        val = self.eval(scene_tree)
+        lower_violation = self.lower_bound - val
+        lower_violation[torch.isinf(self.lower_bound)] = 0.
+        upper_violation = val - self.upper_bound
+        upper_violation[torch.isinf(self.upper_bound)] = 0.
+        max_violation = torch.max(lower_violation, upper_violation)
+        return max_violation, lower_violation, upper_violation
 
-class ExtraSceneFactor():
-    '''
-    Represents a factor (a constraint or affinity function)
-    on a SceneTree or subtree.
 
-    These are constructed given a SceneTree; at construction
-    time, depending on the type of constraint, I expect
-    a constraint to ajopqwjop
-    TODO
-    These are half factory, half evaluation: at construction
-    time, an InducedConstraint takes a 
+class ContinuousVariableConstraint(Constraint):
+    pass
 
-    - Constraints have a lower and upper scalar or vector bound.
-    - Constraints have an evaluation function that maps
-    a scene tree or subtree (as a nx network) to an output scalar
-    or vector value of dimensionality matching the bounds.
+class TopologyConstraint(Constraint):
+    pass
 
-    TODO: This'll have to interoperate with a Gibbs-distribution-based
-    energy/scoring model. Should that be part of the constraint,
-    or another entity that consumes the constraint? Separation seems
-    "cleaner" but more complex.
-    '''
-    def __init__(self):
-        super().__init__()
 
-    def eval(self, scene_subtree):
-        raise NotImplementedError()
-
-class NumberOfChildrenFactor(Constraint):
+class NumberOfChildrenFactor(TopologyConstraint):
     ''' Scores the number of nodes in the given scene subtree. '''
     pass
 
-class ClearanceConstraint(Constraint):
+class ClearanceConstraint(ContinuousVariableConstraint):
     ''' Extracts the PhysicsGeometryNodes in the supplied
     tree, '''
 
@@ -67,7 +72,7 @@ class ClearanceConstraint(Constraint):
             mbp_clearance, mbp_context, -0.01)
         return constraint.Eval(mbp_clearance.GetPositions(mbp_context))
 
-class PhysicalFeasibilityConstraint(Constraint):
+class PhysicalFeasibilityConstraint(ContinuousVariableConstraint):
     '''
     Given a set of 
     '''

@@ -13,7 +13,8 @@ from pydrake.all import (
     Parser,
     ConnectMeshcatVisualizer,
     Simulator,
-    DiagramBuilder
+    DiagramBuilder,
+    Role
 )
 
 if __name__ == "__main__":
@@ -41,10 +42,10 @@ if __name__ == "__main__":
     plant, scene_graph = AddMultibodyPlantSceneGraph(builder, 0.001)
     parser = Parser(plant)
     parser.AddAllModelsFromFile(scene_sdf_path)
-    meshcat_vis = ConnectMeshcatVisualizer(builder, scene_graph, zmq_url="default", geometry_role_type="proximity")
+    meshcat_vis = ConnectMeshcatVisualizer(builder, scene_graph, zmq_url="default")
     plant.Finalize()
     diagram = builder.Build()
     diag_context = diagram.CreateDefaultContext()
     sim = Simulator(diagram)
     sim.set_target_realtime_rate(1.0)
-    sim.AdvanceTo(1.0)
+    sim.AdvanceTo(30.0)
