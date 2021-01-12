@@ -72,7 +72,6 @@ class OrbitalBody(GeometricSetNode):
             geometric_prob= 1.-reproduction_prob
         )
 
-
 class ClearNeighborhoodConstraint(ContinuousVariableConstraint):
     def __init__(self):
         # Hard-coded "neighborhood" size
@@ -109,7 +108,7 @@ class ClearNeighborhoodConstraint(ContinuousVariableConstraint):
         constraints = []
         all_bodies = scene_tree.find_nodes_by_type(OrbitalBody)
         signed_dist = [self._eval_for_single_body(scene_tree, body) for body in all_bodies]
-        print("Min SDF: ", min(signed_dist))
+        #print("Min SDF: ", min(signed_dist))
         return min(signed_dist)
 
 class PlanetCountConstraint(TopologyConstraint):
@@ -118,7 +117,7 @@ class PlanetCountConstraint(TopologyConstraint):
     def eval(self, scene_tree):
         # Counts how many planets the sun has
         sun = get_tree_root(scene_tree)
-        print("Num planets: ", len(list(scene_tree.successors(sun))))
+        #print("Num planets: ", len(list(scene_tree.successors(sun))))
         return torch.tensor(len(list(scene_tree.successors(sun))))
 
 class MoonCountConstraint(TopologyConstraint):
@@ -135,7 +134,7 @@ class MoonCountConstraint(TopologyConstraint):
             len(list(simplified_tree.successors(planet)))
             for planet in planets
         ])
-        print("Num children per child: ", num_children_per_child)
+        #print("Num children per child: ", num_children_per_child)
         return torch.min(num_children_per_child)
 
 def draw_solar_system(scene_tree, fig=None, ax=None):
@@ -176,6 +175,8 @@ def draw_solar_system(scene_tree, fig=None, ax=None):
     ax.axis("off")
     ax.set_aspect('equal')
     plt.pause(0.01)
+    #print("Planetl ocations: ", planet_locations)
+    #print("Planet radii: ", planet_radii)
     #plt.waitforbuttonpress()
 
 def sample_and_plot_solar_system():
@@ -209,7 +210,7 @@ def sample_and_plot_solar_system():
 if __name__ == "__main__":
     torch.set_default_tensor_type(torch.DoubleTensor)
     pyro.enable_validation(True)
-
+    torch.manual_seed(43)
     # Print a trace of a solar system generation
     #trace = pyro.poutine.trace(
     #    SceneTree.forward_sample_from_root_type).get_trace(

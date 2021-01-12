@@ -110,31 +110,32 @@ def _sample_backend_rejection_and_hmc(
                 data=discrete_var_names_and_vals)
         scene_tree = only_continuous_model(root_node_type, **root_node_type_kwargs)
 
-        err_distribution = dist.Exponential(rate=100.)
+        clamped_error_distribution = dist.Normal(0., 0.01)
         for k, c in enumerate(continuous_constraints):
-            # TODO: How do I actually score these factors properly?
-            # A factor graph / Gibbs distribution approach is not easily
-            # normalizable here... for now, I'm doing something "not right"
-            # / not normalized, and I think Pyro will handle it and do something
-            # approximately correct, but this isn't clean.
+            # TODO: How do I actually score these factors properly? This isn't
+            # clean or right...
             max_violation, _, _ = c.eval_violation(scene_tree)
             # Score the violation numbers themselves with an exponential that falls
             # off rapidly as the violation goes positive.
             positive_violations = torch.clamp(max_violation, 0., np.inf)
-            pyro.sample("dist_%d_err", err_distribution, obs=positive_violations)
-            print("positive_violations: ", positive_violations)
-
+            #print("positive_violations: ", positive_violations)
+            pyro.sample("dist_%d_err" % k, clamped_error_distribution, obs=positive_violations)
+            
         if callback:
             callback(scene_tree)
 
     # 3) Run HMC.
     #init_params, potential_fn, transforms, _ = pyro.infer.mcmc.util.initialize_model(hmc_model, model_args=())
     #hmc_kernel = pyro.infer.mcmc.NUTS(potential_fn=potential_fn, target_accept_prob=0.3, adapt_step_size=True)
-    hmc_kernel = pyro.infer.mcmc.HMC(hmc_model, num_steps=5, step_size=0.1, adapt_step_size=True)
-    mcmc = pyro.infer.mcmc.MCMC(hmc_kernel, num_samples=50)
+    hmc_kernel = pyro.infer.mcmc.HMC(hmc_model, num_steps=5, step_size=0.01, target_accept_prob=0.5, adapt_step_size=True, adapt_mass_matrix=True,
+        init_strategy=pyro.infer.autoguide.initialization.init_to_sample)
+    mcmc = pyro.infer.mcmc.MCMC(hmc_kernel, num_samples=200)
     mcmc.run()
     samples = mcmc.get_samples()
 
+    print("Samples: ", samples)
+
+    mcmc.summary()
     print("Winning trace: ", orig_trace.nodes)
     return scene_tree, False
 
