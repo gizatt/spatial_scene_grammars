@@ -35,11 +35,16 @@ class OrbitalBody(GeometricSetNode):
             # Child planet location and size is a function of the parent.
             # Both are saved associated with the rule to make writing
             # the neighborhood constraint more convenient.
-            self.child_orbital_radius = pyro.sample("child_orbital_radius", 
+
+            self.child_orbital_radius = pyro.sample(
+                "child_orbital_radius",
                 dist.Uniform(parent.min_child_orbital_radius,
                              parent.max_child_orbital_radius))
-            self.child_radius = pyro.sample("child_radius",
-                dist.Uniform(parent.min_child_radius, parent.max_child_radius))
+                
+            self.child_radius = pyro.sample(
+                "child_radius",
+                dist.Uniform(parent.min_child_radius,
+                             parent.max_child_radius))
             child_x = parent.x + self.child_orbital_radius
             return [OrbitalBody(
                 name=child_names[0],
@@ -56,8 +61,8 @@ class OrbitalBody(GeometricSetNode):
 
         self.min_child_orbital_radius = self.radius*2.
         self.max_child_orbital_radius = self.radius*10.
-        self.min_child_radius = self.radius * 0.01
-        self.max_child_radius = self.radius * 0.1
+        self.min_child_radius = self.radius * 0.001
+        self.max_child_radius = self.radius * 0.01
 
         # Geometric rate increases linearly with
         # radius until saturating at 0.7 (i.e. 30%
@@ -86,9 +91,6 @@ class ClearNeighborhoodConstraint(ContinuousVariableConstraint):
         child_local_x = [rule.child_orbital_radius for rule in child_rules]
         child_exclusion_radii = [rule.child_radius*self.neighborhood_size_ratio
                                  for rule in child_rules]
-        # Prevent orbits of children from hitting the body itself, too.
-        child_local_x.append(0.)
-        child_exclusion_radii.append(body.radius)
 
         min_sdf = torch.tensor(np.inf)
         # Do N^2 comparison of all bodies
@@ -122,7 +124,7 @@ class PlanetCountConstraint(TopologyConstraint):
 
 class MoonCountConstraint(TopologyConstraint):
     def __init__(self):
-        super().__init__(lower_bound=torch.tensor(1.0), upper_bound=torch.tensor(2.))
+        super().__init__(lower_bound=torch.tensor(2.0), upper_bound=torch.tensor(2.0))
     def eval(self, scene_tree):
         # Counts how many moons each planet has
         simplified_tree = scene_tree.get_tree_without_production_rules()
