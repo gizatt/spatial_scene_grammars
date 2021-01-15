@@ -1,7 +1,7 @@
 import torch
 import pyro
 
-from .nodes import SpatialNode
+from .nodes import SpatialNode, Node
 
 class ProductionRule(object):
     ''' Abstract interface for a production rule, which samples
@@ -64,6 +64,20 @@ class ProductionRule(object):
         return [key for key in list(self.trace.nodes.keys()) if key not in ["_RETURN", "_INPUT"]]
 
 
+class SimpleProductionRule(ProductionRule):
+    ''' Helper Rule that takes a class type and an argument set,
+    and instantiates that class with that argument set at production time. '''
+    def __init__(self, child_type, **kwargs):
+        assert issubclass(child_type, Node)
+        self.kwargs = kwargs
+        super().__init__(child_types=[child_type])
+    def _sample_products(self, parent, child_names):
+        assert(isinstance(parent, Node))
+        assert(len(child_names) == 1)
+        return [self.child_types[0](
+            name=child_names[0],
+            **self.kwargs)]
+        
 class RandomRelativePoseProductionRule(ProductionRule):
     ''' Helper ProductionRule type representing random placement,
     described by a distribution on relative pose between two nodes. '''

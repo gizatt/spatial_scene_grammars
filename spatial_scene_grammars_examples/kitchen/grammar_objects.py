@@ -4,7 +4,7 @@ import numpy as np
 import os
 import time
 import glob
-
+1
 import pydrake
 from pydrake.all import (
     Box, RollPitchYaw, RigidTransform, Parser
@@ -88,8 +88,9 @@ class RandomKitchenStuff(TerminalNode, PhysicsGeometryNode, KitchenObject):
         # terminal node for every geometry? (Almost certainly no to that --
         # what would I do about continuous shape variation in that case?)
         # Choose an available model at random.
-        model_index = pyro.sample("model_type", dist.Categorical(
-            torch.ones(len(available_model_paths)))).item()
+        with pyro.poutine.block():
+            model_index = pyro.sample("model_type", dist.Categorical(
+                torch.ones(len(available_model_paths)))).item()
         model_path = available_model_paths[model_index]
         self.register_model_file(tf=geom_tf, model_path=model_path)
 
@@ -119,11 +120,30 @@ class RandomYCBFoodstuff(TerminalNode, PhysicsGeometryNode, KitchenObject):
         # terminal node for every geometry? (Almost certainly no to that --
         # what would I do about continuous shape variation in that case?)
         # Choose an available model at random.
-        model_index = pyro.sample("model_type", dist.Categorical(
-            torch.ones(len(available_model_paths)))).item()
+        with pyro.poutine.block():
+            model_index = pyro.sample("model_type", dist.Categorical(
+                torch.ones(len(available_model_paths)))).item()
         model_path = available_model_paths[model_index]
         self.register_model_file(tf=geom_tf, model_path=model_path)
 
+
+class PlanarObjectRegion_StyleBranch(OrNode, SpatialNode):
+    ''' Contains the branching logic for planar object regions
+    specializing into style types. '''
+    def _setup(self, **kwargs):
+        style_group_options = ["utensils", "foodstuffs"]
+        production_weights = torch.tensor([0.3, 0.7])
+        production_rules = []
+        for option in style_group_options:
+            # Need to pass down transform for the actual PlanarObjectRegion
+            kwargs["tf"] = self.tf
+            # And assign its style for the rule.
+            kwargs["style_group"] = option
+            production_rules.append(
+                SimpleProductionRule(PlanarObjectRegion, **kwargs)
+            )
+        self.register_production_rules(production_rules=production_rules,
+                                       production_weights=production_weights)
 
 class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNode):
     '''
@@ -138,12 +158,12 @@ class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNode):
             bounds: [[x_l, x_u], [y_l, y_u], [z_l, z_u]]
             show_geometry: Adds visual geometry indicating the object spawn region.
     '''
-    def __init__(self, name, tf, object_production_rate, bounds, show_geometry=False):
+    def __init__(self, name, tf, object_production_rate, bounds, style_group, show_geometry=False):
         super().__init__(
             name=name, tf=tf, object_production_rate=object_production_rate,
-            bounds=bounds, show_geometry=show_geometry, fixed=True)
+            bounds=bounds, style_group=style_group, show_geometry=show_geometry, fixed=True)
         
-    def _setup(self, object_production_rate, bounds, show_geometry):
+    def _setup(self, object_production_rate, bounds, style_group, show_geometry):
         self.x_bounds = bounds[0]
         self.y_bounds = bounds[1]
         self.z_bounds = bounds[2]
@@ -159,13 +179,6 @@ class PlanarObjectRegion(GeometricSetNode, PhysicsGeometryNode):
         if show_geometry:
             self.register_visual_geometry(geom_tf, geometry, color=np.array([0.5, 1.0, 0.2, 0.2]))
 
-        # Overriding style choices to just make simple boxes
-        # so I can dev some collision stuff.
-        style_group_options = ["utensils", "foodstuffs"]
-        # Do foodstuffs more often than plates and things
-        style_group_k = pyro.sample("style",
-                                    dist.Categorical(torch.tensor([0.3, 0.7]))).item()
-        style_group = style_group_options[style_group_k]
         # Produce a geometric number of objects within bounds.
         self.register_production_rules(
             production_rule_type=RandomRelativePoseProductionRule,

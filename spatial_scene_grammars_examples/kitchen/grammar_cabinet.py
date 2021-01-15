@@ -62,7 +62,7 @@ class Cabinet(AndNode, PhysicsGeometryNode):
         rules = []
         for k in range(num_shelves):
             rules.append(DeterministicRelativePoseProductionRule(
-                child_type=PlanarObjectRegion,
+                child_type=PlanarObjectRegion_StyleBranch,
                 relative_tf=pose_to_tf_matrix(torch.tensor(
                     [0.15, 0., bottom_shelf_z_local+shelf_height*k, 0., 0., 0.])),
                 object_production_rate=0.5,
