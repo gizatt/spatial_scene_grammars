@@ -18,7 +18,6 @@ may be an easier class than general topology constraints?
 
 '''
 
-
 class Constraint():
     '''
     To be used in combination with constraint-wrapping
@@ -33,6 +32,8 @@ class Constraint():
         super().__init__()
 
     def eval(self, scene_tree):
+        # Output should be torch-autodiffable from scene_tree
+        # params and variables.
         raise NotImplementedError()
 
     def eval_violation(self, scene_tree):
@@ -51,31 +52,3 @@ class ContinuousVariableConstraint(Constraint):
 
 class TopologyConstraint(Constraint):
     pass
-
-
-class NumberOfChildrenFactor(TopologyConstraint):
-    ''' Scores the number of nodes in the given scene subtree. '''
-    pass
-
-class ClearanceConstraint(ContinuousVariableConstraint):
-    ''' Extracts the PhysicsGeometryNodes in the supplied
-    tree, '''
-
-    def eval(self, scene_tree):
-        builder_clearance, mbp_clearance, sg_clearance = \
-            compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree)
-        mbp_clearance.Finalize()
-        diagram_clearance = builder_clearance.Build()
-        diagram_context = diagram_clearance.CreateDefaultContext()
-        mbp_context = diagram_clearance.GetMutableSubsystemContext(mbp_clearance, diagram_context)
-        constraint = build_clearance_nonpenetration_constraint(
-            mbp_clearance, mbp_context, -0.01)
-        return constraint.Eval(mbp_clearance.GetPositions(mbp_context))
-
-class PhysicalFeasibilityConstraint(ContinuousVariableConstraint):
-    '''
-    Given a set of 
-    '''
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        # copy over from kitchen code

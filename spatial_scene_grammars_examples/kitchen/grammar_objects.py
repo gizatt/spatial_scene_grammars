@@ -4,7 +4,7 @@ import numpy as np
 import os
 import time
 import glob
-1
+
 import pydrake
 from pydrake.all import (
     Box, RollPitchYaw, RigidTransform, Parser

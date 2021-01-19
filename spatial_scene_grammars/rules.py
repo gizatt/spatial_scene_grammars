@@ -106,7 +106,7 @@ class DeterministicRelativePoseProductionRule(RandomRelativePoseProductionRule):
     ''' Helper ProductionRule type representing
     deterministic relative offsets between two nodes that have poses.
 
-    In practice, shells out toe RandomRelativePoseProductionRule, but supplies
+    In practice, shells out to RandomRelativePoseProductionRule, but supplies
     a deterministic sampler. '''
     def __init__(self, child_type, relative_tf, **kwargs):
         ''' Args:

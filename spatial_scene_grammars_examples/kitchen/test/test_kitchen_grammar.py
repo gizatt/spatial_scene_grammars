@@ -74,7 +74,7 @@ def test_model_directive_serialize_deserialize(scene_tree, subtests):
     with subtests.test("mbp_matching"):
         # Double check the set of bodies and frames are identical, and
         # all frames are at the same position.
-        _, orig_mbp, _ = compile_scene_tree_to_mbp_and_sg(scene_tree)
+        _, orig_mbp, _, _, _ = compile_scene_tree_to_mbp_and_sg(scene_tree)
         orig_mbp.Finalize()
         loaded_mbp = mbp_wrangler.mbp
 

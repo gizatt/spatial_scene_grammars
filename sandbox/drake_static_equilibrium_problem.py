@@ -178,6 +178,10 @@ def build_mbp(seed=0, verts_geom=False, convex_collision_geom=True):
 if __name__ == "__main__":
     seed = 42
 
+    # This code would try to run a StaticEquilibriumProblem --
+    # but it relies on Autodiff-converted MBP/SG, which doesn't support
+    # the full matrix of geometry collisions. (Mostly does sphere/*
+    # collisions.)
     #builder, mbp, scene_graph = build_mbp(seed=seed)
     #diagram = builder.Build()
     #diagram_ad = diagram.ToAutoDiffXd()

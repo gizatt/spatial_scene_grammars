@@ -44,7 +44,7 @@ def _sample_backend_rejection(
 
 def _sample_backend_rejection_and_hmc(
         root_node_type, root_node_type_kwargs,
-        constraints, max_num_attempts=100, callback=None):
+        constraints, max_num_attempts=100, callback=None, num_samples=25):
     # Rejection sample to get a feasible configuration w.r.t. topology
     # constraints, and then perform HMC for the continuous constraints.
     # CRITICAL TODO: I don't think this is actually sampling from the
@@ -123,21 +123,24 @@ def _sample_backend_rejection_and_hmc(
             
         if callback:
             callback(scene_tree)
+        return scene_tree
 
     # 3) Run HMC.
     #init_params, potential_fn, transforms, _ = pyro.infer.mcmc.util.initialize_model(hmc_model, model_args=())
-    #hmc_kernel = pyro.infer.mcmc.NUTS(potential_fn=potential_fn, target_accept_prob=0.3, adapt_step_size=True)
-    hmc_kernel = pyro.infer.mcmc.HMC(hmc_model, num_steps=5, step_size=0.01, target_accept_prob=0.5, adapt_step_size=True, adapt_mass_matrix=True,
-        init_strategy=pyro.infer.autoguide.initialization.init_to_sample)
-    mcmc = pyro.infer.mcmc.MCMC(hmc_kernel, num_samples=200)
+    hmc_kernel = pyro.infer.mcmc.NUTS(hmc_model, target_accept_prob=0.3, adapt_step_size=True)
+    #hmc_kernel = pyro.infer.mcmc.HMC(hmc_model, num_steps=1, step_size=0.1, target_accept_prob=0.5, adapt_step_size=True, adapt_mass_matrix=True,
+    #    init_strategy=pyro.infer.autoguide.initialization.init_to_sample)
+    mcmc = pyro.infer.mcmc.MCMC(hmc_kernel, num_samples=num_samples)
     mcmc.run()
-    samples = mcmc.get_samples()
 
-    print("Samples: ", samples)
-
+    print("MCMC Summary: ",)
     mcmc.summary()
-    print("Winning trace: ", orig_trace.nodes)
-    return scene_tree, False
+
+    sample_data = mcmc.get_samples(1)
+    for key in sample_data.keys():
+        sample_data[key] = sample_data[key][0, ...]
+    scene_tree = pyro.poutine.condition(hmc_model, sample_data)()
+    return scene_tree, True
 
 def sample_tree_from_root_type_with_constraints(
         root_node_type,

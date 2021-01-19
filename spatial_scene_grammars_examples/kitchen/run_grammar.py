@@ -85,7 +85,7 @@ def rejection_sample_feasible_tree(num_attempts=999):
         diagram_clearance = builder_clearance.Build()
         diagram_context = diagram_clearance.CreateDefaultContext()
         mbp_context = diagram_clearance.GetMutableSubsystemContext(mbp_clearance, diagram_context)
-        constraint = build_clearance_nonpenetration_constraint(
+        constraint = build_nonpenetration_constraint(
             mbp_clearance, mbp_context, -0.01)
         constraint.Eval(mbp_clearance.GetPositions(mbp_context))
 
@@ -122,7 +122,7 @@ def project_tree_to_feasibility(scene_tree, num_attempts=1):
             if isinstance(node, Node):
                 print("\t", node.name)
         
-        builder, mbp, scene_graph = compile_scene_tree_to_mbp_and_sg(
+        builder, mbp, scene_graph, _, _ = compile_scene_tree_to_mbp_and_sg(
                 scene_tree, timestep=0.001)
         mbp.Finalize()
         diagram = builder.Build()
@@ -168,7 +168,7 @@ def do_generation_and_simulation(sim_time=10):
     draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
 
     # Simulate the resulting scene, with a PR2 for scale.
-    builder, mbp, scene_graph = compile_scene_tree_to_mbp_and_sg(
+    builder, mbp, scene_graph, _, _ = compile_scene_tree_to_mbp_and_sg(
         scene_tree, timestep=0.001)
     # Add PR2 and shift it back in front of where I know the table will be.
     parser = Parser(mbp)

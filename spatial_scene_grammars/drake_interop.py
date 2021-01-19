@@ -14,6 +14,7 @@ from pydrake.all import (
     DiagramBuilder,
     ConnectMeshcatVisualizer,
     MinimumDistanceConstraint,
+    ModelInstanceIndex,
     MultibodyPlant,
     Parser,
     RigidTransform,
@@ -28,15 +29,26 @@ from .visualization import rgb_2_hex
 def torch_tf_to_drake_tf(tf):
     return RigidTransform(tf.cpu().detach().numpy())
 
-def draw_clearance_geometry_meshcat(scene_tree, zmq_url=None, alpha=0.25):
-    vis = meshcat.Visualizer(zmq_url=zmq_url or "tcp://127.0.0.1:6000")
-    vis["clearance_geom"].delete()
+def drake_tf_to_torch_tf(tf):
+    return torch.tensor(tf.GetAsMatrix4())
 
-    builder, mbp, scene_graph = compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree)
+def draw_scene_tree_meshcat(scene_tree, zmq_url=None, alpha=0.25, draw_clearance_geom=False):
+    vis = meshcat.Visualizer(zmq_url=zmq_url or "tcp://127.0.0.1:6000")
+    
+    if draw_clearance_geom:
+        builder, mbp, scene_graph = compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree)
+    else:
+        builder, mbp, scene_graph, _, _, = compile_scene_tree_to_mbp_and_sg(scene_tree)
     mbp.Finalize()
 
+    if draw_clearance_geom:
+        prefix = "clearance_geom"
+    else:
+        prefix = "scene_tree"
+
+    vis[prefix].delete()
     vis = ConnectMeshcatVisualizer(builder, scene_graph,
-        zmq_url="default", prefix="clearance")
+        zmq_url="default", prefix=prefix)
     diagram = builder.Build()
     context = diagram.CreateDefaultContext()
     vis.load(vis.GetMyContextFromRoot(context))
@@ -62,7 +74,6 @@ def compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree, timestep=0.0
     parser = Parser(mbp)
     parser.package_map().PopulateFromEnvironment("ROS_PACKAGE_PATH")
     world_body = mbp.world_body()
-    node_to_body_id_map = {}
     free_body_poses = []
     # For generating colors.
     node_class_to_color_dict = {}
@@ -81,7 +92,6 @@ def compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree, timestep=0.0
             # this might get resolved by the solution to that.
             body = mbp.AddRigidBody(name=node.name,
                                     M_BBo_B=node.spatial_inertia)
-            node_to_body_id_map[node] = body.index()
             tf = torch_tf_to_drake_tf(node.tf)
             mbp.SetDefaultFreeBodyPose(body, tf)
 
@@ -114,7 +124,7 @@ def compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree, timestep=0.0
 
     return builder, mbp, scene_graph
 
-def build_clearance_nonpenetration_constraint(mbp, mbp_context_in_diagram, signed_distance_threshold):
+def build_nonpenetration_constraint(mbp, mbp_context_in_diagram, signed_distance_threshold):
     ''' Given an MBP/SG pair and a signed distance threshold, returns a constraint
     function that takes a context and returns whether the MBP/SG in that configuration
     has all bodies farther than the given threshold. '''
@@ -131,6 +141,13 @@ def get_collisions(mbp, mbp_context_in_diagram):
     query_object = query_port.Eval(mbp_context_in_diagram)
     return query_object.ComputePointPairPenetration()
 
+def resolve_sg_proximity_id_to_mbp_id(sg, mbp, geometry_id):
+    for model_k in range(mbp.num_model_instances()):
+        model_k = ModelInstanceIndex(model_k)
+        for body_k in mbp.GetBodyIndices(model_k):
+            if geometry_id in mbp.GetCollisionGeometriesForBody(mbp.get_body(body_k)):
+                return model_k, body_k
+    raise ValueError("Geometry ID not registered by this MBP.")
 
 def expand_container_tree(full_tree, new_tree, current_node):
     # Given the original tree for reference and a new tree
@@ -173,7 +190,10 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
     parser = Parser(mbp)
     parser.package_map().PopulateFromEnvironment("ROS_PACKAGE_PATH")
     world_body = mbp.world_body()
+
     node_to_model_id_map = {}
+    body_id_to_node_map = {}
+
     free_body_poses = []
     for node in scene_tree.nodes:
         if isinstance(node, SpatialNode) and isinstance(node, PhysicsGeometryNode):
@@ -198,6 +218,7 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
                 # this might get resolved by the solution to that.
                 body = mbp.AddRigidBody(name=node.name, model_instance=model_id,
                                         M_BBo_B=node.spatial_inertia)
+                body_id_to_node_map[body.index()] = node
                 tf = torch_tf_to_drake_tf(node.tf)
                 if node.fixed:
                     weld = mbp.WeldFrames(world_body.body_frame(),
@@ -236,6 +257,7 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
                         root_body = mbp.GetBodyByName(
                             name=root_body_name,
                             model_instance=model_id)
+                    body_id_to_node_map[root_body.index()] = node
                     node_tf = torch_tf_to_drake_tf(node.tf)
                     full_model_tf = node_tf.multiply(torch_tf_to_drake_tf(local_tf))
                     if node.fixed:
@@ -255,19 +277,19 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
                             joint.set_default_positions(q0_this)
 
             node_to_model_id_map[node] = node_model_ids
-    return builder, mbp, scene_graph
+    return builder, mbp, scene_graph, node_to_model_id_map, body_id_to_node_map
 
-def simulate_scene_tree(scene_tree, T, timestep=0.001, with_meshcat=False):
-    builder, mbp, scene_graph = compile_scene_tree_to_mbp_and_sg(
+def simulate_scene_tree(scene_tree, T, timestep=0.001, target_realtime_rate=1.0, meshcat=None):
+    builder, mbp, scene_graph, _, _ = compile_scene_tree_to_mbp_and_sg(
         scene_tree, timestep=timestep)
     mbp.Finalize()
 
-    if with_meshcat:
+    if meshcat:
         visualizer = ConnectMeshcatVisualizer(builder, scene_graph,
-            zmq_url="default")
+            zmq_url=meshcat)
 
     diagram = builder.Build()
     diag_context = diagram.CreateDefaultContext()
     sim = Simulator(diagram)
-    sim.set_target_realtime_rate(1.0)
+    sim.set_target_realtime_rate(target_realtime_rate)
     sim.AdvanceTo(T)
