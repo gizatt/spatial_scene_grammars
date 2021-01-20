@@ -43,11 +43,11 @@ def test_finite_logprob(trace):
 
 def test_simulation_setup(scene_tree):
     # Simulate the resulting scene.
-    # May not expect this to work if the scene is generated in an
+    # May not expect this to work if the scene is generated in an[]
     # infeasible config... but short sim horizons seem not to error out,
     # so at least it checks the construction machinery and that Drake doesn't
     # hate the model on a fundamental level.
-    simulate_scene_tree(scene_tree, 0.001, timestep=0.001, with_meshcat=False)
+    simulate_scene_tree(scene_tree, 0.001, timestep=0.001, meshcat=None)
 
 def test_model_directive_serialize_deserialize(scene_tree, subtests):
     # Can we serialize + deserialize to the model directive format,
@@ -131,8 +131,6 @@ def test_model_directive_serialize_deserialize(scene_tree, subtests):
                           str(corresponding_body_tf.GetAsMatrix4()),
                           str(error_tf.GetAsMatrix4())))
                     assert False, "See test output -- body pose mismatch during deserialize."
-
-
 
     with subtests.test("simulation"):
         # Set up and run some brief sim, and make sure Drake is OK with it, and visualize for human

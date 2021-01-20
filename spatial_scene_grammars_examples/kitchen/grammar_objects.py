@@ -79,6 +79,17 @@ class RandomKitchenStuff(TerminalNode, PhysicsGeometryNode, KitchenObject):
         else:
             raise ValueError("%s not a valid style_group" % style_group)
 
+        # TODO: Get the models themselves to a state that I can deploy them
+        # on CI and remove this hack.
+        if len(available_model_paths) == 0:
+            print("WARNING: No RandomKitchenStuff models found."
+                  "\nFalling back to a dummy box model.")
+            geometry = Box(width=0.1, depth=0.1, height=0.1)
+            self.color = pyro.sample("color", dist.Uniform(0., 1.))
+            self.register_geometry(geom_tf, geometry,
+                                   color=plt.cm.get_cmap("viridis")(self.color.item()))
+            return
+
         assert len(available_model_paths) > 0
         # This is a different kind of randomness than stuff being tracked
         # within the tree -- this is a random choice affecting perceptual / 
