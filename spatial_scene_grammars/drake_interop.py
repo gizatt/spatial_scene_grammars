@@ -9,22 +9,88 @@ import os
 import yaml
 
 import pydrake
+from pydrake.common.cpp_param import List as DrakeBindingList
 from pydrake.all import (
     AddMultibodyPlantSceneGraph,
-    DiagramBuilder,
+    BasicVector,
     ConnectMeshcatVisualizer,
+    DiagramBuilder,
+    ExternallyAppliedSpatialForce,
+    LeafSystem,
     MinimumDistanceConstraint,
     ModelInstanceIndex,
     MultibodyPlant,
     Parser,
     RigidTransform,
     RotationMatrix,
-    Simulator
+    Simulator,
+    Value
 )
 import pydrake.geometry as pydrake_geom
 
 from .nodes import SpatialNode, PhysicsGeometryNode, default_friction
 from .visualization import rgb_2_hex
+
+class DecayingForceToDesiredConfigSystem(LeafSystem):
+    ''' Connect to a MBP to apply ghost forces (that decay over time)
+    to encourage the scene to settle near the desired configuration. '''
+    def __init__(self, mbp, q_des):
+        LeafSystem.__init__(self)
+        self.set_name('DecayingForceToDesiredConfigSystem')
+
+        self.robot_state_input_port = self.DeclareVectorInputPort(
+            "robot_state", BasicVector(mbp.num_positions() + mbp.num_velocities()))
+        forces_cls = Value[DrakeBindingList[ExternallyAppliedSpatialForce]]
+        self.spatial_forces_output_port = self.DeclareAbstractOutputPort(
+            "spatial_forces_vector",
+            lambda: forces_cls(),
+            self.DoCalcAbstractOutput)
+
+        self.mbp = mbp
+        self.q_des = q_des
+        self.mbp_current_context = mbp.CreateDefaultContext()
+        self.mbp_des_context = mbp.CreateDefaultContext()
+        self.mbp.SetPositions(self.mbp_des_context, self.q_des)
+
+    def DoCalcAbstractOutput(self, context, y_data):
+        t = context.get_time()
+        force_multiplier = 10.0*np.exp(-0.5*t)
+        
+        x_in = self.EvalVectorInput(context, 0).get_value()
+        self.mbp.SetPositionsAndVelocities(self.mbp_current_context, x_in)
+
+        forces = []
+        for k in mbp.GetFloatingBaseBodies():
+            body = self.mbp.get_body(BodyIndex(k))
+
+            # Get pose of body in world frame
+            body_tf = self.mbp.GetFreeBodyPose(self.mbp_current_context, body)
+            body_r = body_tf.rotation().matrix()
+            body_tfd = self.mbp.EvalBodySpatialVelocityInWorld(self.mbp_current_context, body)
+
+            des_tf = self.mbp.GetFreeBodyPose(self.mbp_des_context, body)
+            delta_xyz = des_tf.translation() - body_tf.translation()
+            delta_r = des_tf.rotation().matrix().dot(body_tf.rotation().matrix().T)
+
+
+            # Get mass info so we can calc correct forces
+            si = body.CalcSpatialInertiaInBodyFrame(self.mbp_current_context)
+            m = si.get_mass()
+            I = si.CalcRotationalInertia().CopyToFullMatrix3()
+            I_w = body_tf.rotation().matrix().dot(I)
+
+            # Multiply out
+            aa = AngleAxis(delta_r)
+            tau = aa.axis()*aa.angle() - 0.5*body_tfd.rotational()
+            f = (delta_xyz - 0.5*body_tfd.translational())*m
+            force = SpatialForce(tau=tau*force_multiplier, f=f*force_multiplier)
+            out = ExternallyAppliedSpatialForce()
+            out.F_Bq_W = force
+            out.body_index = body.index()
+            forces.append(out)
+
+        y_data.set_value(forces)
+
 
 def torch_tf_to_drake_tf(tf):
     return RigidTransform(tf.cpu().detach().numpy())
@@ -293,3 +359,4 @@ def simulate_scene_tree(scene_tree, T, timestep=0.001, target_realtime_rate=1.0,
     sim = Simulator(diagram)
     sim.set_target_realtime_rate(target_realtime_rate)
     sim.AdvanceTo(T)
+

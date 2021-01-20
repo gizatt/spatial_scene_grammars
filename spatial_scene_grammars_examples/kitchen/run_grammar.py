@@ -97,7 +97,6 @@ def rejection_sample_feasible_tree(num_attempts=999):
         print(len(get_collisions(mbp_clearance, mbp_context)), " bodies in collision")
 
         # We can draw clearance geometry for debugging.
-        # draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
 
         # If we failed the initial clearance check, resample.
         if not constraint.CheckSatisfied(q0):
@@ -163,9 +162,9 @@ def do_generation_and_simulation(sim_time=10):
     A.draw('test.png')
 
     # Draw generated tree in meshcat.
-    draw_scene_tree_meshcat(scene_tree, alpha=0.5, node_sphere_size=0.05)
+    draw_scene_tree_meshcat(scene_tree, alpha=0.5)
     # Draw its clearance geometry for debugging.
-    draw_clearance_geometry_meshcat(scene_tree, alpha=0.3)
+    draw_scene_tree_meshcat(scene_tree, alpha=0.3, draw_clearance_geom=True)
 
     # Simulate the resulting scene, with a PR2 for scale.
     builder, mbp, scene_graph, _, _ = compile_scene_tree_to_mbp_and_sg(
@@ -193,6 +192,12 @@ def do_generation_and_simulation(sim_time=10):
     nu = mbp.num_actuated_dofs(model_instance=pr2_model_id)
     actuation_port.FixValue(mbp_context, np.zeros(nu))
 
+    #q_des = mbp.GetPositions(mbp.CreateDefaultContext())
+    #forcer = builder.AddSystem(DecayingForceToDesiredConfigSystem(mbp, q_des))
+    #builder.Connect(mbp.get_state_output_port(),
+    #                forcer.get_input_port(0))
+    #builder.Connect(forcer.get_output_port(0),
+    #                mbp.get_applied_spatial_force_input_port())
 
     sim = Simulator(diagram, diag_context)
     sim.set_target_realtime_rate(1.0)
