@@ -25,6 +25,7 @@ if __name__ == "__main__":
     torch.set_default_tensor_type(torch.DoubleTensor)
     pyro.enable_validation(True)
     torch.manual_seed(1)
+
     scene_tree, success = sample_tree_from_root_type_with_constraints(
             root_node_type=Table,
             root_node_type_kwargs={
@@ -39,7 +40,7 @@ if __name__ == "__main__":
             max_num_attempts=1000,
             backend="rejection_then_hmc",
             callback=draw_scene_tree_meshcat,
-            num_samples=30
+            num_samples=10
     )
     if not success:
         print("WARNING: SAMPLING UNSUCCESSFUL")

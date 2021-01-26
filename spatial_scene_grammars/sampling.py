@@ -127,10 +127,11 @@ def _sample_backend_rejection_and_hmc(
 
     # 3) Run HMC.
     #init_params, potential_fn, transforms, _ = pyro.infer.mcmc.util.initialize_model(hmc_model, model_args=())
-    hmc_kernel = pyro.infer.mcmc.NUTS(hmc_model, target_accept_prob=0.3, adapt_step_size=True)
-    #hmc_kernel = pyro.infer.mcmc.HMC(hmc_model, num_steps=1, step_size=0.1, target_accept_prob=0.5, adapt_step_size=True, adapt_mass_matrix=True,
-    #    init_strategy=pyro.infer.autoguide.initialization.init_to_sample)
-    mcmc = pyro.infer.mcmc.MCMC(hmc_kernel, num_samples=num_samples)
+    #mcmc_kernel = pyro.infer.mcmc.NUTS(hmc_model, target_accept_prob=0.3, adapt_step_size=True)
+    #mcmc_kernel = pyro.infer.mcmc.RandomWalkKernel(hmc_model, variance=0.5)
+    mcmc_kernel = pyro.infer.mcmc.HMC(hmc_model, num_steps=1, step_size=0.1, target_accept_prob=0.5, adapt_step_size=True, adapt_mass_matrix=True,
+        init_strategy=pyro.infer.autoguide.initialization.init_to_sample)
+    mcmc = pyro.infer.mcmc.MCMC(mcmc_kernel, num_samples=num_samples)
     mcmc.run()
 
     print("MCMC Summary: ",)

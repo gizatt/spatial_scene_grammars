@@ -197,7 +197,7 @@ def do_generation_and_simulation(sim_time=10):
     #builder.Connect(mbp.get_state_output_port(),
     #                forcer.get_input_port(0))
     #builder.Connect(forcer.get_output_port(0),
-    #                mbp.get_applied_spatial_force_input_port())
+    #                 mbp.get_applied_spatial_force_input_port())
 
     sim = Simulator(diagram, diag_context)
     sim.set_target_realtime_rate(1.0)
