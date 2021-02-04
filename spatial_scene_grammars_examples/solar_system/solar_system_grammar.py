@@ -124,7 +124,7 @@ class PlanetCountConstraint(TopologyConstraint):
 
 class MoonCountConstraint(TopologyConstraint):
     def __init__(self):
-        super().__init__(lower_bound=torch.tensor(2.0), upper_bound=torch.tensor(2.0))
+        super().__init__(lower_bound=torch.tensor(1.0), upper_bound=torch.tensor(np.inf))
     def eval(self, scene_tree):
         # Counts how many moons each planet has
         simplified_tree = scene_tree.get_tree_without_production_rules()
@@ -176,7 +176,7 @@ def draw_solar_system(scene_tree, fig=None, ax=None):
     ax.set_ylim(-100, 100)
     ax.axis("off")
     ax.set_aspect('equal')
-    plt.pause(0.01)
+    plt.pause(0.001)
     #print("Planetl ocations: ", planet_locations)
     #print("Planet radii: ", planet_radii)
     #plt.waitforbuttonpress()
@@ -188,7 +188,7 @@ def sample_and_plot_solar_system():
     fig.set_size_inches(13, 2)
     ax = plt.gca()
 
-    scene_tree, success = sample_tree_from_root_type_with_constraints(
+    scene_trees, success = sample_tree_from_root_type_with_constraints(
             root_node_type=OrbitalBody,
             root_node_type_kwargs={
                 "name":"sun",
@@ -198,16 +198,18 @@ def sample_and_plot_solar_system():
             constraints=[
                 ClearNeighborhoodConstraint(),
                 PlanetCountConstraint(),
-                MoonCountConstraint()
+                #MoonCountConstraint()
             ],
             max_num_attempts=1000,
-            backend="rejection_then_hmc",
-            callback=partial(draw_solar_system, fig=fig, ax=ax)
+            backend="metropolis_procedural_modeling",
+            num_samples=50,
+            #callback=partial(draw_solar_system, fig=fig, ax=ax)
     )
     if not success:
         print("WARNING: SAMPLING UNSUCCESSFUL")
-    draw_solar_system(scene_tree)
+    draw_solar_system(scene_trees[-1])
     
+
 
 if __name__ == "__main__":
     torch.set_default_tensor_type(torch.DoubleTensor)
@@ -220,8 +222,7 @@ if __name__ == "__main__":
     #    radius=torch.tensor(100.),
     #    x=torch.tensor(0.))
     #print(trace.format_shapes())
-#
-    #sys.exit(0)
+
     for k in range(1):
         sample_and_plot_solar_system()
         plt.savefig("solar_system_%03d.png" % k,
