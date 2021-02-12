@@ -17,6 +17,7 @@ from pydrake.all import (
     DiagramBuilder,
     ExternallyAppliedSpatialForce,
     LeafSystem,
+    MeshcatVisualizer,
     MinimumDistanceConstraint,
     ModelInstanceIndex,
     MultibodyPlant,
@@ -119,6 +120,13 @@ def draw_scene_tree_meshcat(scene_tree, zmq_url=None, alpha=0.25, draw_clearance
     context = diagram.CreateDefaultContext()
     vis.load(vis.GetMyContextFromRoot(context))
     diagram.Publish(context)
+    # Necessary to manually remove this meshcat visualizer now that we're
+    # done with it, as a lot of Drake systems (that are involved with the
+    # diagram builder) don't get properly garbage collected. See
+    # Drake issue #14387.
+    # Meshcat collects sockets, so deleting this avoids a file descriptor
+    # leak.
+    del vis.vis
 
 def resolve_catkin_package_path(package_map, input_str):
     if "://" in input_str:
