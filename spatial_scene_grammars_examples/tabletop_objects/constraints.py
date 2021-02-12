@@ -24,7 +24,6 @@ from spatial_scene_grammars.factors import *
 from spatial_scene_grammars.transform_utils import *
 from spatial_scene_grammars.drake_interop import *
 
-
 class NonpenetrationConstraint(ContinuousVariableConstraint):
     def __init__(self, allowed_penetration_margin=0.0):
         ''' penetration_margin > 0, specifies penetration amounts we'll allow. '''
@@ -99,3 +98,14 @@ class NonpenetrationConstraint(ContinuousVariableConstraint):
         return total_score
         
             
+class ObjectCountConstraint(TopologyConstraint):
+    def __init__(self, min=None, max=None):
+        if min is None:
+            min = -np.inf
+        if max is None:
+            max = np.inf
+        super().__init__(lower_bound=torch.tensor(float(min)), upper_bound=torch.tensor(float(max)))
+    def eval(self, scene_tree):
+        # All objects are just nonterminal nodes, so count those.
+        objects = [node for node in scene_tree if isinstance(node, TerminalNode)]
+        return torch.tensor(len(objects))

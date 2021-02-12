@@ -26,7 +26,7 @@ if __name__ == "__main__":
     pyro.enable_validation(True)
     torch.manual_seed(1)
 
-    scene_tree, success = sample_tree_from_root_type_with_constraints(
+    scene_trees, success = sample_tree_from_root_type_with_constraints(
             root_node_type=Table,
             root_node_type_kwargs={
                 "name":"table",
@@ -35,13 +35,20 @@ if __name__ == "__main__":
                 "table_size": torch.tensor([0.5, 0.5])
             },
             constraints=[
-                NonpenetrationConstraint()
+                NonpenetrationConstraint(),
+                ObjectCountConstraint(min=2, max=None),
             ],
             max_num_attempts=1000,
-            backend="rejection_then_hmc",
-            callback=draw_scene_tree_meshcat,
-            num_samples=10
+            #backend="rejection_then_hmc",
+            backend="metropolis_procedural_modeling",
+            callback=None, #draw_scene_tree_meshcat,
+            num_samples=100,
     )
     if not success:
         print("WARNING: SAMPLING UNSUCCESSFUL")
-    simulate_scene_tree(scene_tree, T=1.0, target_realtime_rate=1.0, meshcat="default")
+    #simulate_scene_tree(scene_trees[-1], T=1.0, target_realtime_rate=1.0, meshcat="default")
+
+    input("Press enter to start showing scenes...")
+    for scene_tree in scene_trees:
+        draw_scene_tree_meshcat(scene_tree, alpha=1.0)
+        time.sleep(0.1)
