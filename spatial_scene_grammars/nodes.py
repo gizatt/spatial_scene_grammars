@@ -29,7 +29,6 @@ class Node():
     def _setup(self):
         raise NotImplementedError()
 
-
 class SpatialNode(Node):
     ''' Contract that a class with this mixin has a 'tf' attribute,
     which is a 4x4 tf matrix representing the node's pose in world
@@ -141,6 +140,16 @@ class NonTerminalNode(Node):
             with scope(prefix="sample_rules"):
                 return self._sample_production_rules_impl()
 
+    def get_maximal_child_type_list(self):
+        ''' Returns a list of node types, such that the child
+        set of any sampled instance of this node will be a subset
+        of that list. '''
+        child_types = []
+        assert hasattr(self, "production_rules"), \
+            "Nonterminal node instance should have list of production rules populated."
+        for rule in self.production_rules:
+            child_types += rule.child_types
+        return child_types
 
 class TerminalNode(Node):
     ''' The leafs of a generated scene tree will be terminal nodes. '''
@@ -259,23 +268,26 @@ class IndependentSetNode(NonTerminalNode):
 
 
 class GeometricSetNode(NonTerminalNode):
-    ''' Convenience specialization of a nonterminal node: given a single production
+    ''' Convenience specialization of an NT node: given a single production
     rule, can reapply it a number of times following a geometric distribution
-    with a given repeat probability.'''
+    with a given repeat probability, up to a bounded number of instantiations.
+
+    TODO: This could be refactored into an OrNode? I tried, but it breaks
+    downstream code if I rely on something like a ComposedProductionRule
+    internally. :(
+    '''
     def _register_production_rules_impl(
-            self, production_rule_type, production_rule_kwargs, geometric_prob):
+            self, production_rule_type, production_rule_kwargs, geometric_prob,
+            max_num_children=5):
         self.production_dist = dist.Geometric(geometric_prob)
-        self.production_rule_type = production_rule_type
-        self.production_rule_kwargs = production_rule_kwargs
+        self.max_num_children = torch.tensor(max_num_children, dtype=torch.int)
+        self.production_rules = [production_rule_type(**production_rule_kwargs)
+                                 for k in range(max_num_children)]
 
     def _sample_production_rules_impl(self):
         num_repeats = pyro.sample(
             "geometric_set_sample",
             self.production_dist)
+        num_repeats = int(torch.minimum(num_repeats, self.max_num_children).item())
         # Select out the appropriate rules
-        out = []
-        for k in range(int(num_repeats.item())):
-            # Ensure they're different instantiations of the rule so
-            # the scene tree is still a tree.
-            out.append(self.production_rule_type(**self.production_rule_kwargs))
-        return out
+        return self.production_rules[:num_repeats]
