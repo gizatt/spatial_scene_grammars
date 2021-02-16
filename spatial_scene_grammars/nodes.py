@@ -140,16 +140,13 @@ class NonTerminalNode(Node):
             with scope(prefix="sample_rules"):
                 return self._sample_production_rules_impl()
 
-    def get_maximal_child_type_list(self):
+    @staticmethod
+    def get_maximal_child_type_list():
         ''' Returns a list of node types, such that the child
         set of any sampled instance of this node will be a subset
         of that list. '''
-        child_types = []
-        assert hasattr(self, "production_rules"), \
-            "Nonterminal node instance should have list of production rules populated."
-        for rule in self.production_rules:
-            child_types += rule.child_types
-        return child_types
+        raise NotImplementedError()
+
 
 class TerminalNode(Node):
     ''' The leafs of a generated scene tree will be terminal nodes. '''

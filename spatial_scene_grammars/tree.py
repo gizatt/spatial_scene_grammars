@@ -12,10 +12,12 @@ def get_tree_root(tree):
     return root_node
 
 class SceneTree(nx.DiGraph):
-    def __init__(self):
+    def __init__(self, root_node_type):
         nx.DiGraph.__init__(self)
         self._used_node_names = set()
+        self._root_node_type = root_node_type
 
+    # ACCESSORS AND BASICS
     def get_node_parent_or_none(self, node):
         parents = list(self.predecessors(node))
         if len(parents) == 0:
@@ -58,6 +60,7 @@ class SceneTree(nx.DiGraph):
                     new_tree.add_edge(parent, child)
         return new_tree
 
+    # GENERATION AND GENERATION UTILITIES
     def get_unique_name_for_node_type(self, node_type):
         # Generates a unique name for a new instance of a given
         # node type.
@@ -100,7 +103,7 @@ class SceneTree(nx.DiGraph):
         Generates an unconditioned parse tree from a root node type
         and a list of any arguments required to instantiate it.
         '''
-        parse_tree = SceneTree()
+        parse_tree = SceneTree(root_node_type=root_node_type)
         if "name" not in kwargs.keys():
             kwargs["name"] = parse_tree.get_unique_name_for_node_type(root_node_type)
         else:
@@ -109,3 +112,36 @@ class SceneTree(nx.DiGraph):
         parse_tree.add_node(root_node)
         return SceneTree._generate_from_node_recursive(parse_tree, root_node)
 
+    @staticmethod
+    def make_meta_scene_tree(root_node_type):
+        ''' Given a root node, generates a meta-tree of node types (without
+        continuous variables) for which any generated tree from this root is
+        a subgraph (again not considering continuous variables). '''
+        meta_tree = nx.DiGraph()
+        input_types = [root_node_type]
+        while len(input_types) > 0:
+            cur_type = input_types.pop(0)
+            new_types = cur_type.get_maximal_child_type_list()
+            for new_type in new_types:
+                meta_tree.add_edge(cur_type, new_type)
+                if isinstance(new_type, NonTerminalNode):
+                    input_types.append(new_type)
+        return meta_tree
+
+
+    # PARSING AND PARSING UTILITIES
+    @staticmethod
+    def parse_greedily_from_partial_tree(root_node_type, partial_tree):
+        ''' Given a partial tree (an nx digraph) in a state where the tree may not be feasible,
+        but where the supplied nodes are fully realized: so we need to fix that
+        non-root nodes may not have parents, and non-terminal nodes may not
+        have appropriate children.
+
+        To fix this, we:
+        1) For all fully-realized non-terminal nodes in the tree, unconditionally
+        forward-sample their subtree. Now the tree only needs to be fixed "upwards."
+        2) Repeatedly randomly select subsets of orphan nodes (non-root parentless nodes)
+        and randomly choose new parents for them from the set of current + possible nodes.
+
+        '''
+        raise NotImplementedError()
