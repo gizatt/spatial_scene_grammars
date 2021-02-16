@@ -1,5 +1,6 @@
 import torch
 import pyro
+from pyro.contrib.autoname import scope
 
 from .nodes import SpatialNode, Node
 
@@ -63,6 +64,15 @@ class ProductionRule(object):
         assert self.trace, "sample_products not called yet for rule " + str(self)
         return [key for key in list(self.trace.nodes.keys()) if key not in ["_RETURN", "_INPUT"]]
 
+    def get_child_types(self):
+        return self.child_types
+
+class EmptyProductionRule(ProductionRule):
+    def __init__(self):
+        super().__init__(child_types=[])
+    def _sample_products(self, parent, child_names):
+        assert(len(child_names) == 0)
+        return []
 
 class SimpleProductionRule(ProductionRule):
     ''' Helper Rule that takes a class type and an argument set,
@@ -120,3 +130,23 @@ class DeterministicRelativePoseProductionRule(RandomRelativePoseProductionRule):
             lambda: relative_tf,
             **kwargs
         )
+
+class ComposedProductionRule(ProductionRule):
+    ''' Given a set of production rules, this rule groups and enacts all of them. '''
+    def __init__(self, production_rules):
+        self.production_rules = production_rules
+        child_types = []
+        for rule in self.production_rules:
+            child_types += rule.get_child_types()
+        super().__init__(child_types=child_types)
+
+    def _sample_products(self, parent, child_names):
+        assert len(child_names) == len(self.child_types)
+        k = 0
+        children = []
+        for rule_k, rule in enumerate(self.production_rules):
+            k_next = k + len(rule.get_child_types())
+            with scope(prefix="subprod_%d" % rule_k):
+                children += rule._sample_products(parent, child_names[k:k_next])
+            k = k_next
+        return children
