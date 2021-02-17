@@ -65,15 +65,13 @@ class OrbitalBody(GeometricSetNode):
         self.min_child_orbital_radius = self.radius*2.
         self.max_child_orbital_radius = self.radius*10.
         self.min_child_radius = self.radius * 0.001
-        self.max_child_radius = self.radius * 0.01
+        self.max_child_radius = self.radius * 0.1
 
 # TODO(gizatt): Again, are metaclasses the answer here?
 Moon = type("Moon", (OrbitalBody,), {"geometric_prob": torch.tensor(1.0), "child_type": None})
-Planet = type("Planet", (OrbitalBody,), {"geometric_prob": torch.tensor(0.7), "child_type": Moon})
+Planet = type("Planet", (OrbitalBody,), {"geometric_prob": torch.tensor(0.2), "child_type": Moon})
 Sun = type("Sun", (OrbitalBody,), {"geometric_prob": torch.tensor(0.2), "child_type": Planet})
 
-
-'''
 
 class ClearNeighborhoodConstraint(ContinuousVariableConstraint):
     def __init__(self):
@@ -84,16 +82,16 @@ class ClearNeighborhoodConstraint(ContinuousVariableConstraint):
 
     def _eval_for_single_body(self, scene_tree, body):
         # Collect child local x and exclusion radii
-        # by looking at the production rules under this body.
-        child_rules = list(scene_tree.successors(body))
-        child_local_x = [rule.child_orbital_radius for rule in child_rules]
-        child_exclusion_radii = [rule.child_radius*self.neighborhood_size_ratio
-                                 for rule in child_rules]
+        # by looking at children of this body.
+        children = list(scene_tree.successors(body))
+        child_local_x = [child.x_local for child in children]
+        child_exclusion_radii = [child.radius*self.neighborhood_size_ratio
+                                 for child in children]
 
         min_sdf = torch.tensor(np.inf)
         # Do N^2 comparison of all bodies
-        for child_i in range(len(child_rules)):
-            for child_j in range(child_i+1, len(child_rules)):
+        for child_i in range(len(children)):
+            for child_j in range(child_i+1, len(children)):
                 if child_i == child_j:
                     continue
                 dist = torch.abs(child_local_x[child_i] - child_local_x[child_j])
@@ -108,35 +106,30 @@ class ClearNeighborhoodConstraint(ContinuousVariableConstraint):
         constraints = []
         all_bodies = scene_tree.find_nodes_by_type(OrbitalBody)
         signed_dist = [self._eval_for_single_body(scene_tree, body) for body in all_bodies]
-        #print("Min SDF: ", min(signed_dist))
         return min(signed_dist)
 
 class PlanetCountConstraint(TopologyConstraint):
     def __init__(self):
         super().__init__(lower_bound=torch.tensor(2.0), upper_bound=torch.tensor(np.inf))
     def eval(self, scene_tree):
-        # Counts how many planets the sun has
-        sun = get_tree_root(scene_tree)
-        #print("Num planets: ", len(list(scene_tree.successors(sun))))
-        return torch.tensor(len(list(scene_tree.successors(sun))))
+        # Counts how many planets there are
+        num_planets = len(list(scene_tree.find_nodes_by_type(Planet)))
+        return torch.tensor(num_planets)
 
 class MoonCountConstraint(TopologyConstraint):
     def __init__(self):
         super().__init__(lower_bound=torch.tensor(1.0), upper_bound=torch.tensor(np.inf))
     def eval(self, scene_tree):
         # Counts how many moons each planet has
-        simplified_tree = scene_tree.get_tree_without_production_rules()
-        sun = get_tree_root(simplified_tree)
-        planets = list(simplified_tree.successors(sun))
+        planets = scene_tree.find_nodes_by_type(Planet)
         if len(planets) == 0:
             return torch.tensor(np.inf)
         num_children_per_child = torch.tensor([
-            len(list(simplified_tree.successors(planet)))
+            len(list(scene_tree.successors(planet)))
             for planet in planets
         ])
-        #print("Num children per child: ", num_children_per_child)
         return torch.min(num_children_per_child)
-'''
+
 
 def draw_solar_system(scene_tree, fig=None, ax=None):
     sun = get_tree_root(scene_tree)
@@ -189,33 +182,34 @@ def sample_and_plot_solar_system():
     fig.set_size_inches(13, 2)
     ax = plt.gca()
 
-    '''
     scene_trees, success = sample_tree_from_root_type_with_constraints(
-            root_node_type=OrbitalBody,
-            root_node_type_kwargs={
-                "name":"sun",
+            root_node_type=Sun,
+            root_node_instantiation_dict={
                 "radius": torch.tensor(100.),
-                "x": torch.tensor(0.)
+                "x": torch.tensor(0.),
+                "x_local": torch.tensor(0.)
             },
             constraints=[
                 ClearNeighborhoodConstraint(),
                 PlanetCountConstraint(),
-                #MoonCountConstraint()
+                MoonCountConstraint()
             ],
             max_num_attempts=1000,
-            backend="metropolis_procedural_modeling",
-            num_samples=50,
+            backend="rejection",
+            #num_samples=50,
             #callback=partial(draw_solar_system, fig=fig, ax=ax)
     )
     if not success:
-        print("WARNING: SAMPLING UNSUCCESSFUL")'''
+        print("WARNING: SAMPLING UNSUCCESSFUL")
 
+    '''
     sun = Sun()
     sun.instantiate({"x": torch.tensor(0.),
                      "radius": torch.tensor(100.),
                      "x_local": torch.tensor(0.)})
     scene_tree = SceneTree.forward_sample_from_root(sun)
-    draw_solar_system(scene_tree, fig=fig)
+    '''
+    draw_solar_system(scene_trees[0], fig=fig)
     
 
 
