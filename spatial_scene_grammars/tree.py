@@ -1,34 +1,12 @@
 import networkx as nx
-from .nodes import TerminalNode, Node
+from .nodes import NonTerminalNode, TerminalNode, Node
 from .rules import ProductionRule
 from pyro.contrib.autoname import scope, name_count
 
-def get_tree_root(tree):
-    # Warning: will infinite loop if this isn't a tree.
-    # I don't check...
-    root_node = list(tree.nodes)[0]
-    while len(list(tree.predecessors(root_node))) > 0:
-        root_node = tree.predecessors(root_node)[0]
-    return root_node
 
 class SceneTree(nx.DiGraph):
-    def __init__(self, root_node_type):
+    def __init__(self):
         nx.DiGraph.__init__(self)
-        self._used_node_names = set()
-        self._root_node_type = root_node_type
-
-    # ACCESSORS AND BASICS
-    def get_node_parent_or_none(self, node):
-        parents = list(self.predecessors(node))
-        if len(parents) == 0:
-            return None
-        elif len(parents) == 1:
-            return parents[0]
-        else:
-            print("Bad parse tree: ", self)
-            print("Node: ", node)
-            print("Parents: ", parents)
-            raise NotImplementedError("> 1 parent --> bad parse tree")
 
     def find_nodes_by_type(self, target_type):
         nodes = []
@@ -44,88 +22,47 @@ class SceneTree(nx.DiGraph):
             out += self.get_recursive_children_of_node(node)
         return out
 
-    def get_tree_without_production_rules(self):
-        # Returns a raw nx.DiGraph of the same nodes
-        # in this tree, but with the production rules removed
-        # (so nodes are connected directly to their parent node).
-        new_tree = nx.DiGraph()
-        for node in self.nodes:
-            if isinstance(node, Node):
-                new_tree.add_node(node)
-        for node in self.nodes:
-            if isinstance(node, ProductionRule):
-                parent = self.get_node_parent_or_none(node)
-                assert(parent is not None)
-                for child in list(self.successors(node)):
-                    new_tree.add_edge(parent, child)
-        return new_tree
-
-    # GENERATION AND GENERATION UTILITIES
-    def get_unique_name_for_node_type(self, node_type):
-        # Generates a unique name for a new instance of a given
-        # node type.
-        k = 0
-        def get_candidate_name(l):
-            return "%s_%d" % (node_type.__name__, l)
-        name = get_candidate_name(k)
-        while name in self._used_node_names:
-            k += 1
-            name = get_candidate_name(k)
-        self._used_node_names.add(name)
-        return name
-
     @staticmethod
     def _generate_from_node_recursive(parse_tree, parent_node):
         if isinstance(parent_node, TerminalNode):
             return parse_tree
         else:
-            with scope(prefix=parent_node.name):
-                with scope(prefix="rules"):
-                    production_rules = parent_node.sample_production_rules()
-                for i, rule in enumerate(production_rules):
-                    parse_tree.add_node(rule)
-                    parse_tree.add_edge(parent_node, rule)
-
-                    with scope(prefix="prod_%d" % i):
-                        new_node_names = [parse_tree.get_unique_name_for_node_type(node_type)
-                                          for node_type in rule.child_types]
-                        new_nodes = rule.sample_products(parent_node, new_node_names)
-                        for new_node in new_nodes:
-                            parse_tree.add_node(new_node)
-                            parse_tree.add_edge(rule, new_node)
-                            parse_tree = SceneTree._generate_from_node_recursive(parse_tree, new_node)
-
+            # Choose what gets generated.
+            children = parent_node.sample_children()
+            # Do the actual generation of local (continuous) variables.
+            parent_node.instantiate_children(children)
+            for child in children:
+                if isinstance(child, NonTerminalNode):
+                    parse_tree = SceneTree._generate_from_node_recursive(parse_tree, child)
         return parse_tree
 
     @staticmethod
-    def forward_sample_from_root_type(root_node_type, **kwargs):
+    def forward_sample_from_root_type(root_node):
         '''
-        Generates an unconditioned parse tree from a root node type
-        and a list of any arguments required to instantiate it.
+        Generates an unconditioned parse tree from an instantiated
+        root node type.
         '''
-        parse_tree = SceneTree(root_node_type=root_node_type)
-        if "name" not in kwargs.keys():
-            kwargs["name"] = parse_tree.get_unique_name_for_node_type(root_node_type)
-        else:
-            parse_tree._used_node_names.add(kwargs["name"])
-        root_node = root_node_type(**kwargs)
+        assert root_node.instantiated
+        parse_tree = SceneTree()
         parse_tree.add_node(root_node)
         return SceneTree._generate_from_node_recursive(parse_tree, root_node)
 
     @staticmethod
-    def make_meta_scene_tree(root_node_type):
+    def make_meta_scene_tree(root_node):
         ''' Given a root node, generates a meta-tree of node types (without
         continuous variables) for which any generated tree from this root is
         a subgraph (again not considering continuous variables). '''
         meta_tree = nx.DiGraph()
-        input_types = [root_node_type]
-        while len(input_types) > 0:
-            cur_type = input_types.pop(0)
-            new_types = cur_type.get_maximal_child_type_list()
-            for new_type in new_types:
-                meta_tree.add_edge(cur_type, new_type)
-                if isinstance(new_type, NonTerminalNode):
-                    input_types.append(new_type)
+        meta_tree.add_node(root_node)
+        node_queue = [root_node]
+        while len(node_queue) > 0:
+            node = node_queue.pop(0)
+            new_nodes = node.get_maximal_child_list()
+            for new_node in new_nodes:
+                meta_tree.add_node(new_node)
+                meta_tree.add_edge(node, new_node)
+                if isinstance(new_node, NonTerminalNode):
+                    node_queue.append(new_node)
         return meta_tree
 
 
@@ -145,3 +82,4 @@ class SceneTree(nx.DiGraph):
 
         '''
         raise NotImplementedError()
+
