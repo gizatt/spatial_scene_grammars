@@ -118,3 +118,22 @@ class AndNode(NonTerminalNode):
 
     def get_maximal_child_list(self):
         return [child() for child in self.child_types]
+
+
+class IndependentSetNode(NonTerminalNode):
+    ''' Convenience specialization of a nonterminal node: has a list of
+    children that can occur, and chooses each one as an independent
+    Bernoulli choice..'''
+    def __init__(self, child_types, production_probs):
+        self.child_types = child_types
+        self.production_probs = production_probs
+        self.production_dist = dist.Bernoulli(production_probs)
+        super().__init__()
+
+    def sample_children(self):
+        active_rules = pyro.sample("independent_set_sample", self.production_dist)
+        return [child() for k, child in enumerate(self.child_types)
+                if active_rules[k]]
+
+    def get_maximal_child_list(self):
+        return [child() for child in self.child_types]
