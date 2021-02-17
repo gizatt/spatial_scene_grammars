@@ -57,6 +57,8 @@ class TerminalNode(Node):
 class NonTerminalNode(Node):
     ''' Abstract interface for nonterminal nodes, which are responsible
     for sampling a set of production rules to produce new nodes.'''
+    def __init__(self):
+        super().__init__()
 
     def sample_children(self):
         ''' Samples a list of ProductionRules to enact to create children
@@ -134,6 +136,33 @@ class IndependentSetNode(NonTerminalNode):
         active_rules = pyro.sample("independent_set_sample", self.production_dist)
         return [child() for k, child in enumerate(self.child_types)
                 if active_rules[k]]
+
+    def get_maximal_child_list(self):
+        return [child() for child in self.child_types]
+
+
+class GeometricSetNode(NonTerminalNode):
+    ''' Convenience specialization: has a single child type that can occur,
+    and chooses to repeat it according to a geometric distribution, capped at
+    a total number of instantiations.'''
+    def __init__(self, child_type, geometric_prob, max_repeats):
+        if child_type is None or geometric_prob == 0.:
+            self.child_types = []
+            self.production_dist = None
+            self.max_repeats = 0
+        else:
+            self.child_types = [child_type] * max_repeats
+            self.production_dist = dist.Geometric(geometric_prob)
+            self.max_repeats = torch.tensor(max_repeats, dtype=torch.int)
+        super().__init__()
+
+    def sample_children(self):
+        if len(self.child_types) == 0:
+            # Short circuit trivial case.
+            return []
+        num_active = pyro.sample("geometric_set_sample", self.production_dist)
+        num_active = min(int(num_active.item()), self.max_repeats)
+        return [self.child_types[0]() for k in range(num_active)]
 
     def get_maximal_child_list(self):
         return [child() for child in self.child_types]

@@ -14,12 +14,10 @@ from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
 from spatial_scene_grammars.tree import *
 from spatial_scene_grammars.sampling import *
-from spatial_scene_grammars.factors import *
-
 
 class OrbitalBody(GeometricSetNode):
     '''
-    Orbital body that can produce some number of
+    Metaclass for orbital body that can produce some number of
     children in orbits around itself.
 
     (Modeled in 1d, in radial coordinates.)
@@ -29,34 +27,39 @@ class OrbitalBody(GeometricSetNode):
     radius than itself. Smaller radii bodies produce less children.
     '''
 
-    class ChildProductionRule(ProductionRule):
-        ''' Randomly produces a child planet from a parent planet. '''
-        def _sample_products(self, parent, child_names):
-            # Child planet location and size is a function of the parent.
-            # Both are saved associated with the rule to make writing
-            # the neighborhood constraint more convenient.
+    # Geometric prob will be varied via metaclass instantiation
+    # for sun vs planet vs moon.
+    geometric_prob = None
+    child_type = None
 
-            self.child_orbital_radius = pyro.sample(
-                "child_orbital_radius",
-                dist.Uniform(parent.min_child_orbital_radius,
-                             parent.max_child_orbital_radius))
+    def __init__(self):
+        super().__init__(child_type=self.child_type, geometric_prob=self.geometric_prob, max_repeats=5)
+
+    def _instantiate_children_impl(self, children):
+        all_attrs = []
+        for k, child in enumerate(children):
+            child_orbital_radius = pyro.sample(
+                "child_%d_orbital_radius" % k,
+                dist.Uniform(self.min_child_orbital_radius,
+                             self.max_child_orbital_radius))
                 
-            self.child_radius = pyro.sample(
-                "child_radius",
-                dist.Uniform(parent.min_child_radius,
-                             parent.max_child_radius))
-            child_x = parent.x + self.child_orbital_radius
-            return [OrbitalBody(
-                name=child_names[0],
-                x=child_x,
-                radius=self.child_radius)]
+            child_radius = pyro.sample(
+                "child_%d_radius" % k,
+                dist.Uniform(self.min_child_radius,
+                             self.max_child_radius))
+            child_x = self.x + child_orbital_radius
+            all_attrs.append({
+                "x": child_x,
+                "radius": child_radius,
+                "x_local": child_orbital_radius
+            })
+        return all_attrs
 
-    def __init__(self, name, x, radius):
-        self.radius = radius
-        self.x = x
-        super().__init__(name=name)
-
-    def _setup(self):
+    def _instantiate_impl(self, derived_attributes):
+        self.radius = derived_attributes["radius"]
+        self.x = derived_attributes["x"]
+        self.x_local = derived_attributes["x_local"]
+        
         self.color = pyro.sample("color", dist.Uniform(0.0, 1.0))
 
         self.min_child_orbital_radius = self.radius*2.
@@ -64,18 +67,13 @@ class OrbitalBody(GeometricSetNode):
         self.min_child_radius = self.radius * 0.001
         self.max_child_radius = self.radius * 0.01
 
-        # Geometric rate increases linearly with
-        # radius until saturating at 0.7 (i.e. 30%
-        # chance of stopping at each new planet)
-        # when the radius hits 0.7.
-        assert self.radius > 0.
-        reproduction_prob = torch.min(self.radius, torch.tensor(0.5))
-        
-        self.register_production_rules(
-            production_rule_type=OrbitalBody.ChildProductionRule,
-            production_rule_kwargs={"child_types":[OrbitalBody]},
-            geometric_prob= 1.-reproduction_prob
-        )
+# TODO(gizatt): Again, are metaclasses the answer here?
+Moon = type("Moon", (OrbitalBody,), {"geometric_prob": torch.tensor(1.0), "child_type": None})
+Planet = type("Planet", (OrbitalBody,), {"geometric_prob": torch.tensor(0.7), "child_type": Moon})
+Sun = type("Sun", (OrbitalBody,), {"geometric_prob": torch.tensor(0.2), "child_type": Planet})
+
+
+'''
 
 class ClearNeighborhoodConstraint(ContinuousVariableConstraint):
     def __init__(self):
@@ -138,6 +136,7 @@ class MoonCountConstraint(TopologyConstraint):
         ])
         #print("Num children per child: ", num_children_per_child)
         return torch.min(num_children_per_child)
+'''
 
 def draw_solar_system(scene_tree, fig=None, ax=None):
     sun = get_tree_root(scene_tree)
@@ -159,13 +158,15 @@ def draw_solar_system(scene_tree, fig=None, ax=None):
         ax.clear()
     cm = plt.get_cmap("viridis")
 
+    print("Planet locations: ", planet_locations)
+    print("Planet radii: ", planet_radii)
     ax.axhline(0., linestyle="--", color="white", linewidth=1, zorder=-1)
     # For each planet, plot the orbits of the children and the planet istelf
     for k, planet in enumerate(all_bodies):
-        child_rules = list(scene_tree.successors(planet))
-        for rule in child_rules:
+        children = list(scene_tree.successors(planet))
+        for child in children:
             ax.add_artist(
-                plt.Circle([planet_locations[k], 0.], rule.child_orbital_radius.item(), edgecolor=cm(planet_colors[k]),
+                plt.Circle([planet_locations[k], 0.], child.x_local.item(), edgecolor=cm(planet_colors[k]),
                            fill=False, linestyle="--", linewidth=0.2)
             )
         # Planet core
@@ -188,6 +189,7 @@ def sample_and_plot_solar_system():
     fig.set_size_inches(13, 2)
     ax = plt.gca()
 
+    '''
     scene_trees, success = sample_tree_from_root_type_with_constraints(
             root_node_type=OrbitalBody,
             root_node_type_kwargs={
@@ -206,15 +208,21 @@ def sample_and_plot_solar_system():
             #callback=partial(draw_solar_system, fig=fig, ax=ax)
     )
     if not success:
-        print("WARNING: SAMPLING UNSUCCESSFUL")
-    draw_solar_system(scene_trees[-1])
+        print("WARNING: SAMPLING UNSUCCESSFUL")'''
+
+    sun = Sun()
+    sun.instantiate({"x": torch.tensor(0.),
+                     "radius": torch.tensor(100.),
+                     "x_local": torch.tensor(0.)})
+    scene_tree = SceneTree.forward_sample_from_root(sun)
+    draw_solar_system(scene_tree, fig=fig)
     
 
 
 if __name__ == "__main__":
     torch.set_default_tensor_type(torch.DoubleTensor)
     pyro.enable_validation(True)
-    torch.manual_seed(43)
+    torch.manual_seed(42)
     # Print a trace of a solar system generation
     #trace = pyro.poutine.trace(
     #    SceneTree.forward_sample_from_root_type).get_trace(
