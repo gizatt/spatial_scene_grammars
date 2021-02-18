@@ -113,6 +113,24 @@ def test_forward_sampling(set_seed):
     expected_ll = trace.log_prob_sum()
     assert np.allclose(tree_ll, expected_ll)
 
+    # Make sure these calls are identical
+    tree_ll = tree.get_subtree_log_prob(building)
+    tree_ll_shorthand = tree.get_log_prob()
+    assert np.allclose(tree_ll, tree_ll_shorthand)
+
+def test_rebuild_trace(set_seed):
+    trace = pyro.poutine.trace(SceneTree.forward_sample_from_root_type).get_trace(
+        Building, {"xy": torch.zeros(2)}
+    )
+    scene_tree = trace.nodes["_RETURN"]["value"]
+    # Make sure we can rebuild teh trace of the full tree
+    rebuilt_trace = scene_tree.get_trace()
+    print("Rebuilt trace with keys ", list(rebuilt_trace.nodes.keys()))
+    for key, site in trace.nodes.items():
+        assert key in rebuilt_trace.nodes.keys()
+        if site["type"] is "sample":
+            assert torch.allclose(site["value"], trace.nodes[key]["value"])
+
 def test_meta_scene_tree(set_seed):
     meta_tree = SceneTree.make_meta_scene_tree(Building())
 

@@ -1,7 +1,12 @@
+from functools import partial
 import networkx as nx
+
+import pyro
+from pyro.contrib.autoname import scope, name_count
+
 from .nodes import NonTerminalNode, TerminalNode, Node
 from .rules import ProductionRule
-from pyro.contrib.autoname import scope, name_count
+
 
 def get_tree_root(tree):
     # Warning: will infinite loop if this isn't a tree.
@@ -10,6 +15,7 @@ def get_tree_root(tree):
     while len(list(tree.predecessors(root_node))) > 0:
         root_node = tree.predecessors(root_node)[0]
     return root_node
+
 
 class SceneTree(nx.DiGraph):
     def __init__(self):
@@ -38,10 +44,17 @@ class SceneTree(nx.DiGraph):
             out += self.get_recursive_children_of_node(node)
         return out
 
-    def resample_instantiations(self, root_node, root_node_instantiation_dict):
+    def resample_instantiations(self, root_node, root_node_instantiation_dict=None):
         ''' Resample the continuous parameters of all nodes under the given
-        node in the tree from their priors, but keep the tree structure the same. '''
-        root_node.instantiate(root_node_instantiation_dict)
+        node in the tree from their priors, but keep the tree structure the same.
+
+        If the root node instantiation dict is *not* provided, the root node is assumed
+        to be instantiated and will not be re-instantiated. '''
+        assert root_node in self.nodes
+        if root_node_instantiation_dict:
+            root_node.instantiate(root_node_instantiation_dict)
+        else:
+            assert root_node.instantiated
         node_queue = [root_node]
         while len(node_queue) > 0:
             node = node_queue.pop(0)
@@ -49,6 +62,69 @@ class SceneTree(nx.DiGraph):
                 children = list(self.successors(node))
                 node.instantiate_children(children)
                 node_queue += children
+
+    def resample_subtree(self, root_node, root_node_instantiation_dict=None):
+        ''' Completely resamples the subtree rooted at the given root node. If the
+        root node instantiating dict is supplied, resamples the root node local variables
+        too; otherwise asserts that it's already instantiated. '''
+        assert root_node in self.nodes
+        if root_node_instantiation_dict:
+            root_node.instantiate(root_node_instantiation_dict)
+        else:
+            assert root_node.instantiated
+        
+        new_subtree = SceneTree.forward_sample_from_root(root_node)
+        # Remove the existing subtree...
+        node_queue = list(self.successors(root_node))
+        while len(node_queue) > 0:
+            node = node_queue.pop(0)
+            node_queue += self.successors(node)
+            self.remove_node(node)
+        # and add the new one in its place.
+        node_queue = [root_node]
+        while len(node_queue) > 0:
+            node = node_queue.pop(0)
+            children = new_subtree.successors(node)
+            for child in children:
+                self.add_node(child)
+                self.add_edge(node, child)
+            node_queue += children
+        # Done!
+
+    def get_trace(self):
+        ''' Returns a pyro trace of the forward sampling of this tree.
+        This is reconstructed from each individual node in the tree, so if you've
+        modified / resampled subtrees, this will still rebuild a correct overall trace. '''
+        # This is a little hard -- the "easy" way to do it would be
+        # to collect all sample site values from all nodes, and then
+        # re-run forward_sample_from_root. But that'd create brand new
+        # nodes, and we'd rather preserve our existing nodes (so we keep
+        # the same names). Instead, I'll build a routine that manually
+        # calls every node's sample and instantiate methods, but throwing
+        # out the new nodes and keeping the old ones.
+        # Still super funky... Pyro and graph-structured data like this
+        # just don't play very well, do they?
+        def trace_to_observe_dict(trace):
+            return {key: site["value"] for key, site in trace.nodes.items()
+                    if site["type"] is "sample"}
+        def resample_tree_in_place(scene_tree):
+            for node in scene_tree.nodes():
+                print("Node ", node.name)
+                assert node.instantiated
+                pyro.poutine.condition(
+                    node.instantiate,
+                    data=trace_to_observe_dict(node.instantiate_trace)
+                )(node.derived_attributes)
+                if isinstance(node, NonTerminalNode):
+                    assert node.children_sampled
+                    pyro.poutine.condition(node.sample_children, 
+                        data=trace_to_observe_dict(node.sample_children_trace))()
+                    children = list(scene_tree.successors(node))
+                    pyro.poutine.condition(
+                        node.instantiate_children,
+                        data=trace_to_observe_dict(node.instantiate_children_trace)
+                    )(children=children)
+        return pyro.poutine.trace(resample_tree_in_place).get_trace(self)
 
     def get_subtree_log_prob(self, root_node, include_instantiate=True, include_topology=True):
         assert root_node in self.nodes
@@ -66,6 +142,10 @@ class SceneTree(nx.DiGraph):
                     ll += node.get_instantiate_children_ll()
                 node_queue += children
         return ll
+
+    def get_log_prob(self, **kwargs):
+        return self.get_subtree_log_prob(
+            get_tree_root(self), **kwargs)
 
     @staticmethod
     def _generate_from_node_recursive(parse_tree, parent_node):
