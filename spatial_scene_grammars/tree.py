@@ -108,13 +108,17 @@ class SceneTree(nx.DiGraph):
             return {key: site["value"] for key, site in trace.nodes.items()
                     if site["type"] is "sample"}
         def resample_tree_in_place(scene_tree):
+            # The root is the only node that doesn't get instantiated
+            # by its parent, so call that manually.
+            root = get_tree_root(self)
+            assert root.instantiated
+            pyro.poutine.condition(
+                root.instantiate,
+                data=trace_to_observe_dict(root.instantiate_trace)
+            )(root.derived_attributes)
+            # Then, for every node, "re-run" (with fixed output) the
+            # child resampling and instantiation.
             for node in scene_tree.nodes():
-                print("Node ", node.name)
-                assert node.instantiated
-                pyro.poutine.condition(
-                    node.instantiate,
-                    data=trace_to_observe_dict(node.instantiate_trace)
-                )(node.derived_attributes)
                 if isinstance(node, NonTerminalNode):
                     assert node.children_sampled
                     pyro.poutine.condition(node.sample_children, 
@@ -124,6 +128,7 @@ class SceneTree(nx.DiGraph):
                         node.instantiate_children,
                         data=trace_to_observe_dict(node.instantiate_children_trace)
                     )(children=children)
+            return scene_tree
         return pyro.poutine.trace(resample_tree_in_place).get_trace(self)
 
     def get_subtree_log_prob(self, root_node, include_instantiate=True, include_topology=True):

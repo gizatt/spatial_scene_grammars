@@ -21,7 +21,7 @@ def eval_total_constraint_set_violation(scene_tree, constraints):
     return total_violation
 
 
-def eval_tree_log_prob(scene_tree, constraints, clamped_error_distribution):
+def eval_tree_likelihood_under_constraints(scene_tree, constraints, clamped_error_distribution):
     # Calculates the log prob of the tree under the constraint set.
     # Topology constraints get -infinity for being violated;
     # continuous constraint violations get penalized under the
@@ -128,7 +128,6 @@ def do_fixed_structure_mcmc(root_node_type, root_node_instantiation_dict, feasib
     # 3) Run HMC.
     initial_values = {key: site["value"] for key, site in feasible_trace.nodes.items()
                       if site["type"] is "sample"}
-    print("initial values: ", initial_values)
     init_params, potential_fn, transforms, _ = pyro.infer.mcmc.util.initialize_model(
         mcmc_model, model_args=(),
         init_strategy=pyro.infer.autoguide.init_to_value(values=initial_values))
@@ -161,7 +160,7 @@ def _sample_backend_rejection_and_hmc(
 
     # Now do HMC on the continuous variables that are involved
     # in the constraints.
-    mcmc, discrete_site_data = do_fixed_structure_mcmc(root_node_type, root_node_instantiation_dict, orig_trace, constraints,
+    mcmc, fixed_tree = do_fixed_structure_mcmc(root_node_type, root_node_instantiation_dict, orig_trace, constraints,
         callback=callback, num_samples=num_samples,
         kernel_constructor=pyro.infer.mcmc.HMC,
         num_steps=1, step_size=0.1, target_accept_prob=0.5, adapt_step_size=True,
@@ -179,7 +178,7 @@ def _sample_backend_rejection_and_hmc(
         sample_data = {}
         for key in sample_data.keys():
             sample_data[key] = sample_data[key][k, ...]
-        new_tree = deepcopy(scene_tree)
+        new_tree = deepcopy(fixed_tree)
         pyro.poutine.condition(
             new_tree.resample_instantiations,
             sample_data)(get_tree_root(new_tree), root_node_instantiation_dict)
@@ -209,14 +208,14 @@ def _sample_backend_metroplis_procedural_modeling(
         print("Couldn't achieve even just the topology constraints on their own via rejection sampling.")
         return current_scene_tree, False
 
-    samples = [current_scene_tree]
+    samples = [deepcopy(current_scene_tree)]
 
     # Now do the primary MCMC steps as requested.
     for step_k in range(num_samples):
         if pyro.sample("step_%d_type" % step_k, dist.Bernoulli(diffusion_rate)):
             # Do diffusion step with constraints in mind
-            mcmc, discrete_site_data = do_fixed_structure_mcmc(root_node_type, root_node_instantiation_dict, current_trace,
-                constraints, callback=callback, num_samples=1,
+            mcmc, fixed_tree = do_fixed_structure_mcmc(root_node_type, root_node_instantiation_dict, current_trace,
+                constraints, callback=None, num_samples=1,
                 kernel_constructor=pyro.infer.mcmc.RandomWalkKernel,
                 variance=0.1)
             if not mcmc._samples:
@@ -226,13 +225,12 @@ def _sample_backend_metroplis_procedural_modeling(
                 sample_data = {}
                 for key in sample.keys():
                     sample_data[key] = sample[key][0, ...]
-                # Use resulting site data to regenerate our current tree and trace.
-                current_trace = pyro.poutine.trace(
-                    pyro.poutine.condition(
-                        SceneTree.forward_sample_from_root_type,
-                        {**sample_data, **discrete_site_data})
-                    ).get_trace(root_node_type, root_node_instantiation_dict)
-                current_scene_tree = current_trace.nodes["_RETURN"]["value"]
+                    current_trace.nodes[key]["value"] = sample_data[key]
+                # Merge resulting site data into our current trace, and regenerate
+                # that specific tree.
+                pyro.poutine.condition(
+                    current_scene_tree.resample_instantiations, sample_data)(
+                        get_tree_root(current_scene_tree), root_node_instantiation_dict)
         else:
             # Do jump step.
             # First randomly select a node.
@@ -241,7 +239,8 @@ def _sample_backend_metroplis_procedural_modeling(
                 # sec 8.1 of MPM. For each node, figure out its depth relative to the
                 # max depth of the supplied tree.
                 node_depth = []
-                for node in scene_tree:
+                node_choices = list(scene_tree.nodes)
+                for node in node_choices:
                     depth = 0
                     parent = node
                     while True:
@@ -252,7 +251,7 @@ def _sample_backend_metroplis_procedural_modeling(
                         assert depth < 10000, "Excessive depth, probably malformed [cyclic] scene tree."
                     node_depth.append(depth)
                 node_depth = torch.tensor(node_depth)
-                node_selection_probs = torch.ones(len(scene_tree))*estimated_branching_factor
+                node_selection_probs = torch.ones(len(node_choices))*estimated_branching_factor
                 node_selection_probs = torch.pow(node_selection_probs, torch.max(node_depth) - node_depth)
                 node_selection_probs /= torch.sum(node_selection_probs)
                 return node_choices, node_selection_probs
@@ -263,28 +262,12 @@ def _sample_backend_metroplis_procedural_modeling(
             )
             reseed_node = node_choices[reseed_node_index.item()]
 
-            # Regenerate tree, keeping everything outside of that subtree fixed
-            # (via conditioning). Every random choice site name under in this subtree
-            # will have the unique node name in it, so select out sites that
-            # don't have that name to preserve. (Assumes the unique node name
-            # doesn't appear in any variables outside of the subtree. This is
-            # relatively safe; you'd have to try very hard to have it happen.
-            # The deeper in the tree the node is, the longer its mostly-auto-generated
-            # unique name is.)
-            # TODO: I really ought to be able to just ask all of the
-            # nodes the report all the variables that are associated with
-            # themselves and not make this dangerous assumption. Part of my
-            # continuing node-variable and naming woes...
-            keep_data = {}
-            for key, site in current_trace.nodes.items():
-                if site["type"] == "sample" and reseed_node.name not in key:
-                    keep_data[key] = site["value"]
+            # Regenerate tree, keeping everything outside of that subtree fixed.
+            # (Make a shallow copy -- we'll modify graph structure, but the underlying
+            # shared nodes are exactly the same node.)
+            new_tree = current_scene_tree.copy() 
+            new_tree.resample_subtree(reseed_node)
 
-            rerun_tree = pyro.poutine.condition(
-                SceneTree.forward_sample_from_root_type,
-                data=keep_data)
-            new_trace = pyro.poutine.trace(rerun_tree).get_trace(root_node_type, root_node_instantiation_dict)
-            new_tree = new_trace.nodes["_RETURN"]["value"]
 
             # Decide whether to accept the jump by calculating an MH accept
             # probability. This is the equation immediately before [Diamond] in
@@ -298,20 +281,21 @@ def _sample_backend_metroplis_procedural_modeling(
             # is the total prob of subtree T_v'.
             def calc_accept_prob():
                 # Find the forward and reverse selection probs. To find the node in the
-                # new tree, we search by name, since it should be identical.
+                # new tree, we can search for it directly, since it was copied directly
+                # into the new tree.
                 forward_node_selection_prob = node_selection_probs[reseed_node_index]
                 reverse_node_choices, reverse_node_selection_probs = get_node_choices_and_probs(new_tree)
                 reverse_node_selection_prob = None
                 for k, node in enumerate(reverse_node_choices):
-                    if node.name == reseed_node.name:
+                    if node is reseed_node:
                         reverse_node_selection_prob = reverse_node_selection_probs[k]
                 assert reverse_node_selection_prob is not None
 
                 # Score both trees under the constraint set (which we treat as the scoring function.)
                 clamped_error_distribution = dist.Normal(0., 0.01)
-                L_pre_tree = eval_tree_log_prob(current_scene_tree, constraints, clamped_error_distribution)
+                L_pre_tree = eval_tree_likelihood_under_constraints(current_scene_tree, constraints, clamped_error_distribution)
                 assert torch.isfinite(L_pre_tree), current_scene_tree.nodes
-                L_post_tree = eval_tree_log_prob(new_tree, constraints, clamped_error_distribution)
+                L_post_tree = eval_tree_likelihood_under_constraints(new_tree, constraints, clamped_error_distribution)
                 if not torch.isfinite(L_post_tree):
                     # Short-circuit: proposed tree is completely infeasible.
                     print("Short-circuit rejecting jump because of infeasible proposed tree.")
@@ -328,11 +312,11 @@ def _sample_backend_metroplis_procedural_modeling(
                             score += site["log_prob_sum"]
                     return score
 
-                pre_subtree_log_prob = score_non_keep_sites(current_trace)
-                post_subtree_log_prob = score_non_keep_sites(new_trace)
+                pre_full_tree_log_prob = current_scene_tree.get_log_prob()
+                post_full_tree_log_prob = new_tree.get_log_prob()
 
-                pre_full_tree_log_prob = current_trace.log_prob_sum()
-                post_full_tree_log_prob = new_trace.log_prob_sum()
+                pre_subtree_log_prob = pre_full_tree_log_prob - current_scene_tree.get_subtree_log_prob(reseed_node)
+                post_subtree_log_prob = post_full_tree_log_prob - new_tree.get_subtree_log_prob(reseed_node)
 
                 # Finally assemble the accept prob.
                 # TODO: I'm really not sure if this is right. Any part pertaining to tree probability winds
@@ -350,10 +334,10 @@ def _sample_backend_metroplis_procedural_modeling(
             if pyro.sample("accept_step_%d" % step_k, dist.Uniform(0., 1.)) <= a:
                 print("\tAccepting jump.")
                 current_scene_tree = new_tree
-                current_trace = new_trace
+                current_trace = new_tree.get_trace()
             else:
                 print("\tRejecting jump.")
-        samples.append(current_scene_tree)
+        samples.append(deepcopy(current_scene_tree))
         if callback is not None:
             callback(current_scene_tree)
     return samples, True

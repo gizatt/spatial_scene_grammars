@@ -126,8 +126,13 @@ def test_rebuild_trace(set_seed):
     # Make sure we can rebuild teh trace of the full tree
     rebuilt_trace = scene_tree.get_trace()
     print("Rebuilt trace with keys ", list(rebuilt_trace.nodes.keys()))
+    assert rebuilt_trace.nodes["_RETURN"]["value"] == scene_tree
     for key, site in trace.nodes.items():
         assert key in rebuilt_trace.nodes.keys()
+        if site["type"] is "sample":
+            assert torch.allclose(site["value"], trace.nodes[key]["value"])
+    for key, site in rebuilt_trace.nodes.items():
+        assert key in trace.nodes.keys()
         if site["type"] is "sample":
             assert torch.allclose(site["value"], trace.nodes[key]["value"])
 

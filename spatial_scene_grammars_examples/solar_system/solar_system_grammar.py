@@ -151,8 +151,6 @@ def draw_solar_system(scene_tree, fig=None, ax=None):
         ax.clear()
     cm = plt.get_cmap("viridis")
 
-    print("Planet locations: ", planet_locations)
-    print("Planet radii: ", planet_radii)
     ax.axhline(0., linestyle="--", color="white", linewidth=1, zorder=-1)
     # For each planet, plot the orbits of the children and the planet istelf
     for k, planet in enumerate(all_bodies):
@@ -191,12 +189,12 @@ def sample_and_plot_solar_system():
             },
             constraints=[
                 ClearNeighborhoodConstraint(),
-                PlanetCountConstraint(),
-                MoonCountConstraint()
+                #PlanetCountConstraint(),
+                #MoonCountConstraint()
             ],
             max_num_attempts=1000,
-            backend="rejection_then_hmc",
-            num_samples=10,
+            backend="metropolis_procedural_modeling",
+            num_samples=1000,
             callback=partial(draw_solar_system, fig=fig, ax=ax)
     )
     if not success:
