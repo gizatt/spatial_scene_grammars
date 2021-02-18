@@ -1,3 +1,4 @@
+from copy import deepcopy
 import numpy as np
 import networkx as nx
 import torch
@@ -6,7 +7,7 @@ import pyro.distributions as dist
 from .nodes import Node
 from .rules import ProductionRule
 from .factors import TopologyConstraint, ContinuousVariableConstraint
-from .tree import SceneTree
+from .tree import SceneTree, get_tree_root
 
 
 def eval_total_constraint_set_violation(scene_tree, constraints):
@@ -98,32 +99,17 @@ def do_fixed_structure_mcmc(root_node_type, root_node_instantiation_dict, feasib
     # Kernel type should be one of ["RandomWalkKernel", "HMC", "NUTS"].
     # kwargs is passed to the mcmc kernel constructor.
 
-    scene_tree = feasible_trace.nodes["_RETURN"]["value"]
+    scene_tree = deepcopy(feasible_trace.nodes["_RETURN"]["value"])
+    root = get_tree_root(scene_tree)
     topology_constraints, continuous_constraints = split_constraints(constraints)
-
-    # 1) Separate out a list of all of the site names of continuous variables that can affect
-    # the continuous constraints.
-    continuous_var_names = []
-    for node in scene_tree:
-        if isinstance(node, ProductionRule):
-            continuous_var_names += node.get_local_variable_names()
 
     # 2) Create a sub-model for HMC by conditioning the original forward model on the
     # remaining variables, and adding additional factors to the sub-model implementing
     # the continuous variable constraints as Gibbs factors.
-    discrete_var_names_and_vals = {}
-    for key, site in feasible_trace.nodes.items():
-        if site["type"] is "sample" and key not in continuous_var_names:
-            discrete_var_names_and_vals[key] = site["value"]
-
     def mcmc_model():
-        # This handle runs the continuous model forward, conditioning all the same
-        # discrete choices to be made.
-        only_continuous_model = pyro.poutine.condition(
-                SceneTree.forward_sample_from_root_type,
-                data=discrete_var_names_and_vals)
-        scene_tree = only_continuous_model(root_node_type, root_node_instantiation_dict)
-
+        # Run the *instantiations only* forward, top-down.
+        scene_tree.resample_instantiations(root, root_node_instantiation_dict)
+        
         clamped_error_distribution = dist.Normal(0., 0.01)
         for k, c in enumerate(continuous_constraints):
             # TODO: How do I actually score these factors properly? This isn't
@@ -140,7 +126,9 @@ def do_fixed_structure_mcmc(root_node_type, root_node_instantiation_dict, feasib
         return scene_tree
 
     # 3) Run HMC.
-    initial_values = {key: site["value"] for key, site in feasible_trace.nodes.items() if site["type"] is "sample"}
+    initial_values = {key: site["value"] for key, site in feasible_trace.nodes.items()
+                      if site["type"] is "sample"}
+    print("initial values: ", initial_values)
     init_params, potential_fn, transforms, _ = pyro.infer.mcmc.util.initialize_model(
         mcmc_model, model_args=(),
         init_strategy=pyro.infer.autoguide.init_to_value(values=initial_values))
@@ -148,7 +136,7 @@ def do_fixed_structure_mcmc(root_node_type, root_node_instantiation_dict, feasib
     mcmc_kernel = kernel_constructor(potential_fn=potential_fn, transforms=transforms, **kwargs)
     mcmc = pyro.infer.mcmc.MCMC(mcmc_kernel, num_samples=num_samples, initial_params=init_params, disable_progbar=~verbose)
     mcmc.run()
-    return mcmc, discrete_var_names_and_vals
+    return mcmc, scene_tree
 
 def _sample_backend_rejection_and_hmc(
         root_node_type, root_node_instantiation_dict,
@@ -177,19 +165,25 @@ def _sample_backend_rejection_and_hmc(
         callback=callback, num_samples=num_samples,
         kernel_constructor=pyro.infer.mcmc.HMC,
         num_steps=1, step_size=0.1, target_accept_prob=0.5, adapt_step_size=True,
-        adapt_mass_matrix=True)
+        adapt_mass_matrix=True
+    )
     
 
     print("MCMC Summary: ",)
     mcmc.summary()
 
+
     samples = mcmc.get_samples()
     out_trees = []
     for k in range(num_samples):
+        sample_data = {}
         for key in sample_data.keys():
-            sample_data = {}
             sample_data[key] = sample_data[key][k, ...]
-        out_trees.append(pyro.poutine.condition(hmc_model, {**sample_data, **discrete_site_data})())
+        new_tree = deepcopy(scene_tree)
+        pyro.poutine.condition(
+            new_tree.resample_instantiations,
+            sample_data)(get_tree_root(new_tree), root_node_instantiation_dict)
+        out_trees.append(new_tree)
     return out_trees, True
 
 def _sample_backend_metroplis_procedural_modeling(
@@ -243,12 +237,11 @@ def _sample_backend_metroplis_procedural_modeling(
             # Do jump step.
             # First randomly select a node.
             def get_node_choices_and_probs(scene_tree):
-                node_choices = list(scene_tree.get_tree_without_production_rules())
                 # Apply nonterminal selection bias towards the tree, following
                 # sec 8.1 of MPM. For each node, figure out its depth relative to the
                 # max depth of the supplied tree.
                 node_depth = []
-                for node in node_choices:
+                for node in scene_tree:
                     depth = 0
                     parent = node
                     while True:
@@ -259,7 +252,7 @@ def _sample_backend_metroplis_procedural_modeling(
                         assert depth < 10000, "Excessive depth, probably malformed [cyclic] scene tree."
                     node_depth.append(depth)
                 node_depth = torch.tensor(node_depth)
-                node_selection_probs = torch.ones(len(node_choices))*estimated_branching_factor
+                node_selection_probs = torch.ones(len(scene_tree))*estimated_branching_factor
                 node_selection_probs = torch.pow(node_selection_probs, torch.max(node_depth) - node_depth)
                 node_selection_probs /= torch.sum(node_selection_probs)
                 return node_choices, node_selection_probs

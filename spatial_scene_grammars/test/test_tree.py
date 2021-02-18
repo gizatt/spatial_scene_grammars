@@ -103,7 +103,7 @@ def test_forward_sampling(set_seed):
     building.instantiate({"xy": torch.zeros(2)})
     assert building.instantiated
 
-    tree = SceneTree.forward_sample_from_root_type(building)
+    tree = SceneTree.forward_sample_from_root(building)
 
 def test_meta_scene_tree(set_seed):
     meta_tree = SceneTree.make_meta_scene_tree(Building())

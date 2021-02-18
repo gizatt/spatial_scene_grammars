@@ -195,9 +195,9 @@ def sample_and_plot_solar_system():
                 MoonCountConstraint()
             ],
             max_num_attempts=1000,
-            backend="rejection",
-            #num_samples=50,
-            #callback=partial(draw_solar_system, fig=fig, ax=ax)
+            backend="rejection_then_hmc",
+            num_samples=10,
+            callback=partial(draw_solar_system, fig=fig, ax=ax)
     )
     if not success:
         print("WARNING: SAMPLING UNSUCCESSFUL")

@@ -27,7 +27,6 @@ class NodeNameManager():
         return class_name + "_%d" % n
 node_name_store = NodeNameManager()
 
-
 class Node():
     ''' Every node (symbol) in the grammar derives from this base.
     At construction time, a node will be supplied a name and a dictionary
@@ -41,7 +40,10 @@ class Node():
     def instantiate(self, derived_attributes):
         ''' Given a list of derived attributes, sets self up.
         This can include local random choices and deterministic
-        setup (of things like graphics assets). '''
+        setup (of things like graphics assets). Traces the actual
+        instantiate implementation and records identity of random
+        variables sampled. '''
+        self.derived_attributes = derived_attributes
         with scope(prefix=self.name + "_instantiate"):
             self._instantiate_impl(derived_attributes)
         self.instantiated = True
@@ -58,11 +60,16 @@ class NonTerminalNode(Node):
     ''' Abstract interface for nonterminal nodes, which are responsible
     for sampling a set of production rules to produce new nodes.'''
     def __init__(self):
+        self.children_instantiated = False
         super().__init__()
 
     def sample_children(self):
         ''' Samples a list of ProductionRules to enact to create children
         for this node. '''
+        with scope(prefix=self.name + "_choose_children"):
+            return self._sample_children_impl()
+
+    def _sample_children_impl(self):
         raise NotImplementedError()
 
     def get_maximal_child_list(self):
@@ -81,10 +88,11 @@ class NonTerminalNode(Node):
         assert len(child_attributes) == len(children)
         for child, attr in zip(children, child_attributes):
             child.instantiate(attr)
-        self.instantiated = True
+        self.children_instantiated = True
 
     def _instantiate_children_impl(self, children):
         raise NotImplementedError()
+
 
 
 class OrNode(NonTerminalNode):
@@ -100,7 +108,7 @@ class OrNode(NonTerminalNode):
         self.production_dist = dist.Categorical(production_weights)
         super().__init__()
 
-    def sample_children(self):
+    def _sample_children_impl(self):
         active_rule = pyro.sample("or_sample", self.production_dist)
         return [self.child_types[active_rule]()]
 
@@ -115,7 +123,7 @@ class AndNode(NonTerminalNode):
         self.child_types = child_types
         super().__init__()
 
-    def sample_children(self):
+    def _sample_children_impl(self):
         return [child() for child in self.child_types]
 
     def get_maximal_child_list(self):
@@ -132,7 +140,7 @@ class IndependentSetNode(NonTerminalNode):
         self.production_dist = dist.Bernoulli(production_probs)
         super().__init__()
 
-    def sample_children(self):
+    def _sample_children_impl(self):
         active_rules = pyro.sample("independent_set_sample", self.production_dist)
         return [child() for k, child in enumerate(self.child_types)
                 if active_rules[k]]
@@ -156,7 +164,7 @@ class GeometricSetNode(NonTerminalNode):
             self.max_repeats = torch.tensor(max_repeats, dtype=torch.int)
         super().__init__()
 
-    def sample_children(self):
+    def _sample_children_impl(self):
         if len(self.child_types) == 0:
             # Short circuit trivial case.
             return []
