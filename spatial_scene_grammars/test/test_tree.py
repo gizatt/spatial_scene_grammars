@@ -58,7 +58,7 @@ class Room(AndNode):
         assert len(children) == 2
         all_attrs = []
         for k in range(2):
-            new_xy = self.xy + pyro.sample("offset", dist.Normal(torch.zeros(2), torch.ones(2)))
+            new_xy = self.xy + pyro.sample("offset_%d" % k, dist.Normal(torch.zeros(2), torch.ones(2)))
             all_attrs.append({"xy": new_xy})
         return all_attrs
 
@@ -98,12 +98,20 @@ def set_seed(request):
     torch.manual_seed(request.param)
 
 def test_forward_sampling(set_seed):
+    # Sanity checks forward sampling and scoring functions.
     building = Building()
     assert building.instantiated is False
-    building.instantiate({"xy": torch.zeros(2)})
+    trace = pyro.poutine.trace(building.instantiate).get_trace({"xy": torch.zeros(2)})
     assert building.instantiated
+    building_ll = building.get_instantiate_ll()
+    expected_ll = trace.log_prob_sum()
+    assert np.allclose(building_ll, expected_ll)
 
-    tree = SceneTree.forward_sample_from_root(building)
+    trace = pyro.poutine.trace(SceneTree.forward_sample_from_root).get_trace(building)
+    tree = trace.nodes["_RETURN"]["value"]
+    tree_ll = tree.get_subtree_log_prob(building)
+    expected_ll = trace.log_prob_sum()
+    assert np.allclose(tree_ll, expected_ll)
 
 def test_meta_scene_tree(set_seed):
     meta_tree = SceneTree.make_meta_scene_tree(Building())

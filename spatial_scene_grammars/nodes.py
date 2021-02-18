@@ -27,6 +27,32 @@ class NodeNameManager():
         return class_name + "_%d" % n
 node_name_store = NodeNameManager()
 
+
+# TODO: Expand to exhaustive list of
+# all continuous distribution constraint / support
+# types. I didn't see any obvious inheritence hierarchy
+# I can take advantage of to make this easier...
+continuous_support_constraints = (
+    torch.distributions.constraints._Real,
+    torch.distributions.constraints._Interval
+)
+def assert_trace_sites_are_all_continuous(trace):
+    for key, value in trace.nodes.items():
+        if value["type"] == "sample":
+            support = value["fn"].support
+            assert isinstance(support, continuous_support_constraints), \
+               "Sample sites in instantiate methods should only sample continuous " \
+               "values: %s has support %s" % (key, str(support))
+
+def assert_trace_sites_are_all_discrete(trace):
+    for key, value in trace.nodes.items():
+        if value["type"] == "sample":
+            support = value["fn"].support
+            assert not isinstance(support, continuous_support_constraints), \
+              "Sample sites in sample_products methods should only sample discrete " \
+              "values: %s has support %s" % (key, str(support))
+
+
 class Node():
     ''' Every node (symbol) in the grammar derives from this base.
     At construction time, a node will be supplied a name and a dictionary
@@ -45,11 +71,18 @@ class Node():
         variables sampled. '''
         self.derived_attributes = derived_attributes
         with scope(prefix=self.name + "_instantiate"):
-            self._instantiate_impl(derived_attributes)
+            self.instantiate_trace = pyro.poutine.trace(
+                self._instantiate_impl
+            ).get_trace(derived_attributes)
+            assert_trace_sites_are_all_continuous(self.instantiate_trace)
         self.instantiated = True
 
     def _instantiate_impl(self, derived_attributes):
         raise NotImplementedError()
+
+    def get_instantiate_ll(self):
+        assert self.instantiated
+        return self.instantiate_trace.log_prob_sum()
 
 
 class TerminalNode(Node):
@@ -60,6 +93,7 @@ class NonTerminalNode(Node):
     ''' Abstract interface for nonterminal nodes, which are responsible
     for sampling a set of production rules to produce new nodes.'''
     def __init__(self):
+        self.children_sampled = False
         self.children_instantiated = False
         super().__init__()
 
@@ -67,10 +101,19 @@ class NonTerminalNode(Node):
         ''' Samples a list of ProductionRules to enact to create children
         for this node. '''
         with scope(prefix=self.name + "_choose_children"):
-            return self._sample_children_impl()
+            self.sample_children_trace = pyro.poutine.trace(
+                self._sample_children_impl
+            ).get_trace()
+        assert_trace_sites_are_all_discrete(self.sample_children_trace)
+        self.children_sampled = True
+        return self.sample_children_trace.nodes["_RETURN"]["value"]
 
     def _sample_children_impl(self):
         raise NotImplementedError()
+
+    def get_children_ll(self):
+        assert self.children_sampled
+        return self.sample_children_trace.log_prob_sum()
 
     def get_maximal_child_list(self):
         ''' Returns a list of nodes, such that the child
@@ -84,7 +127,11 @@ class NonTerminalNode(Node):
         into their instantiate_self methods. '''
         assert self.instantiated, "Node should be instantiated before instantiating children."
         with scope(prefix=self.name + "_instantiate_children"):
-            child_attributes = self._instantiate_children_impl(children)
+            self.instantiate_children_trace = pyro.poutine.trace(
+                self._instantiate_children_impl
+            ).get_trace(children)
+        assert_trace_sites_are_all_continuous(self.instantiate_children_trace)
+        child_attributes = self.instantiate_children_trace.nodes["_RETURN"]["value"]
         assert len(child_attributes) == len(children)
         for child, attr in zip(children, child_attributes):
             child.instantiate(attr)
@@ -93,6 +140,9 @@ class NonTerminalNode(Node):
     def _instantiate_children_impl(self, children):
         raise NotImplementedError()
 
+    def get_instantiate_children_ll(self):
+        assert self.children_instantiated
+        return self.instantiate_children_trace.log_prob_sum()
 
 
 class OrNode(NonTerminalNode):

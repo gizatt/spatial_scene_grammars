@@ -50,6 +50,23 @@ class SceneTree(nx.DiGraph):
                 node.instantiate_children(children)
                 node_queue += children
 
+    def get_subtree_log_prob(self, root_node, include_instantiate=True, include_topology=True):
+        assert root_node in self.nodes
+        node_queue = [root_node]
+        ll = 0.
+        while len(node_queue) > 0:
+            node = node_queue.pop(0)
+            if include_instantiate:
+                ll += node.get_instantiate_ll()
+            if isinstance(node, NonTerminalNode):
+                children = self.successors(node)
+                if include_topology:
+                    ll += node.get_children_ll()
+                if include_instantiate:
+                    ll += node.get_instantiate_children_ll()
+                node_queue += children
+        return ll
+
     @staticmethod
     def _generate_from_node_recursive(parse_tree, parent_node):
         if isinstance(parent_node, TerminalNode):
