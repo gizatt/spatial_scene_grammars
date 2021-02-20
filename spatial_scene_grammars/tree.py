@@ -21,6 +21,12 @@ class SceneTree(nx.DiGraph):
     def __init__(self):
         nx.DiGraph.__init__(self)
 
+    def find_node_by_name(self, name):
+        for node in self.nodes:
+            if node.name == name:
+                return node
+        raise ValueError("No node named %s" % name)
+
     def find_nodes_by_type(self, target_type):
         nodes = []
         for node in self.nodes:
@@ -68,6 +74,11 @@ class SceneTree(nx.DiGraph):
         root node instantiating dict is supplied, resamples the root node local variables
         too; otherwise asserts that it's already instantiated. '''
         assert root_node in self.nodes
+
+        # Immediately rename root node so that attempts to resample suceed.
+        old_root_name = root_node.name
+        root_node.name += "_resampled"
+        
         if root_node_instantiation_dict:
             root_node.instantiate(root_node_instantiation_dict)
         else:
@@ -90,6 +101,7 @@ class SceneTree(nx.DiGraph):
                 self.add_edge(node, child)
             node_queue += children
         # Done!
+        return root_node
 
     def get_trace(self):
         ''' Returns a pyro trace of the forward sampling of this tree.

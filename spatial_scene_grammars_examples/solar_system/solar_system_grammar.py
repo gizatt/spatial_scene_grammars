@@ -33,7 +33,7 @@ class OrbitalBody(GeometricSetNode):
     child_type = None
 
     def __init__(self):
-        super().__init__(child_type=self.child_type, geometric_prob=self.geometric_prob, max_repeats=5)
+        super().__init__(child_type=self.child_type, geometric_prob=self.geometric_prob, max_repeats=10)
 
     def _instantiate_children_impl(self, children):
         all_attrs = []
@@ -69,8 +69,8 @@ class OrbitalBody(GeometricSetNode):
 
 # TODO(gizatt): Again, are metaclasses the answer here?
 Moon = type("Moon", (OrbitalBody,), {"geometric_prob": torch.tensor(1.0), "child_type": None})
-Planet = type("Planet", (OrbitalBody,), {"geometric_prob": torch.tensor(0.2), "child_type": Moon})
-Sun = type("Sun", (OrbitalBody,), {"geometric_prob": torch.tensor(0.2), "child_type": Planet})
+Planet = type("Planet", (OrbitalBody,), {"geometric_prob": torch.tensor(0.5), "child_type": Moon})
+Sun = type("Sun", (OrbitalBody,), {"geometric_prob": torch.tensor(0.5), "child_type": Planet})
 
 
 class ClearNeighborhoodConstraint(ContinuousVariableConstraint):
@@ -140,6 +140,8 @@ def draw_solar_system(scene_tree, fig=None, ax=None):
     planet_locations = np.vstack([planet.x.item() for planet in all_bodies])
     planet_radii = [planet.radius.item() for planet in all_bodies]
     planet_colors = [planet.color.item() for planet in all_bodies]
+    print("Radii: ", planet_radii)
+    print("Locations:", planet_locations)
 
     if not fig:
         print("New fig")
@@ -189,13 +191,13 @@ def sample_and_plot_solar_system():
             },
             constraints=[
                 ClearNeighborhoodConstraint(),
-                #PlanetCountConstraint(),
-                #MoonCountConstraint()
+                PlanetCountConstraint(),
+                MoonCountConstraint()
             ],
             max_num_attempts=1000,
-            backend="metropolis_procedural_modeling",
-            num_samples=1000,
-            callback=partial(draw_solar_system, fig=fig, ax=ax)
+            backend="rejection",#"metropolis_procedural_modeling",
+            #num_samples=10,
+            #callback=partial(draw_solar_system, fig=fig, ax=ax)
     )
     if not success:
         print("WARNING: SAMPLING UNSUCCESSFUL")

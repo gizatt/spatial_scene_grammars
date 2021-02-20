@@ -218,8 +218,8 @@ class GeometricSetNode(NonTerminalNode):
         if len(self.child_types) == 0:
             # Short circuit trivial case.
             return []
-        num_active = pyro.sample("geometric_set_sample", self.production_dist)
-        num_active = min(int(num_active.item()), self.max_repeats)
+        num_active_base = pyro.sample("geometric_set_sample", self.production_dist)
+        num_active = min(int(num_active_base.item()), self.max_repeats)
         return [self.child_types[0]() for k in range(num_active)]
 
     def get_maximal_child_list(self):

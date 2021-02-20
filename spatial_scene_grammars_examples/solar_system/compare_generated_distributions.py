@@ -6,21 +6,19 @@ import matplotlib.pyplot as plt
 
 def collect_statistics(solar_system_trees):
     def num_planets(tree):
-        simple_tree = tree.get_tree_without_production_rules()
-        sun = get_tree_root(simple_tree)
-        return len(list(simple_tree.successors(sun)))
+        sun = get_tree_root(tree)
+        return len(list(tree.successors(sun)))
 
     def num_moons(tree):
-        simple_tree = tree.get_tree_without_production_rules()
-        sun = get_tree_root(simple_tree)
-        planets = simple_tree.successors(sun)
+        sun = get_tree_root(tree)
+        planets = tree.successors(sun)
         total_moons = 0
         for planet in planets:
-            total_moons += len(list(simple_tree.successors(planet)))
+            total_moons += len(list(tree.successors(planet)))
         return total_moons
 
     def num_bodies(tree):
-        return len(list(tree.get_tree_without_production_rules().nodes))
+        return len(list(tree.nodes))
 
     def all_planet_positions(tree):
         return [node.x for node in tree if isinstance(node, OrbitalBody)]
@@ -45,32 +43,35 @@ def compare_generated_distributions(N=100):
     constraint_set = [
                 ClearNeighborhoodConstraint(),
                 PlanetCountConstraint(),
-                MoonCountConstraint()
+                #MoonCountConstraint()
     ]
     root_kwargs = {
-        "name":"sun",
         "radius": torch.tensor(100.),
-        "x": torch.tensor(0.)
+        "x": torch.tensor(0.),
+        "x_local": torch.tensor(0.)
     }
 
     # Rejection sampling
     rejection_sampled_scene_trees = []
     while len(rejection_sampled_scene_trees) < N:
-        new_tree, success = sample_tree_from_root_type_with_constraints(
-                root_node_type=OrbitalBody,
-                root_node_type_kwargs=root_kwargs,
+        new_trees, success = sample_tree_from_root_type_with_constraints(
+                root_node_type=Sun,
+                root_node_instantiation_dict=root_kwargs,
                 constraints=constraint_set,
                 max_num_attempts=1000,
                 backend="rejection",
                 #callback=partial(draw_solar_system, fig=fig, ax=ax)
         )
         if success:
-            rejection_sampled_scene_trees.append(new_tree[0])
+            rejection_sampled_scene_trees.append(new_trees[0])
         print("%d/%d rejection sampled" % (len(rejection_sampled_scene_trees), N))
 
+
+    fig = plt.figure()
+    ax = plt.gca()
     sampled_trees, success = sample_tree_from_root_type_with_constraints(
-            root_node_type=OrbitalBody,
-            root_node_type_kwargs=root_kwargs,
+            root_node_type=Sun,
+            root_node_instantiation_dict=root_kwargs,
             constraints=constraint_set,
             max_num_attempts=1000,
             backend="metropolis_procedural_modeling",
@@ -129,4 +130,4 @@ if __name__ == "__main__":
     pyro.enable_validation(True)
     torch.manual_seed(43)
 
-    compare_generated_distributions(N=1000)
+    compare_generated_distributions(N=10000)

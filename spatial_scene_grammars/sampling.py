@@ -231,6 +231,7 @@ def _sample_backend_metroplis_procedural_modeling(
                 pyro.poutine.condition(
                     current_scene_tree.resample_instantiations, sample_data)(
                         get_tree_root(current_scene_tree), root_node_instantiation_dict)
+                print("Accepted local MCMC drift.")
         else:
             # Do jump step.
             # First randomly select a node.
@@ -263,10 +264,17 @@ def _sample_backend_metroplis_procedural_modeling(
             reseed_node = node_choices[reseed_node_index.item()]
 
             # Regenerate tree, keeping everything outside of that subtree fixed.
-            # (Make a shallow copy -- we'll modify graph structure, but the underlying
-            # shared nodes are exactly the same node.)
-            new_tree = current_scene_tree.copy() 
-            new_tree.resample_subtree(reseed_node)
+            new_tree = deepcopy(current_scene_tree)
+            reseed_node_new = new_tree.find_node_by_name(reseed_node.name)
+            new_tree.resample_subtree(reseed_node_new)
+
+
+           #print("Split node radius: ", reseed_node.radius.item())
+           #callback(current_scene_tree)
+           #input()
+           #print("Post tree: ")
+           #callback(new_tree)
+           #input()
 
 
             # Decide whether to accept the jump by calculating an MH accept
@@ -287,7 +295,7 @@ def _sample_backend_metroplis_procedural_modeling(
                 reverse_node_choices, reverse_node_selection_probs = get_node_choices_and_probs(new_tree)
                 reverse_node_selection_prob = None
                 for k, node in enumerate(reverse_node_choices):
-                    if node is reseed_node:
+                    if node is reseed_node_new:
                         reverse_node_selection_prob = reverse_node_selection_probs[k]
                 assert reverse_node_selection_prob is not None
 
@@ -314,9 +322,8 @@ def _sample_backend_metroplis_procedural_modeling(
 
                 pre_full_tree_log_prob = current_scene_tree.get_log_prob()
                 post_full_tree_log_prob = new_tree.get_log_prob()
-
-                pre_subtree_log_prob = pre_full_tree_log_prob - current_scene_tree.get_subtree_log_prob(reseed_node)
-                post_subtree_log_prob = post_full_tree_log_prob - new_tree.get_subtree_log_prob(reseed_node)
+                pre_subtree_log_prob = current_scene_tree.get_subtree_log_prob(reseed_node)
+                post_subtree_log_prob = new_tree.get_subtree_log_prob(reseed_node_new)
 
                 # Finally assemble the accept prob.
                 # TODO: I'm really not sure if this is right. Any part pertaining to tree probability winds
@@ -378,8 +385,8 @@ def sample_tree_from_root_type_with_constraints(
     # Short-circuit if there are no factors -- forward sampling
     # is enough.
     if len(constraints) == 0:
-        return SceneTree.forward_sample_from_root_type(
-            root_node_type, root_node_instantiation_dict), True
+        return [SceneTree.forward_sample_from_root_type(
+            root_node_type, root_node_instantiation_dict)], True
 
     if backend == "rejection":
         backend_handler = _sample_backend_rejection
