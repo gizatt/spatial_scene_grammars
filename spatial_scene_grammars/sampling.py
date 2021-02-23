@@ -171,6 +171,7 @@ def _sample_backend_rejection_and_hmc(
     print("MCMC Summary: ",)
     mcmc.summary()
 
+    fixed_tree_trace = fixed_tree.get_trace()
 
     samples = mcmc.get_samples()
     out_trees = []
@@ -178,10 +179,12 @@ def _sample_backend_rejection_and_hmc(
         sample_data = {}
         for key in sample_data.keys():
             sample_data[key] = sample_data[key][k, ...]
-        new_tree = deepcopy(fixed_tree)
-        pyro.poutine.condition(
-            new_tree.resample_instantiations,
-            sample_data)(get_tree_root(new_tree), root_node_instantiation_dict)
+        # Avoiding deepcopying fixed_tree directly, as it has
+        # some gradient info in its tensors from the score calculations
+        # that confuses deepcopy.
+        new_tree = pyro.poutine.condition(
+            SceneTree.forward_sample_from_root_type,
+            sample_data)(root_node_type, root_node_instantiation_dict)
         out_trees.append(new_tree)
     return out_trees, True
 

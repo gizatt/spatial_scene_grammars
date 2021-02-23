@@ -61,6 +61,10 @@ class Node():
     def __init__(self):
         self.name = node_name_store.get_name(self)
         self.instantiated = False
+        # Place to register physics/geometry info and
+        # node tf.
+        self.physics_geometry_info = None
+        self.tf = None
         super().__init__()
 
     def instantiate(self, derived_attributes):

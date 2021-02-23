@@ -7,6 +7,7 @@ import numpy as np
 import networkx as nx
 import os
 import yaml
+import torch
 
 import pydrake
 from pydrake.common.cpp_param import List as DrakeBindingList
@@ -14,6 +15,7 @@ from pydrake.all import (
     AddMultibodyPlantSceneGraph,
     BasicVector,
     ConnectMeshcatVisualizer,
+    CoulombFriction,
     DiagramBuilder,
     ExternallyAppliedSpatialForce,
     LeafSystem,
@@ -21,16 +23,96 @@ from pydrake.all import (
     MinimumDistanceConstraint,
     ModelInstanceIndex,
     MultibodyPlant,
+    SpatialInertia,
     Parser,
     RigidTransform,
     RotationMatrix,
     Simulator,
+    UnitInertia,
     Value
 )
 import pydrake.geometry as pydrake_geom
-
-from .nodes import SpatialNode, PhysicsGeometryNode, default_friction
 from .visualization import rgb_2_hex
+
+
+default_spatial_inertia = SpatialInertia(
+    mass=1.0,
+    p_PScm_E=np.zeros(3), G_SP_E=UnitInertia(0.01, 0.01, 0.01)
+)
+default_friction = CoulombFriction(0.9, 0.8)
+class PhysicsGeometryInfo():
+    '''
+    Container for physics and geometry info, providing
+    Drake / simulator interoperation. Used by nodes that supply Drake
+    geometry information.
+    Args:
+        - fixed: Whether this geometry is floating in the final simulation
+            (as oppposed to welded to the world).
+        - spatial_inertia: Spatial inertia of the body. If None,
+            will adopt a default mass of 1.0kg and 0.01x0.01x0.01 diagonal
+            rotational inertia.
+        - is_container: Flag whether this object will function as a
+            container for other objects for the purpose of collision
+            and stability checks. If so, then objects below this one
+            will be isolated from collision and clearance checks for
+            objects above this one, and instead only be checked against
+            this object's collision geometry and this object's
+            childrens' geometry. Valid for e.g. a cabinet full of
+            stuff that does not interact with anything outside of
+            the cabinet.
+
+    Enables calls to register geometry of the following types:
+        - Model files (urdf/sdf), paired with a transform from the object
+          local origin, the name of the root body (which gets put at that
+          transform -- required if there's more than one body in the URDF),
+          and optionally, the initial joint configuration of
+          the model (as a dict of joint names to joint states). These
+          are added to the simulated scene with the specified link
+          welded (or translated, if not fixed) to the node transform.
+        - Visual and collision geometry (Drake Shape types), paired with
+          transforms from the object local origin and relevant color
+          and friction information.
+        - Clearance geometry (Drake Shape types), paired with transforms
+          from the object local origin. This represents the region around
+          this object that should not intersect with any other node's
+          clearance geometry: e.g., the space in front of a cabinet should
+          be clear so the doors can open.
+    '''
+    def __init__(self, fixed=True, spatial_inertia=None, is_container=False):
+        self.fixed = fixed
+        self.is_container = is_container
+        self.model_paths = []
+        self.spatial_inertia = spatial_inertia or default_spatial_inertia
+        self.visual_geometry = []
+        self.collision_geometry = []
+        self.clearance_geometry = []
+    def register_model_file(self, tf, model_path, root_body_name=None,
+                            q0_dict={}):
+        self.model_paths.append((tf, model_path, root_body_name, q0_dict))
+    def register_geometry(self, tf, geometry, color=np.ones(4), friction=default_friction):
+        # Shorthand for registering the same geometry as collision + visual.
+        self.register_visual_geometry(tf, geometry, color)
+        self.register_collision_geometry(tf, geometry, friction)
+    def register_visual_geometry(self, tf, geometry, color=np.ones(4)):
+        assert isinstance(tf, torch.Tensor) and tf.shape == (4, 4)
+        assert isinstance(geometry, pydrake.geometry.Shape)
+        self.visual_geometry.append((tf, geometry, color))
+    def register_collision_geometry(self, tf, geometry, friction=default_friction):
+        assert isinstance(tf, torch.Tensor) and tf.shape == (4, 4)
+        assert isinstance(geometry, pydrake.geometry.Shape)
+        assert isinstance(friction, CoulombFriction)
+        self.collision_geometry.append((tf, geometry, friction))
+    def register_clearance_geometry(self, tf, geometry):
+        assert isinstance(tf, torch.Tensor) and tf.shape == (4, 4)
+        assert isinstance(geometry, pydrake.geometry.Shape)
+        self.clearance_geometry.append((tf, geometry))
+
+
+def sanity_check_node_tf_and_physics_geom_info(node):
+    assert isinstance(node.tf, torch.Tensor)
+    assert node.tf.shape == (4, 4)
+    assert isinstance(node.physics_geometry_info, PhysicsGeometryInfo)
+
 
 class DecayingForceToDesiredConfigSystem(LeafSystem):
     ''' Connect to a MBP to apply ghost forces (that decay over time)
@@ -96,8 +178,10 @@ class DecayingForceToDesiredConfigSystem(LeafSystem):
 def torch_tf_to_drake_tf(tf):
     return RigidTransform(tf.cpu().detach().numpy())
 
+
 def drake_tf_to_torch_tf(tf):
     return torch.tensor(tf.GetAsMatrix4())
+
 
 def draw_scene_tree_meshcat(scene_tree, zmq_url=None, alpha=0.25, draw_clearance_geom=False):
     vis = meshcat.Visualizer(zmq_url=zmq_url or "tcp://127.0.0.1:6000")
@@ -128,6 +212,7 @@ def draw_scene_tree_meshcat(scene_tree, zmq_url=None, alpha=0.25, draw_clearance
     # leak.
     del vis.vis
 
+
 def resolve_catkin_package_path(package_map, input_str):
     if "://" in input_str:
         elements = input_str.split("://")
@@ -154,9 +239,11 @@ def compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree, timestep=0.0
     cmap = plt.cm.get_cmap('jet')
     cmap_counter = 0.
     for node in scene_tree.nodes:
-        if isinstance(node, SpatialNode) and isinstance(node, PhysicsGeometryNode):
+        if node.tf is not None and node.physics_geometry_info is not None:
             # Don't have to do anything if this does not introduce geometry.
-            has_clearance_geometry = len(node.clearance_geometry) > 0
+            sanity_check_node_tf_and_physics_geom_info(node)
+            phys_geom_info = node.physics_geometry_info
+            has_clearance_geometry = len(phys_geom_info.clearance_geometry) > 0
             if not has_clearance_geometry:
                 continue
 
@@ -165,7 +252,7 @@ def compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree, timestep=0.0
             # But I forsee a name-to-stuff resolution crisis when inference time comes...
             # this might get resolved by the solution to that.
             body = mbp.AddRigidBody(name=node.name,
-                                    M_BBo_B=node.spatial_inertia)
+                                    M_BBo_B=phys_geom_info.spatial_inertia)
             tf = torch_tf_to_drake_tf(node.tf)
             mbp.SetDefaultFreeBodyPose(body, tf)
 
@@ -181,8 +268,8 @@ def compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree, timestep=0.0
 
             # Handle adding primitive geometry by adding it all to one
             # mbp.
-            if len(node.clearance_geometry) > 0:
-                for k, (tf, geometry) in enumerate(node.clearance_geometry):
+            if len(phys_geom_info.clearance_geometry) > 0:
+                for k, (tf, geometry) in enumerate(phys_geom_info.clearance_geometry):
                     mbp.RegisterCollisionGeometry(
                         body=body,
                         X_BG=torch_tf_to_drake_tf(tf),
@@ -235,8 +322,8 @@ def expand_container_tree(full_tree, new_tree, current_node):
         new_tree.add_node(child)
         new_tree.add_edge(current_node, child)
 
-        if (isinstance(child, PhysicsGeometryNode) and
-             child.is_container):
+        if (child.physics_geometry_info is not None and
+                child.physics_geometry_info.is_container):
             continue
         new_tree = expand_container_tree(full_tree, new_tree, child)
     return new_tree
@@ -246,7 +333,8 @@ def split_tree_into_containers(scene_tree):
     # of the overall tree.
     roots = [node for node in scene_tree.nodes if
             (len(list(scene_tree.predecessors(node))) == 0 or
-             isinstance(node, PhysicsGeometryNode) and node.is_container)]
+             (node.physics_geometry_info is not None and
+              node.physics_geometry_info.is_container))]
     # Build the subtree from each root until it hits a terminal or
     # or a container.
     trees = []
@@ -270,10 +358,15 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
 
     free_body_poses = []
     for node in scene_tree.nodes:
-        if isinstance(node, SpatialNode) and isinstance(node, PhysicsGeometryNode):
+        if node.tf is not None and node.physics_geometry_info is not None:
             # Don't have to do anything if this does not introduce geometry.
-            has_models = len(node.model_paths) > 0
-            has_prim_geometry = (len(node.visual_geometry) + len(node.collision_geometry)) > 0
+            sanity_check_node_tf_and_physics_geom_info(node)
+            phys_geom_info = node.physics_geometry_info
+
+            # Don't have to do anything if this does not introduce geometry.
+            has_models = len(phys_geom_info.model_paths) > 0
+            has_prim_geometry = (len(phys_geom_info.visual_geometry)
+                                 + len(phys_geom_info.collision_geometry)) > 0
             if not has_models and not has_prim_geometry:
                 continue
 
@@ -291,23 +384,23 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
                 # But I forsee a name-to-stuff resolution crisis when inference time comes...
                 # this might get resolved by the solution to that.
                 body = mbp.AddRigidBody(name=node.name, model_instance=model_id,
-                                        M_BBo_B=node.spatial_inertia)
+                                        M_BBo_B=phys_geom_info.spatial_inertia)
                 body_id_to_node_map[body.index()] = node
                 tf = torch_tf_to_drake_tf(node.tf)
-                if node.fixed:
+                if phys_geom_info.fixed:
                     weld = mbp.WeldFrames(world_body.body_frame(),
                                           body.body_frame(),
                                           tf)
                 else:
                     mbp.SetDefaultFreeBodyPose(body, tf)
-                for k, (tf, geometry, color) in enumerate(node.visual_geometry):
+                for k, (tf, geometry, color) in enumerate(phys_geom_info.visual_geometry):
                     mbp.RegisterVisualGeometry(
                         body=body,
                         X_BG=torch_tf_to_drake_tf(tf),
                         shape=geometry,
                         name=node.name + "_vis_%03d" % k, 
                         diffuse_color=color)
-                for k, (tf, geometry, friction) in enumerate(node.collision_geometry):
+                for k, (tf, geometry, friction) in enumerate(phys_geom_info.collision_geometry):
                     mbp.RegisterCollisionGeometry(
                         body=body,
                         X_BG=torch_tf_to_drake_tf(tf),
@@ -317,7 +410,7 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
 
             # Handle adding each model from sdf/urdf.
             if has_models:
-                for local_tf, model_path, root_body_name, q0_dict in node.model_paths:
+                for local_tf, model_path, root_body_name, q0_dict in phys_geom_info.model_paths:
                     model_id = parser.AddModelFromFile(
                         resolve_catkin_package_path(parser.package_map(), model_path),
                         node.name + "::" "model_%d" % len(node_model_ids))
@@ -334,7 +427,7 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
                     body_id_to_node_map[root_body.index()] = node
                     node_tf = torch_tf_to_drake_tf(node.tf)
                     full_model_tf = node_tf.multiply(torch_tf_to_drake_tf(local_tf))
-                    if node.fixed:
+                    if phys_geom_info.fixed:
                         mbp.WeldFrames(world_body.body_frame(),
                                        root_body.body_frame(),
                                        full_model_tf)

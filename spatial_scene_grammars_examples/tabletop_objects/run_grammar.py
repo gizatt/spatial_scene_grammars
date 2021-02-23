@@ -2,6 +2,7 @@ import trimesh
 import matplotlib.pyplot as plt
 import numpy as np
 import pydrake
+import torch
 
 from pydrake.all import (
     DiagramBuilder,
@@ -28,20 +29,18 @@ if __name__ == "__main__":
 
     scene_trees, success = sample_tree_from_root_type_with_constraints(
             root_node_type=Table,
-            root_node_type_kwargs={
-                "name":"table",
-                "tf": torch.eye(4),
-                "object_production_rate": 0.4,
-                "table_size": torch.tensor([0.5, 0.5])
+            root_node_instantiation_dict={
+                "tf": pose_to_tf_matrix(torch.tensor([0., 0., 0.0, 0., 0., 0.]))
             },
             constraints=[
                 NonpenetrationConstraint(),
                 ObjectCountConstraint(min=2, max=None),
             ],
             max_num_attempts=1000,
-            #backend="rejection_then_hmc",
-            backend="metropolis_procedural_modeling",
-            callback=None, #draw_scene_tree_meshcat,
+            #backend="rejection",
+            backend="rejection_then_hmc",
+            #backend="metropolis_procedural_modeling",
+            callback=draw_scene_tree_meshcat,
             num_samples=100,
     )
     if not success:
