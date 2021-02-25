@@ -37,11 +37,11 @@ class StackOfN(AndNode):
     def _instantiate_children_impl(self, children):
         all_attrs = []
         for k, child in enumerate(children):
-            child_x = pyro.sample("child_%d_x" % k,
-                dist.Normal(torch.tensor(0.), torch.tensor(0.1))).item()
-            child_y = self.xy[1] + torch.tensor(k)
+            child_xy = pyro.sample("child_%d_xy" % k,
+                dist.Normal(torch.tensor([0., float(k)]),
+                            torch.tensor([0.1, 0.0001])))
             all_attrs.append({
-                "xy": torch.tensor([child_x, child_y]),
+                "xy": self.xy + torch.tensor(child_xy),
             })
         return all_attrs
     def _instantiate_impl(self, derived_attributes):
@@ -57,11 +57,11 @@ class GroupOfN(AndNode):
     def _instantiate_children_impl(self, children):
         all_attrs = []
         for k, child in enumerate(children):
-            child_x = pyro.sample("child_%d_x" % k,
-                dist.Normal(torch.tensor(0.), torch.tensor(1.0))).item()
-            child_y = self.xy[1]
+            child_xy = pyro.sample("child_%d_xy" % k,
+                dist.Normal(torch.tensor([0.0, 0.0]),
+                            torch.tensor([2.0, 0.0001])))
             all_attrs.append({
-                "xy": torch.tensor([child_x, child_y]),
+                "xy": self.xy + torch.tensor(child_xy),
             })
         return all_attrs
     def _instantiate_impl(self, derived_attributes):
@@ -89,6 +89,35 @@ class Ground(OrNode):
     def _instantiate_impl(self, derived_attributes):
         self.xy = derived_attributes["xy"]
 
+
+class NonpenetrationConstraint(ContinuousVariableConstraint):
+    def __init__(self, allowed_penetration_margin=0.0):
+        ''' penetration_margin > 0, specifies penetration amounts we'll allow. '''
+        self.allowed_penetration_margin = allowed_penetration_margin
+        super().__init__(lower_bound=torch.tensor(-np.inf),
+                         upper_bound=torch.tensor(0.0))
+
+    def eval(self, scene_tree):
+        # For all pairs of boxes, compute the overlap region
+        # and add the area to the total penetration.
+        boxes = scene_tree.find_nodes_by_type(Box)
+        N = len(boxes)
+        total_penetration_area = torch.tensor([0.0])
+        for i in range(N):
+            for j in range(i+1, N):
+                # determine the coordinates of the intersection rectangle
+                box_i_l = boxes[i].xy - torch.tensor([0.5, 0.5])
+                box_i_u = boxes[i].xy + torch.tensor([0.5, 0.5])
+                box_j_l = boxes[j].xy - torch.tensor([0.5, 0.5])
+                box_j_u = boxes[j].xy + torch.tensor([0.5, 0.5])
+
+                bb_l = torch.maximum(box_i_l, box_j_l)
+                bb_u = torch.minimum(box_i_u, box_j_u)
+                edge_lengths = bb_u - bb_l - self.allowed_penetration_margin
+                if torch.all(edge_lengths > 0):
+                    total_penetration_area += torch.prod(edge_lengths)
+
+        return total_penetration_area
 
 
 def draw_boxes(scene_tree, fig=None, ax=None, block=False, xlim=[-10., 10.]):
@@ -119,8 +148,6 @@ def draw_boxes(scene_tree, fig=None, ax=None, block=False, xlim=[-10., 10.]):
     ax.axis("off")
     ax.set_aspect('equal')
     plt.pause(0.001)
-    #print("Planetl ocations: ", planet_locations)
-    #print("Planet radii: ", planet_radii)
     if block:
         plt.waitforbuttonpress()
 
@@ -132,9 +159,18 @@ if __name__ == "__main__":
 
     fig = plt.figure()
     for k in range(100):
-        tree = SceneTree.forward_sample_from_root_type(
-            Ground,
-            {"xy": torch.tensor([0., 0.])}
+        scene_trees, success = sample_tree_from_root_type_with_constraints(
+            root_node_type=Ground,
+            root_node_instantiation_dict={
+                "xy": torch.tensor([0., 0.])
+            },
+            constraints=[
+                NonpenetrationConstraint(0.001),
+            ],
+            max_num_attempts=1000,
+            backend="rejection",#"metropolis_procedural_modeling",
         )
-        draw_boxes(tree, fig=fig, block=False)
+        if not success:
+            print("WARNING: SAMPLING UNSUCCESSFUL")
+        draw_boxes(scene_trees[0], fig=fig, block=False)
         plt.pause(1.0)
