@@ -80,8 +80,8 @@ class Ground(OrNode):
         all_attrs = []
         for k, child in enumerate(children):
             child_x = pyro.sample("child_%d_x" % k,
-                dist.Normal(torch.tensor(0.), torch.tensor(1.0))).item()
-            child_y = self.xy[1]
+                dist.Normal(torch.tensor(0.), torch.tensor(2.0))).item()
+            child_y = self.xy[1] + 0.5 # Half-box height
             all_attrs.append({
                 "xy": torch.tensor([child_x, child_y]),
             })
@@ -127,20 +127,44 @@ def draw_boxes(scene_tree, fig=None, ax=None, block=False, xlim=[-5., 5.]):
         ax = plt.gca()
     ax.clear()
 
-    ground = scene_tree.find_nodes_by_type(Ground)[0]
-    ground_level = ground.xy[1].item()
-    ax.fill_between(xlim,[ground_level, ground_level], y2=ground_level-1000, color='red', alpha=0.8)
-    ax.axhline(ground_level)
+    # Hacky support for sometimes-there ground node;
+    # it might not be there in half-parsed scenes.
+    grounds = scene_tree.find_nodes_by_type(Ground)
+    if len(grounds) > 0:
+        ground = grounds[0]
+        ground_level = ground.xy[1].item()
+        ax.fill_between(xlim,[ground_level, ground_level], y2=ground_level-1000, color='red', alpha=0.8)
+    else:
+        ground_level = 0. # Guess
 
     boxes = scene_tree.find_nodes_by_type(Box)
     cm = plt.get_cmap("viridis")
     for k, box in enumerate(boxes):
         color = cm(float(k) / (len(boxes)))
         ax.add_artist(
-                plt.Rectangle([item.item() for item in box.xy],
+                plt.Rectangle([item.item() - 0.5 for item in box.xy],
                               width=1., height=1., angle=0., fill=True, alpha=0.8,
                               color=color)
             )
+
+    # Draw underlying scene tree
+    colors = []
+    colors_by_type = {
+        "Box": [0., 0., 0., 0.],
+        "StackOf1": [0.5, 0., 0.5, 0.5],
+        "StackOf2": [0.25, 0., 0.75, 0.5],
+        "StackOf3": [0., 0., 1.0, 0.5],
+        "GroupOf1": [0.5, 1., 0.5, 0.5],
+        "GroupOf2": [0.25, 1., 0.75, 0.5],
+        "GroupOf3": [0., 1., 0.1, 0.5],
+        "Ground": [0., 0., 0., 0.5]
+    }
+    pos = {}
+    for node in scene_tree:
+        colors.append(colors_by_type[node.__class__.__name__])
+        pos[node] = node.xy.detach().numpy()
+
+    nx.draw_networkx(scene_tree, pos=pos, node_color=colors, with_labels=False, node_size=3.)
     ax.set_xlim(xlim[0], xlim[1])
     ax.set_ylim(ground_level-1, ground_level + 5)
     ax.axis("off")
