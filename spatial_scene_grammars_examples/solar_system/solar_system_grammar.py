@@ -131,7 +131,7 @@ class MoonCountConstraint(TopologyConstraint):
         return torch.min(num_children_per_child)
 
 
-def draw_solar_system(scene_tree, fig=None, ax=None):
+def draw_solar_system(scene_tree, fig=None, ax=None, block=False):
     sun = get_tree_root(scene_tree)
     # Override sun color to yellow
     sun.color = torch.tensor(1.0)
@@ -173,9 +173,10 @@ def draw_solar_system(scene_tree, fig=None, ax=None):
     plt.pause(0.001)
     #print("Planetl ocations: ", planet_locations)
     #print("Planet radii: ", planet_radii)
-    #plt.waitforbuttonpress()
+    if block:
+        plt.waitforbuttonpress()
 
-def sample_and_plot_solar_system():
+def sample_and_plot_solar_system(block=False):
     # Create clear-your-neighborhood constraint
 
     fig = plt.figure(dpi=300, facecolor='black')
@@ -209,8 +210,9 @@ def sample_and_plot_solar_system():
                      "x_local": torch.tensor(0.)})
     scene_tree = SceneTree.forward_sample_from_root(sun)
     '''
-    draw_solar_system(scene_trees[0], fig=fig)
+    draw_solar_system(scene_trees[0], fig=fig, block=block)
     
+    return scene_trees[0]
 
 
 if __name__ == "__main__":
