@@ -41,7 +41,7 @@ class StackOfN(AndNode):
                 dist.Normal(torch.tensor([0., float(k)]),
                             torch.tensor([0.1, 0.0001])))
             all_attrs.append({
-                "xy": self.xy + torch.tensor(child_xy),
+                "xy": self.xy + child_xy,
             })
         return all_attrs
     def _instantiate_impl(self, derived_attributes):
@@ -61,14 +61,14 @@ class GroupOfN(AndNode):
                 dist.Normal(torch.tensor([0.0, 0.0]),
                             torch.tensor([2.0, 0.0001])))
             all_attrs.append({
-                "xy": self.xy + torch.tensor(child_xy),
+                "xy": self.xy + child_xy,
             })
         return all_attrs
     def _instantiate_impl(self, derived_attributes):
         self.xy = derived_attributes["xy"]
-GroupOf1 = type("GroupOf1", (GroupOfN,), {"N": 2})
+GroupOf1 = type("GroupOf1", (GroupOfN,), {"N": 1})
 GroupOf2 = type("GroupOf2", (GroupOfN,), {"N": 2})
-GroupOf3 = type("GroupOf3", (GroupOfN,), {"N": 2})
+GroupOf3 = type("GroupOf3", (GroupOfN,), {"N": 3})
 
 
 class Ground(OrNode):
@@ -120,7 +120,7 @@ class NonpenetrationConstraint(ContinuousVariableConstraint):
         return total_penetration_area
 
 
-def draw_boxes(scene_tree, fig=None, ax=None, block=False, xlim=[-10., 10.]):
+def draw_boxes(scene_tree, fig=None, ax=None, block=False, xlim=[-5., 5.]):
     if fig is None:
         plt.figure()
     if ax is None:
@@ -135,19 +135,16 @@ def draw_boxes(scene_tree, fig=None, ax=None, block=False, xlim=[-10., 10.]):
     boxes = scene_tree.find_nodes_by_type(Box)
     cm = plt.get_cmap("viridis")
     for k, box in enumerate(boxes):
-        print("Box at %f, %f" % (box.xy[0], box.xy[1]))
-        color = cm(float(k) / (len(boxes) - 1))
+        color = cm(float(k) / (len(boxes)))
         ax.add_artist(
                 plt.Rectangle([item.item() for item in box.xy],
                               width=1., height=1., angle=0., fill=True, alpha=0.8,
                               color=color)
             )
-
     ax.set_xlim(xlim[0], xlim[1])
     ax.set_ylim(ground_level-1, ground_level + 5)
     ax.axis("off")
     ax.set_aspect('equal')
-    plt.pause(0.001)
     if block:
         plt.waitforbuttonpress()
 

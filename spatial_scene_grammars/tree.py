@@ -3,6 +3,8 @@ import networkx as nx
 
 import pyro
 from pyro.contrib.autoname import scope, name_count
+import pyro.distributions as dist
+import torch
 
 from .nodes import NonTerminalNode, TerminalNode, Node
 from .rules import ProductionRule
@@ -218,18 +220,92 @@ class SceneTree(nx.DiGraph):
 
     # PARSING AND PARSING UTILITIES
     @staticmethod
-    def parse_greedily_from_partial_tree(root_node_type, partial_tree):
-        ''' Given a partial tree (an nx digraph) in a state where the tree may not be feasible,
-        but where the supplied nodes are fully realized: so we need to fix that
-        non-root nodes may not have parents, and non-terminal nodes may not
-        have appropriate children.
+    def parse_greedily_from_partial_tree(root_node_type, partial_tree, max_iters=10):
+        ''' Given a partial tree (a SceneTree instance) in a state where the tree
+        may not be feasible, but where the supplied nodes are fully realized:
+        so we need to fix that non-root nodes may not have parents, and
+        non-terminal nodes may not have appropriate children.
 
         To fix this, we:
-        1) For all fully-realized non-terminal nodes in the tree, unconditionally
-        forward-sample their subtree. Now the tree only needs to be fixed "upwards."
-        2) Repeatedly randomly select subsets of orphan nodes (non-root parentless nodes)
-        and randomly choose new parents for them from the set of current + possible nodes.
+        1) Repeatedly randomly select single orphan nodes (non-root parentless nodes), build
+        the set of nodes that *could* be parents for them (both existing nodes + nonexisting
+        node types), and pick a random feasible parent. (For OR nodes, the parent can no longer
+        take more children; for AND and SET nodes, it might have deterministic or
+        stochastic (respectively) "holes" for additional children that will have to be populated
+        either by further parsing, or by the final forward pass to make the tree feasible.
+        2) When there are no orphans left, run a top-down pass on all nodes, adding any nodes
+        necessary to make the structure generation rules feasible.
+        3) Finally, instantiate all non-instantiated nodes, top-down.
 
+        Open questions:
+        1) Is this (probabilistically) complete? (Nonzero prob to recover the right tree?)
+        2) What's the likelihood of proposing a given tree completion using this procedure?
         '''
-        raise NotImplementedError()
+
+        def get_root_and_orphans(tree):
+            orphans = []
+            root = None
+            for node in tree:
+                if isinstance(node, root_node_type):
+                    assert root is None, "Multiple nodes of root_node_type; infeasible partial tree."
+                    root = node
+                parent = tree.get_node_parent_or_none(node)
+                if parent is None:
+                    orphans.append(node)
+            return root, orphans
+
+        # (1): Association of orphans.
+        root, orphans = get_root_and_orphans(partial_tree)
+
+        # Build up the full list of node types we have access to,
+        # and for each node type, a set of the nodes that can generate it.
+        all_node_types = []
+        input_queue = [root_node_type]
+        # Dict of sets, keyed by the child node type.
+        parent_type_possibilities = {}
+        while len(input_queue) > 0:
+            parent_type = input_queue.pop(0)
+            all_node_types.append(parent_type)
+            if issubclass(parent_type, NonTerminalNode):
+                # Convert to set to get only unique child types.
+                child_types = set([c.__class__ for c in parent_type().get_maximal_child_list()])
+                print(child_types)
+                for child_type in child_types:
+                    input_queue.append(child_type)
+                    if child_type not in parent_type_possibilities.keys():
+                        parent_type_possibilities[child_type] = {parent_type}
+                    else:
+                        parent_type_possibilities[child_type].add(parent_type)
+
+        iter_k = 0
+        while len(orphans) > 0:
+            orphan = orphans[pyro.sample(
+                "orphan_choice_%d" % iter_k,
+                dist.Categorical(torch.ones(len(orphans)))
+            )]
+            orphan_type = orphan.__class__
+
+            # What node types can generate this node?
+            parent_types = [parent_type_possibilities[orphan_type]]
+
+            # Go collect possible parents.
+            possible_parents = []
+            for parent_type in parent_types:
+                existing_nodes = partial_tree.find_nodes_by_type(parent_type)
+                for existing_node in existing_nodes:
+                    max_child_list = existing_node.get_maximal_child_list()
+
+
+            
+
+
+
+
+            iter_k += 1
+            if iter_k > max_iters:
+                return False
+        # (2): Top-down structure filling.
+
+        # (3): Top-down instantiation, where necessary.
+
 
