@@ -118,6 +118,7 @@ class SceneTree(nx.DiGraph):
         # out the new nodes and keeping the old ones.
         # Still super funky... Pyro and graph-structured data like this
         # just don't play very well, do they?
+        raise NotImplementedError("Needs reimplementation -- doesn't handle instantiation of local attributes correctly.")
         def trace_to_observe_dict(trace):
             return {key: site["value"] for key, site in trace.nodes.items()
                     if site["type"] is "sample"}
