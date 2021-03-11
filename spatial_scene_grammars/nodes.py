@@ -58,14 +58,48 @@ class Node():
     At construction time, a node will be supplied a name and a dictionary
     of attribute assignments, which are stored in the node instance.
      '''
-    def __init__(self):
+    def __init__(self, do_sanity_checks=True):
         self.name = node_name_store.get_name(self)
         self.instantiated = False
+        self.do_sanity_checks = True
         # Place to register physics/geometry info and
         # node tf.
         self.physics_geometry_info = None
         self.tf = None
         super().__init__()
+
+    @classmethod
+    def get_derived_attribute_info(cls):
+        # Need (unfortunately) for parsing experiments; I can't
+        # conclude this information statically for all node types
+        # in a grammar easily.
+        # Should return a dict keyed by attribute names
+        # with the expected tensor shape as the value.
+        return {}
+
+    @classmethod
+    def get_local_attribute_info(cls):
+        # Need (unfortunately) for parsing experiments; I can't
+        # conclude this information statically for all node types
+        # in a grammar easily.
+        # Should return a dict keyed by attribute names
+        # with the expected tensor shape as the value.
+        return {}
+
+    def get_num_local_variables(self):
+        all_attr_shapes = {**self.get_derived_attribute_info(), **self.get_local_attribute_info()}
+        return sum([sum(shape) for shape in all_attr_shapes.values()])
+
+    def _sanity_check_attribute_dict(self, input_dict, expected_dict_of_shapes):
+        for key, shape in expected_dict_of_shapes.items():
+            assert key in input_dict.keys(), "Attribute %s not in input in class %s." % (key, self.__class__.__name__)
+            got_shape = input_dict[key].shape
+            assert got_shape == shape, "Attribute %s of wrong shape: %s vs expected %s in class %s." % (key, got_shape, shape, self.__class__.__name__)
+        for key, value in input_dict.items():
+            assert key in expected_dict_of_shapes.keys(), "Attribute %s not expected in class %s." % (key, self.__class__.__name__)
+            got_shape = value.shape
+            shape = expected_dict_of_shapes[key]
+            assert got_shape == shape, "Attribute %s of wrong shape: %s vs expected %s in class %s." % (key, got_shape, shape, self.__class__.__name__)
 
     def instantiate(self, derived_attributes):
         ''' Given a list of derived attributes, sets self up.
@@ -73,12 +107,32 @@ class Node():
         setup (of things like graphics assets). Traces the actual
         instantiate implementation and records identity of random
         variables sampled. '''
+
+        # Sanity-checking input.
+        if self.do_sanity_checks:
+            self._sanity_check_attribute_dict(
+                derived_attributes,
+                self.get_derived_attribute_info()
+            )
         self.derived_attributes = derived_attributes
+
+        # Call implementation and record what variables were sampled.
         with scope(prefix=self.name + "_instantiate"):
             self.instantiate_trace = pyro.poutine.trace(
                 self._instantiate_impl
             ).get_trace(derived_attributes)
-            assert_trace_sites_are_all_continuous(self.instantiate_trace)
+
+        # Sanity-check the local variables are as expected.
+        # TODO(gizatt): THIS IS WRONG. INSTANTIATE NEEDS TO RETURN A
+        # DICT OF LOCAL ATTRIBUTES WITH NAMES.
+        assert_trace_sites_are_all_continuous(self.instantiate_trace)
+        self.local_attributes = {
+            key: value["value"]
+                for key, value in self.instantiate_trace.nodes.items()
+                if value["type"] == "sample"
+        }
+        if self.do_sanity_checks:
+            self._sanity_check_attribute_dict(self.local_attributes, self.get_local_attribute_info())
         self.instantiated = True
 
     def _instantiate_impl(self, derived_attributes):
@@ -87,6 +141,19 @@ class Node():
     def get_instantiate_ll(self):
         assert self.instantiated
         return self.instantiate_trace.log_prob_sum()
+
+    def get_all_attributes(self):
+        assert self.instantiated
+        return {**self.derived_attributes, **self.local_attributes}
+
+    def get_all_attributes_as_vector(self):
+        assert self.instantiated
+        attr_dict = self.get_all_attributes()
+        elements = [v.flatten() for v in attr_dict.values()]
+        if len(elements) > 0:
+            return torch.cat(elements)
+        else:
+            return torch.empty((0,))
 
 
 class TerminalNode(Node):

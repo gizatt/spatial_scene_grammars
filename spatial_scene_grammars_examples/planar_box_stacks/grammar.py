@@ -29,6 +29,12 @@ from spatial_scene_grammars.sampling import *
 class Box(TerminalNode):
     def _instantiate_impl(self, derived_attributes):
         self.xy = derived_attributes["xy"]
+    @classmethod
+    def get_derived_attribute_info(cls):
+        return {
+            "xy": (2,)
+        }
+
 
 class StackOfN(AndNode):
     N = None
@@ -46,6 +52,12 @@ class StackOfN(AndNode):
         return all_attrs
     def _instantiate_impl(self, derived_attributes):
         self.xy = derived_attributes["xy"]
+    @classmethod
+    def get_derived_attribute_info(cls):
+        return {
+            "xy": (2,)
+        }
+
 StackOf2 = type("StackOf2", (StackOfN,), {"N": 2})
 StackOf3 = type("StackOf3", (StackOfN,), {"N": 3})
 
@@ -66,6 +78,11 @@ class GroupOfN(AndNode):
         return all_attrs
     def _instantiate_impl(self, derived_attributes):
         self.xy = derived_attributes["xy"]
+    @classmethod
+    def get_derived_attribute_info(cls):
+        return {
+            "xy": (2,)
+        }
 GroupOf1 = type("GroupOf1", (GroupOfN,), {"N": 1})
 GroupOf2 = type("GroupOf2", (GroupOfN,), {"N": 2})
 GroupOf3 = type("GroupOf3", (GroupOfN,), {"N": 3})
@@ -88,7 +105,11 @@ class Ground(OrNode):
         return all_attrs
     def _instantiate_impl(self, derived_attributes):
         self.xy = derived_attributes["xy"]
-
+    @classmethod
+    def get_derived_attribute_info(cls):
+        return {
+            "xy": (2,)
+        }
 
 class NonpenetrationConstraint(ContinuousVariableConstraint):
     def __init__(self, allowed_penetration_margin=0.0):
