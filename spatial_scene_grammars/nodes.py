@@ -112,6 +112,14 @@ class Node():
             shape = expected_dict_of_shapes[key]
             assert got_shape == shape, "Attribute %s of wrong shape: %s vs expected %s in class %s." % (key, got_shape, shape, self.__class__.__name__)
 
+    def copy_attr_dict_to_self(self, attr_dict):
+        for key, value in attr_dict.items():
+            # Try to protect from overwriting stuff we shouldn't, while
+            # still allowing attributes to be updated.
+            if hasattr(self, key):
+                assert type(getattr(self, key)) == type(value)
+            setattr(self, key, value)
+
     def instantiate(self, derived_attributes):
         ''' Given a list of derived attributes, sets self up.
         This can include local random choices and deterministic
@@ -127,13 +135,8 @@ class Node():
             )
         self.derived_attributes = derived_attributes
         # TODO(gizatt) Is this too risky?
-        for key, value in self.derived_attributes.items():
-            # Try to protect from overwriting stuff we shouldn't, while
-            # still allowing attributes to be updated.
-            if hasattr(self, key):
-                assert type(getattr(self, key)) == type(value)
-            setattr(self, key, value)
-
+        self.copy_attr_dict_to_self(self.derived_attributes)
+        
         # Call implementation and record what variables were sampled.
         with scope(prefix=self.name + "_instantiate"):
             self.instantiate_trace = pyro.poutine.trace(
@@ -142,12 +145,7 @@ class Node():
 
         self.local_attributes = self.instantiate_trace.nodes["_RETURN"]["value"]
         # TODO(gizatt) Is this too risky?
-        for key, value in self.local_attributes.items():
-            # Try to protect from overwriting stuff we shouldn't, while
-            # still allowing attributes to be updated.
-            if hasattr(self, key):
-                assert type(getattr(self, key)) == type(value)
-            setattr(self, key, value)
+        self.copy_attr_dict_to_self(self.local_attributes)
         if self.do_sanity_checks:
             # Sanity-check the local variables are continuous
             # and match the expected set of attributes.
@@ -169,6 +167,10 @@ class Node():
                 self.get_local_attribute_info())
         self.derived_attributes = derived_attributes
         self.local_attributes = local_attributes
+        # TODO(gizatt) Is this too risky?
+        self.copy_attr_dict_to_self(self.derived_attributes)
+        self.copy_attr_dict_to_self(self.local_attributes)
+        
         # Block outside scope so scope gets applied.
         with pyro.poutine.block():
             with scope(prefix=self.name + "_instantiate"):

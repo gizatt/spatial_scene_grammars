@@ -27,13 +27,9 @@ from spatial_scene_grammars.sampling import *
 
 
 class Box(TerminalNode):
-    def _instantiate_impl(self, derived_attributes):
-        self.xy = derived_attributes["xy"]
     @classmethod
     def get_derived_attribute_info(cls):
-        return {
-            "xy": (2,)
-        }
+        return {"xy": (2,)}
 
 
 class StackOfN(AndNode):
@@ -50,13 +46,17 @@ class StackOfN(AndNode):
                 "xy": self.xy + child_xy,
             })
         return all_attrs
-    def _instantiate_impl(self, derived_attributes):
-        self.xy = derived_attributes["xy"]
+    def _conditioned_instantiate_children_impl(self, children):
+        # Given instantiated child set, provide proposals
+        # for my sample sites.
+        for k, child in enumerate(children):
+            child_xy = child.xy - self.xy
+            pyro.sample("child_%d_xy" % k,
+                dist.Delta(child_xy)
+            )
     @classmethod
     def get_derived_attribute_info(cls):
-        return {
-            "xy": (2,)
-        }
+        return {"xy": (2,)}
 
 StackOf2 = type("StackOf2", (StackOfN,), {"N": 2})
 StackOf3 = type("StackOf3", (StackOfN,), {"N": 3})
@@ -76,13 +76,18 @@ class GroupOfN(AndNode):
                 "xy": self.xy + child_xy,
             })
         return all_attrs
-    def _instantiate_impl(self, derived_attributes):
-        self.xy = derived_attributes["xy"]
+    def _conditioned_instantiate_children_impl(self, children):
+        # Given instantiated child set, provide proposals
+        # for my sample sites.
+        for k, child in enumerate(children):
+            child_xy = child.xy - self.xy
+            pyro.sample("child_%d_xy" % k,
+                dist.Delta(child_xy)
+            )
     @classmethod
     def get_derived_attribute_info(cls):
-        return {
-            "xy": (2,)
-        }
+        return {"xy": (2,)}
+
 GroupOf1 = type("GroupOf1", (GroupOfN,), {"N": 1})
 GroupOf2 = type("GroupOf2", (GroupOfN,), {"N": 2})
 GroupOf3 = type("GroupOf3", (GroupOfN,), {"N": 3})
@@ -103,13 +108,17 @@ class Ground(OrNode):
                 "xy": torch.tensor([child_x, child_y]),
             })
         return all_attrs
-    def _instantiate_impl(self, derived_attributes):
-        self.xy = derived_attributes["xy"]
+    def _conditioned_instantiate_children_impl(self, children):
+        # Given instantiated child set, provide proposals
+        # for my sample sites.
+        for k, child in enumerate(children):
+            child_x = child.xy[0]
+            pyro.sample("child_%d_x" % k,
+                dist.Delta(child_x)
+            )
     @classmethod
     def get_derived_attribute_info(cls):
-        return {
-            "xy": (2,)
-        }
+        return {"xy": (2,)}
 
 class NonpenetrationConstraint(ContinuousVariableConstraint):
     def __init__(self, allowed_penetration_margin=0.0):
