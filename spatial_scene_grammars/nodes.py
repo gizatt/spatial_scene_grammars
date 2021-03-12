@@ -213,15 +213,25 @@ class Node():
         assert self.instantiated
         return {**self.derived_attributes, **self.local_attributes}
 
-    def get_all_attributes_as_vector(self):
-        assert self.instantiated
-        attr_dict = self.get_all_attributes()
+    @staticmethod
+    def _flatten_attr_dict(attr_dict):
         elements = [v.flatten() for v in attr_dict.values()]
         if len(elements) > 0:
             return torch.cat(elements)
         else:
             return torch.empty((0,))
 
+    def get_derived_attributes_as_vector(self):
+        assert self.instantiated
+        return self._flatten_attr_dict(self.derived_attributes)
+        
+    def get_local_attributes_as_vector(self):
+        assert self.instantiated
+        return self._flatten_attr_dict(self.local_attributes)
+
+    def get_all_attributes_as_vector(self):
+        assert self.instantiated
+        return self._flatten_attr_dict(self.get_all_attributes())
 
 class TerminalNode(Node):
     ''' The leafs of a generated scene tree will be terminal nodes. '''
@@ -291,6 +301,13 @@ class NonTerminalNode(Node):
         set of any sampled instance of this node will be a subset
         of that list. '''
         raise NotImplementedError("Override get_maximal_child_list.")
+
+    def get_child_indices_into_maximal_child_list(self, children):
+        ''' Returns, for each child in children, the index into the 
+        maximal child set for this node that that child was produced by.
+        Errors in ambiguous cases; assumes this child set is a feasible
+        full child set for this node type. '''
+        raise NotImplementedError('Override get_child_indices_into_maximal_child_list.')
 
     def instantiate_children(self, children):
         ''' Instantiates the supplied children of this node, creating
@@ -377,6 +394,16 @@ class OrNode(NonTerminalNode):
         return [self.child_types[active_rule]()]
 
     def _conditioned_sample_children_impl(self, children):
+        inds = self.get_child_indices_into_maximal_child_list(children)
+        production_weights = torch.zeros(len(self.child_types))
+        for k in inds:
+            production_weights[k] = self.production_weights[k]
+        pyro.sample("or_sample", dist.Categorical(production_weights))
+
+    def get_maximal_child_list(self):
+        return [child() for child in self.child_types]
+
+    def get_child_indices_into_maximal_child_list(self, children):
         assert len(children) == 1
         production_weights = torch.zeros(len(self.child_types))
         child = children[0]
@@ -390,13 +417,7 @@ class OrNode(NonTerminalNode):
             # for the feasible children? I need to understand downstream users of
             # this method better to know if nondeterminism here is OK.
             raise NotImplementedError("Multiple potential children.")
-        for k in inds:
-            production_weights[k] = self.production_weights[k]
-        pyro.sample("or_sample", dist.Categorical(production_weights))
-
-    def get_maximal_child_list(self):
-        return [child() for child in self.child_types]
-
+        return torch.tensor(inds)
 
 class AndNode(NonTerminalNode):
     ''' Convenience specialization of a nonterminal node: will choose all
@@ -415,6 +436,9 @@ class AndNode(NonTerminalNode):
     def get_maximal_child_list(self):
         return [child() for child in self.child_types]
 
+    def get_child_indices_into_maximal_child_list(self, children):
+        assert len(children) == len(self.child_types)
+        return torch.tensor(range(len(self.child_types)))
 
 class IndependentSetNode(NonTerminalNode):
     ''' Convenience specialization of a nonterminal node: has a list of
@@ -434,7 +458,16 @@ class IndependentSetNode(NonTerminalNode):
     def _conditioned_sample_children_impl(self, children):
         # Recover if each entry is active.
         activations = torch.zeros(len(self.child_types))
-        for child_type in self.child_types:
+        inds = self.get_child_indices_into_maximal_child_list(children)
+        activations[inds] = 1.
+        pyro.sample("independent_set_sample", dist.Bernoulli(activations))
+
+    def get_maximal_child_list(self):
+        return [child() for child in self.child_types]
+
+    def get_child_indices_into_maximal_child_list(self, children):
+        inds = []
+        for k, child_type in enumerate(self.child_types):
             matching_children_inds = [
                 k for (k, child) in enumerate(children)
                 if type(child) == child_type
@@ -444,11 +477,8 @@ class IndependentSetNode(NonTerminalNode):
                 # only happen under a weird / ambiguous grammar, I think.
                 raise NotImplementedError("Child could come from multiple productions.")
             elif len(matching_children_inds) == 1:
-                activations[matching_children_inds[0]] = 1
-        pyro.sample("independent_set_sample", dist.Bernoulli(activations))
-
-    def get_maximal_child_list(self):
-        return [child() for child in self.child_types]
+                inds.append(k)
+        return torch.tensor(inds, dtype=torch.int64)
 
 
 class GeometricSetNode(NonTerminalNode):
@@ -475,6 +505,10 @@ class GeometricSetNode(NonTerminalNode):
         return [self.child_types[0]() for k in range(num_active)]
 
     def _conditioned_sample_children_impl(self, children):
+        # This can't be exact, as _sample_children_impl loses information.
+        # It should be reimplemented as a Categorical with geometric densities
+        # at everything but the last bin, and the sum of the truncated tail
+        # at the last bin.
         for child in children:
             # All our child types should be the same.
             assert type(child) == self.child_type[0]
@@ -482,11 +516,15 @@ class GeometricSetNode(NonTerminalNode):
         assert num_active <= self.max_repeats
         choices = torch.zeros(self.max_repeats + 1)
         choices[num_active] = 1.
-        # This can't be exact, as _sample_children_impl loses information.
-        # It should be reimplemented as a Categorical with geometric densities
-        # at everything but the last bin, and the sum of the truncated tail
-        # at the last bin.
         pyro.sample("geometric_set_sample", dist.Categorical(choices))
 
     def get_maximal_child_list(self):
         return [child() for child in self.child_types]
+
+    def get_child_indices_into_maximal_child_list(self, children):
+        for child in children:
+            # All our child types should be the same.
+            assert type(child) == self.child_type[0]
+        num_active = len(children)
+        assert num_active <= self.max_repeats
+        return torch.tensor(range(num_active + 1))
