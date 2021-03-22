@@ -83,6 +83,7 @@ class GrammarEncoder(torch.nn.Module):
     def __init__(self, meta_tree, embedding_size):
         super().__init__()
         self.embedding_size = embedding_size
+        self.meta_tree = meta_tree
         self.make_rnn(meta_tree, embedding_size)
         self.make_embedding_modules(meta_tree, embedding_size)
 
@@ -401,3 +402,18 @@ class GrammarEncoder(torch.nn.Module):
                     inclusion_log_likelihood_per_node[meta_child_node] = inclusion_lls[k]
                     node_queue.append(meta_child_node)
         return inclusion_log_likelihood_per_node, product_weights_per_node
+
+    def get_attribute_distributions_for_meta_node(self, meta_node, x):
+        assert meta_node in self.meta_tree.nodes
+
+        all_inds = self.node_output_info[meta_node]
+
+        derived_means = x[all_inds.derived_attribute_means_inds]
+        derived_vars = torch.nn.functional.softplus(x[all_inds.derived_attribute_vars_inds])
+        derived_attr_dist = dist.Normal(derived_means, derived_vars)
+            
+        local_means = x[all_inds.local_attribute_means_inds]
+        local_vars = torch.nn.functional.softplus(x[all_inds.local_attribute_vars_inds])
+        local_attr_dist = dist.Normal(local_means, local_vars)
+
+        return derived_attr_dist, local_attr_dist
