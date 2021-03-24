@@ -2,8 +2,13 @@ from copy import deepcopy
 import numpy as np
 import pyro
 import pyro.distributions as dist
+from pyro.distributions.torch_distribution import (
+    TorchDistribution, TorchDistributionMixin
+)
 from pyro.contrib.autoname import scope
 import torch
+
+from .distributions import VectorCappedGeometricDist
 
 import pydrake
 from pydrake.all import (
@@ -40,35 +45,19 @@ continuous_support_constraints = (
     torch.distributions.constraints._Real,
     torch.distributions.constraints._Interval
 )
-def assert_trace_sites_are_all_continuous(trace):
-    for key, value in trace.nodes.items():
-        if value["type"] == "sample":
-            support = value["fn"].support
-            assert isinstance(support, continuous_support_constraints), \
-               "Sample sites in instantiate methods should only sample continuous " \
-               "values: %s has support %s" % (key, str(support))
-
-def assert_trace_sites_are_all_discrete(trace):
-    for key, value in trace.nodes.items():
-        if value["type"] == "sample":
-            support = value["fn"].support
-            assert not isinstance(support, continuous_support_constraints), \
-              "Sample sites in sample_products methods should only sample discrete " \
-              "values: %s has support %s" % (key, str(support))
-
-def assert_traces_have_same_sites(trace1, trace2):
-    for key, value in trace1.nodes.items():
-        if value["type"] == "sample":
-            assert key in trace2.nodes.keys(), "%s not in trace2 sites" % key
-    for key, value in trace2.nodes.items():
-        if value["type"] == "sample":
-            assert key in trace1.nodes.keys(), "%s not in trace1 sites" % key
+def assert_dists_are_all_continuous(dict_of_dists):
+    for key, value in dict_of_dists.items():
+        assert isinstance(value, (TorchDistribution, TorchDistributionMixin)), \
+            "Variable %s distribution is type %s, not a pyro distribution type." % (key, type(value))
+        support = value.support
+        assert isinstance(support, continuous_support_constraints), \
+            "Distribution of %s (type %s) does not have continuous support." % (key, type(value))
 
 class Node():
-    ''' Every node (symbol) in the grammar derives from this base.
-    At construction time, a node will be supplied a name and a dictionary
-    of attribute assignments, which are stored in the node instance.
-     '''
+    '''
+    Every node (symbol) in the grammar derives from this base.
+    '''
+
     def __init__(self, do_sanity_checks=True):
         self.name = node_name_store.get_name(self)
         self.instantiated = False
@@ -80,135 +69,157 @@ class Node():
         super().__init__()
 
     @classmethod
-    def get_derived_attribute_info(cls):
-        # Need (unfortunately) for parsing experiments; I can't
-        # conclude this information statically for all node types
-        # in a grammar easily.
-        # Should return a dict keyed by attribute names
-        # with the expected tensor shape as the value.
+    def get_derived_variable_info(cls):
+        ''' 
+        Provide a dictionary of derived variables that instances of this
+        class will expect to receive at instantiation time.
+        Keys are variable names; values are the expected tensor shapes.
+        '''
         return {}
 
     @classmethod
-    def get_local_attribute_info(cls):
-        # Need (unfortunately) for parsing experiments; I can't
-        # conclude this information statically for all node types
-        # in a grammar easily.
-        # Should return a dict keyed by attribute names
-        # with the expected tensor shape as the value.
+    def get_local_variable_info(cls):
+        '''
+        Provide a dictionary of local variables that instances of this
+        class will produce during instantiation. Keys are attribute names;
+        values are the expected tensor shapes.
+        '''
         return {}
 
-    def get_num_local_variables(self):
-        all_attr_shapes = {**self.get_derived_attribute_info(), **self.get_local_attribute_info()}
+    @classmethod
+    def get_num_continuous_variables(self):
+        '''
+        Returns the number of continuous variables this class has, which
+        is the sum of the products of the shapes of all of the derived
+        and local variables.
+        '''
+        all_attr_shapes = {**self.get_derived_variable_info(), **self.get_local_variable_info()}
         return sum([sum(shape) for shape in all_attr_shapes.values()])
 
-    def _sanity_check_attribute_dict(self, input_dict, expected_dict_of_shapes):
+    def _sanity_check_variable_dist_dict(self, input_dict, expected_dict_of_shapes):
+        '''
+        Given a dictionary of distributions keyed by variable names,
+        checks that the included keys and corresponding shapes exactly match
+        a dictionary of expected tensor shapes keyed by the same variable names.
+        '''
         for key, shape in expected_dict_of_shapes.items():
-            assert key in input_dict.keys(), "Attribute %s not in input in class %s." % (key, self.__class__.__name__)
-            got_shape = input_dict[key].shape
-            assert got_shape == shape, "Attribute %s of wrong shape: %s vs expected %s in class %s." % (key, got_shape, shape, self.__class__.__name__)
+            assert key in input_dict.keys(), "Variable %s not in input in class %s." % (key, self.__class__.__name__)
+            got_shape = input_dict[key].shape()
+            assert got_shape == shape, "Variable %s of wrong shape: %s vs expected %s in class %s." % (key, got_shape, shape, self.__class__.__name__)
         for key, value in input_dict.items():
-            assert key in expected_dict_of_shapes.keys(), "Attribute %s not expected in class %s." % (key, self.__class__.__name__)
-            got_shape = value.shape
+            assert key in expected_dict_of_shapes.keys(), "Variable %s not expected in class %s." % (key, self.__class__.__name__)
+            got_shape = value.shape()
             shape = expected_dict_of_shapes[key]
-            assert got_shape == shape, "Attribute %s of wrong shape: %s vs expected %s in class %s." % (key, got_shape, shape, self.__class__.__name__)
+            assert got_shape == shape, "Variable %s of wrong shape: %s vs expected %s in class %s." % (key, got_shape, shape, self.__class__.__name__)
+
 
     def copy_attr_dict_to_self(self, attr_dict):
         for key, value in attr_dict.items():
-            # Try to protect from overwriting stuff we shouldn't, while
-            # still allowing attributes to be updated.
             if hasattr(self, key):
-                assert type(getattr(self, key)) == type(value)
+                # Make sure we're only updating the value.
+                curr_value = getattr(self, key)
+                assert isinstance(curr_value, torch.Tensor), "Class already has non-tensor attribute named %s: %s." % (key, curr_value)
+                assert getattr(self, key).shape == value.shape, \
+                    "Class already has an attribute named %s with different shape: %s (current) vs %s (new)." % (
+                        key, str(curr_value.shape), value.shape)
             setattr(self, key, value)
 
-    def instantiate(self, derived_attributes):
-        ''' Given a list of derived attributes, sets self up.
-        This can include local random choices and deterministic
-        setup (of things like graphics assets). Traces the actual
-        instantiate implementation and records identity of random
-        variables sampled. '''
+    def _sample_continuous_variables_from_dict(self, dict_of_dists):
+        '''
+        For each key, dist pair in the dict, sample from the distribution;
+        form an output dict of keys and sampled values; and for convenience,
+        assign the resulting value to ourselves using the key name.
+        (TODO: Is the convenience of this last one worth how messy it is?)
+        '''
+        out_dict = {}
+        for key, dist in dict_of_dists.items():
+            value = pyro.sample("key", dist)
+            out_dict[key] = value
+        return out_dict
+
+    def instantiate(self, derived_variable_distributions):
+        '''
+        Given a dictionary of derived variable distributions (matching
+        the expected derived variables from `get_derived_variable_info`):
+        1) Samples concrete values for the derived variables, storing
+        them as correspondingly-named attributes of the class.
+        2) Uses the concrete values to calculate distributions over the
+        local variables (implemented by _instantiate_impl; the local variable
+        distribution set should match the shapes from `get_local_variable_info`).
+        3) Samples the local variables and stores them as
+        correspondingly-named attributes of the class.
+
+        The indirection here allows subclass implementation of `_instantiate_impl`
+        to focus on just spitting out the right distributions; actual sampling
+        and distribution bookkeeping is done here.
+        '''
 
         # Sanity-checking input.
         if self.do_sanity_checks:
-            self._sanity_check_attribute_dict(
-                derived_attributes,
-                self.get_derived_attribute_info()
+            assert_dists_are_all_continuous(derived_variable_distributions)
+            self._sanity_check_variable_dist_dict(
+                derived_variable_distributions,
+                self.get_derived_variable_info()
             )
-        self.derived_attributes = derived_attributes
-        # TODO(gizatt) Is this too risky?
-        self.copy_attr_dict_to_self(self.derived_attributes)
-        
-        # Call implementation and record what variables were sampled.
-        with scope(prefix=self.name + "_instantiate"):
-            self.instantiate_trace = pyro.poutine.trace(
-                self._instantiate_impl
-            ).get_trace(derived_attributes)
+        self.derived_variable_distributions = derived_variable_distributions
 
-        self.local_attributes = self.instantiate_trace.nodes["_RETURN"]["value"]
+        # Sample concrete values for the derived variables.
+        with scope(prefix=self.name + "_sample_derived"):
+            self.derived_variable_values = self._sample_continuous_variables_from_dict(
+                self.derived_variable_distributions
+            )
         # TODO(gizatt) Is this too risky?
-        self.copy_attr_dict_to_self(self.local_attributes)
+        self.copy_attr_dict_to_self(self.derived_variable_values)
+        
+        # Call instantiate implementation.
+        local_variable_distributions = self._instantiate_impl(self.derived_variable_values)
+
+        # Sanity-check output.
         if self.do_sanity_checks:
-            # Sanity-check the local variables are continuous
-            # and match the expected set of attributes.
-            assert_trace_sites_are_all_continuous(self.instantiate_trace)
-            self._sanity_check_attribute_dict(self.local_attributes, self.get_local_attribute_info())
+            assert_dists_are_all_continuous(local_variable_distributions)
+            self._sanity_check_variable_dist_dict(
+                local_variable_distributions,
+                self.get_local_variable_info()
+            )
+        self.local_variable_distributions = local_variable_distributions
+
+        # Sample concrete values for the local variables.
+        with scope(prefix=self.name + "_sample_local"):
+            self.local_variable_values = self._sample_continuous_variables_from_dict(
+                self.local_variable_distributions
+            )
+        # TODO(gizatt) Is this too risky?
+        self.copy_attr_dict_to_self(self.local_variable_values)
+
         self.instantiated = True
 
-    def conditioned_instantiate(self, derived_attributes, local_attributes):
-        '''
-        Given both derived and local attributes,
-        sets up this node (including trace) as if that is what was sampled.
-        '''
-        if self.do_sanity_checks:
-            self._sanity_check_attribute_dict(
-                derived_attributes,
-                self.get_derived_attribute_info())
-            self._sanity_check_attribute_dict(
-                local_attributes,
-                self.get_local_attribute_info())
-        self.derived_attributes = derived_attributes
-        self.local_attributes = local_attributes
-        # TODO(gizatt) Is this too risky?
-        self.copy_attr_dict_to_self(self.derived_attributes)
-        self.copy_attr_dict_to_self(self.local_attributes)
-        
-        # Block outside scope so scope gets applied.
-        with pyro.poutine.block():
-            with scope(prefix=self.name + "_instantiate"):
-                self.conditioned_instantiate_trace = pyro.poutine.trace(
-                    self._conditioned_instantiate_impl
-                ).get_trace(derived_attributes, local_attributes)
-        # Also run a forward pass using those sites to generate a forward
-        # trace, so we can evaluate score if requested, and have this one
-        # be the "externally visible" version.
-        # Condition needs to be outside the scope, for some reason, for the
-        # conditioning to stick...?
-        with pyro.poutine.condition(data=trace_to_observe_dict(self.conditioned_instantiate_trace)):
-            with scope(prefix=self.name + "_instantiate"):
-                self.instantiate_trace = pyro.poutine.trace(
-                    self._instantiate_impl
-                ).get_trace(self.derived_attributes)
-
-        if self.do_sanity_checks:
-            # Those two traces should be identical in terms of sample sites.
-            assert_traces_have_same_sites(
-                self.instantiate_trace,
-                self.conditioned_instantiate_trace
-            )
-            assert_trace_sites_are_all_continuous(self.instantiate_trace)
-            assert_trace_sites_are_all_continuous(self.conditioned_instantiate_trace)
-        self.instantiated = True
-
-    def _conditioned_instantiate_impl(self, derived_attributes, local_attributes):
-        if len(self.get_local_attribute_info().items()) > 0:
-            raise NotImplementedError("Override _conditioned_instantiate_impl.")
-
-    def _instantiate_impl(self, derived_attributes):
+    def _instantiate_impl(self, derived_variable_values):
         return {}
 
-    def get_instantiate_ll(self):
-        assert self.instantiated
-        return self.instantiate_trace.log_prob_sum()
+    @staticmethod
+    def get_variable_ll_given_dicts(value_dict, dist_dict):
+        total_ll = 0.
+        for key, value in value_dict.items():
+            total_ll += dist_dict[key].log_prob(value).sum()
+        return total_ll
 
+    def get_derived_variable_ll(self):
+        assert self.instantiated
+        return self.get_variable_ll_given_dicts(
+            self.derived_variable_values, self.derived_variable_distributions
+        )
+
+    def get_local_variable_ll(self):
+        assert self.instantiated
+        return self.get_variable_ll_given_dicts(
+            self.local_variable_values, self.local_variable_distributions
+        )
+
+    def get_continuous_variable_ll(self):
+        assert self.instantiated
+        return self.get_derived_variable_ll() + self.get_local_variable_ll()
+
+'''
     def get_all_attributes(self):
         assert self.instantiated
         return {**self.derived_attributes, **self.local_attributes}
@@ -232,6 +243,8 @@ class Node():
     def get_all_attributes_as_vector(self):
         assert self.instantiated
         return self._flatten_attr_dict(self.get_all_attributes())
+'''
+
 
 class TerminalNode(Node):
     ''' The leafs of a generated scene tree will be terminal nodes. '''
@@ -240,145 +253,79 @@ class TerminalNode(Node):
 class NonTerminalNode(Node):
     ''' Abstract interface for nonterminal nodes, which are responsible
     for sampling a set of production rules to produce new nodes.'''
-    def __init__(self):
+    def __init__(self, **kwargs):
         self.children_sampled = False
         self.children_instantiated = False
-        super().__init__()
+        super().__init__(**kwargs)
+
+    def get_maximal_child_type_list(self):
+        ''' Returns a list of node types, such that the child
+        set of any sampled instance of this node will be a subset
+        of that list. '''
+        raise NotImplementedError("Override get_maximal_child_type_list.")
 
     def sample_children(self):
         ''' Samples a list of children for this node. '''
-        with scope(prefix=self.name + "_choose_children"):
-            self.sample_children_trace = pyro.poutine.trace(
-                self._sample_children_impl
-            ).get_trace()
-        assert_trace_sites_are_all_discrete(self.sample_children_trace)
-        self.children_sampled = True
-        return self.sample_children_trace.nodes["_RETURN"]["value"]
-
-    def conditioned_sample_children(self, children):
-        ''' Given a list of children, recreate my own sample trace as if
-        those children were chosen. '''
-
-        # Block outside scope so scope gets applied.
-        with pyro.poutine.block():
-            with scope(prefix=self.name + "_choose_children"):
-                self.conditioned_sample_children_trace = pyro.poutine.trace(
-                    self._conditioned_sample_children_impl
-                ).get_trace(children)
-        # Also run a forward pass using those sites to generate a forward
-        # trace, so we can evaluate score if requested, and have this one
-        # be the "externally visible" version.
-        # Condition needs to be outside the scope, for some reason, for the
-        # conditioning to stick...?
-        with pyro.poutine.condition(data=trace_to_observe_dict(self.conditioned_sample_children_trace)):
-            with scope(prefix=self.name + "_choose_children"):
-                self.sample_children_trace = pyro.poutine.trace(
-                    self._sample_children_impl
-                ).get_trace()
-
+        # Get distribution over children.
+        child_type_list = self.get_maximal_child_type_list()
+        child_inclusion_dist = self._sample_children_impl()
         if self.do_sanity_checks:
-            assert_trace_sites_are_all_discrete(self.conditioned_sample_children_trace)
-            assert_trace_sites_are_all_discrete(self.sample_children_trace)
-            assert_traces_have_same_sites(
-                self.conditioned_sample_children_trace,
-                self.sample_children_trace
-            )
-        self.children_sampled = True
+            assert child_inclusion_dist.event_shape == (len(child_type_list),), \
+                "Inclusion dist %s has event_shape %s vs child list %s" % (
+                    child_inclusion_dist, child_inclusion_dist.event_shape,
+                    child_type_list
+                )
+        self.child_inclusion_dist = child_inclusion_dist
 
-    def _conditioned_sample_children_impl(self, children):
-        if len(children) > 0:
-            raise NotImplementedError("Override _conditioned_sample_children_impl.")
+        # Sample an included child set.
+        with scope(prefix=self.name + "_choose_children"):
+            self.child_inclusion_values = pyro.sample(
+                "sample_children_inclusion", self.child_inclusion_dist)
+        
+        # TODO: This doesn't support batching as-is.
+        child_set = [child_type_list[k]() for k in self.child_inclusion_values.bool() if k]
+        self.children_sampled = True
+        return child_set
 
     def _sample_children_impl(self):
+        ''' Should return a distribution that, when sampled, produces
+        a binary vector indicating whether each of the children in
+        the maximal child list is included in the output. '''
         raise NotImplementedError("Override _sample_children_impl.")
 
     def get_children_ll(self):
         assert self.children_sampled
-        return self.sample_children_trace.log_prob_sum()
+        return self.child_inclusion_dist.log_prob(self.child_inclusion_values).sum()
 
-    def get_maximal_child_list(self):
-        ''' Returns a list of nodes, such that the child
-        set of any sampled instance of this node will be a subset
-        of that list. '''
-        raise NotImplementedError("Override get_maximal_child_list.")
-
-    def get_child_indices_into_maximal_child_list(self, children):
-        ''' Returns, for each child in children, the index into the 
-        maximal child set for this node that that child was produced by.
-        Errors in ambiguous cases; assumes this child set is a feasible
-        full child set for this node type. '''
-        raise NotImplementedError('Override get_child_indices_into_maximal_child_list.')
+    #def get_child_indices_into_maximal_child_list(self, children):
+    #    ''' Returns, for each child in children, the index into the 
+    #    maximal child set for this node that that child was produced by.
+    #    Errors in ambiguous cases; assumes this child set is a feasible
+    #    full child set for this node type. '''
+    #    raise NotImplementedError('Override get_child_indices_into_maximal_child_list.')
 
     def instantiate_children(self, children):
         ''' Instantiates the supplied children of this node, creating
-        derived attribute dictionaries for each of them and passing them
-        into their instantiate_self methods. '''
+        derived variable distributions for each of them and passing those
+        down into their own instantiate methods. '''
         assert self.instantiated, "Node should be instantiated before instantiating children."
-        with scope(prefix=self.name + "_instantiate_children"):
-            self.instantiate_children_trace = pyro.poutine.trace(
-                self._instantiate_children_impl
-            ).get_trace(children)
-        assert_trace_sites_are_all_continuous(self.instantiate_children_trace)
-        child_attributes = self.instantiate_children_trace.nodes["_RETURN"]["value"]
-        assert len(child_attributes) == len(children)
-        for child, attr in zip(children, child_attributes):
-            child.instantiate(attr)
+        child_derived_variable_dists = self._instantiate_children_impl(children)
+        assert len(child_derived_variable_dists) == len(children)
+        for child, dist_dict in zip(children, child_derived_variable_dists):
+            child.instantiate(dist_dict)
         self.children_instantiated = True
-
-    def conditioned_instantiate_children(self, children):
-        for child in children:
-            assert child.instantiated
-        assert self.instantiated
-
-        # Block outside scope so scope gets applied.
-        with pyro.poutine.block():
-            with scope(prefix=self.name + "_instantiate_children"):
-                self.conditioned_instantiate_children_trace = pyro.poutine.trace(
-                    self._conditioned_instantiate_children_impl
-                ).get_trace(children)
-        # Also run a forward pass using those sites to generate a forward
-        # trace, so we can evaluate score if requested, and have this one
-        # be the "externally visible" version.
-        # Condition needs to be outside the scope, for some reason, for the
-        # conditioning to stick...?
-        with pyro.poutine.condition(data=trace_to_observe_dict(self.conditioned_instantiate_children_trace)):
-            with scope(prefix=self.name + "_instantiate_children"):
-                self.instantiate_children_trace = pyro.poutine.trace(
-                    self._instantiate_children_impl
-                ).get_trace(children)
-        
-        if self.do_sanity_checks:
-            assert_trace_sites_are_all_continuous(self.conditioned_instantiate_children_trace)
-            assert_trace_sites_are_all_continuous(self.instantiate_children_trace)
-            # Those two traces should be identical in terms of sample sites.
-            assert_traces_have_same_sites(
-                self.instantiate_children_trace,
-                self.conditioned_instantiate_children_trace
-            )
-            
-        self.children_instantiated = True
-
-    def _conditioned_instantiate_children_impl(self, children):
-        # Given instantiated child set, provide proposals
-        # for my sample sites.
-        for child in children:
-            if len(child.get_derived_attribute_info().items()) > 0:
-                raise NotImplementedError("Override _conditioned_instantiate_children_impl.")
 
     def _instantiate_children_impl(self, children):
         if len(children) > 0:
             for child in children:
-                if len(child.get_derived_attribute_info().items()) > 0:
+                if len(child.get_derived_variable_info().items()) > 0:
                     raise NotImplementedError("Override _instantiate_children_impl.")
-
-    def get_instantiate_children_ll(self):
-        assert self.children_instantiated
-        return self.instantiate_children_trace.log_prob_sum()
 
 
 class OrNode(NonTerminalNode):
     ''' Convenience specialization of a nonterminal node: will choose one
     of the available children with probabilities given by the production weights.'''
+
     def __init__(self, child_types, production_weights):
         if len(production_weights) != len(child_types):
             raise ValueError("# of production rules and weights must match.")
@@ -386,22 +333,14 @@ class OrNode(NonTerminalNode):
             raise ValueError("Must have nonzero number of production rules.")
         self.child_types = child_types
         self.production_weights = production_weights
-        self.production_dist = dist.Categorical(production_weights)
+        self.production_dist = dist.OneHotCategorical(probs=production_weights)
         super().__init__()
 
     def _sample_children_impl(self):
-        active_rule = pyro.sample("or_sample", self.production_dist)
-        return [self.child_types[active_rule]()]
+        return self.production_dist
 
-    def _conditioned_sample_children_impl(self, children):
-        inds = self.get_child_indices_into_maximal_child_list(children)
-        production_weights = torch.zeros(len(self.child_types))
-        for k in inds:
-            production_weights[k] = self.production_weights[k]
-        pyro.sample("or_sample", dist.Categorical(production_weights))
-
-    def get_maximal_child_list(self):
-        return [child() for child in self.child_types]
+    def get_maximal_child_type_list(self):
+        return self.child_types
 
     def get_child_indices_into_maximal_child_list(self, children):
         assert len(children) == 1
@@ -424,17 +363,14 @@ class AndNode(NonTerminalNode):
     of the available children all the time.'''
     def __init__(self, child_types):
         self.child_types = child_types
+        self.production_dist = dist.Bernoulli(torch.ones(len(self.child_types))).to_event(1)
         super().__init__()
 
     def _sample_children_impl(self):
-        return [child() for child in self.child_types]
+        return self.production_dist
 
-    def _conditioned_sample_children_impl(self, children):
-        # No sample sites, so no work necessary.
-        pass
-
-    def get_maximal_child_list(self):
-        return [child() for child in self.child_types]
+    def get_maximal_child_type_list(self):
+        return [child for child in self.child_types]
 
     def get_child_indices_into_maximal_child_list(self, children):
         assert len(children) == len(self.child_types)
@@ -447,23 +383,14 @@ class IndependentSetNode(NonTerminalNode):
     def __init__(self, child_types, production_probs):
         self.child_types = child_types
         self.production_probs = production_probs
-        self.production_dist = dist.Bernoulli(production_probs)
+        self.production_dist = dist.Bernoulli(production_probs).to_event(1)
         super().__init__()
 
     def _sample_children_impl(self):
-        active_rules = pyro.sample("independent_set_sample", self.production_dist)
-        return [child() for k, child in enumerate(self.child_types)
-                if active_rules[k]]
+        return self.production_dist
 
-    def _conditioned_sample_children_impl(self, children):
-        # Recover if each entry is active.
-        activations = torch.zeros(len(self.child_types))
-        inds = self.get_child_indices_into_maximal_child_list(children)
-        activations[inds] = 1.
-        pyro.sample("independent_set_sample", dist.Bernoulli(activations))
-
-    def get_maximal_child_list(self):
-        return [child() for child in self.child_types]
+    def get_maximal_child_type_list(self):
+        return self.child_types
 
     def get_child_indices_into_maximal_child_list(self, children):
         inds = []
@@ -492,34 +419,15 @@ class GeometricSetNode(NonTerminalNode):
             self.max_repeats = 0
         else:
             self.child_types = [child_type] * max_repeats
-            self.production_dist = dist.Geometric(geometric_prob)
+            self.production_dist = VectorCappedGeometricDist(geometric_prob, max_repeats)
             self.max_repeats = torch.tensor(max_repeats, dtype=torch.int)
         super().__init__()
 
     def _sample_children_impl(self):
-        if len(self.child_types) == 0:
-            # Short circuit trivial case.
-            return []
-        num_active_base = pyro.sample("geometric_set_sample", self.production_dist)
-        num_active = min(int(num_active_base.item()), self.max_repeats)
-        return [self.child_types[0]() for k in range(num_active)]
+        return self.production_dist
 
-    def _conditioned_sample_children_impl(self, children):
-        # This can't be exact, as _sample_children_impl loses information.
-        # It should be reimplemented as a Categorical with geometric densities
-        # at everything but the last bin, and the sum of the truncated tail
-        # at the last bin.
-        for child in children:
-            # All our child types should be the same.
-            assert type(child) == self.child_type[0]
-        num_active = len(children)
-        assert num_active <= self.max_repeats
-        choices = torch.zeros(self.max_repeats + 1)
-        choices[num_active] = 1.
-        pyro.sample("geometric_set_sample", dist.Categorical(choices))
-
-    def get_maximal_child_list(self):
-        return [child() for child in self.child_types]
+    def get_maximal_child_type_list(self):
+        return self.child_types
 
     def get_child_indices_into_maximal_child_list(self, children):
         for child in children:
@@ -528,3 +436,7 @@ class GeometricSetNode(NonTerminalNode):
         num_active = len(children)
         assert num_active <= self.max_repeats
         return torch.tensor(range(num_active + 1))
+
+'''
+
+'''

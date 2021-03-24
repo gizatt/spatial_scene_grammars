@@ -146,20 +146,18 @@ class SceneTree(nx.DiGraph):
             return scene_tree
         return pyro.poutine.trace(resample_tree_in_place).get_trace(self)
 
-    def get_subtree_log_prob(self, root_node, include_instantiate=True, include_topology=True):
+    def get_subtree_log_prob(self, root_node, include_continuous=True, include_discrete=True):
         assert root_node in self.nodes
         node_queue = [root_node]
         ll = 0.
         while len(node_queue) > 0:
             node = node_queue.pop(0)
-            if include_instantiate:
-                ll += node.get_instantiate_ll()
+            if include_continuous:
+                ll += node.get_continuous_variable_ll()
             if isinstance(node, NonTerminalNode):
                 children = self.successors(node)
-                if include_topology:
+                if include_discrete:
                     ll += node.get_children_ll()
-                if include_instantiate:
-                    ll += node.get_instantiate_children_ll()
                 node_queue += children
         return ll
 
@@ -210,8 +208,9 @@ class SceneTree(nx.DiGraph):
         node_queue = [root_node]
         while len(node_queue) > 0:
             node = node_queue.pop(0)
-            new_nodes = node.get_maximal_child_list()
-            for new_node in new_nodes:
+            new_node_types = node.get_maximal_child_type_list()
+            for new_node_type in new_node_types:
+                new_node = new_node_type()
                 meta_tree.add_node(new_node)
                 meta_tree.add_edge(node, new_node)
                 if isinstance(new_node, NonTerminalNode):

@@ -39,8 +39,8 @@ class VectorCappedGeometricDist(TorchDistribution):
     
     def sample(self, sample_shape=torch.Size()):
         ks = self._geometric.sample(sample_shape).int()
-        out = torch.zeros(sample_shape + self.event_shape, dtype=torch.int)
-        out[..., :ks] = 1
+        out = torch.zeros(sample_shape + self.event_shape)
+        out[..., :ks] = 1.
         return out
 
     def log_prob(self, value):

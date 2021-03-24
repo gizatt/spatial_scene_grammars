@@ -24,14 +24,14 @@ def assert_identical_dicts_of_tensors(d1, d2):
         assert key in d1.keys()
         assert torch.allclose(value, d1[key])
 
-class HasOnlyXyDerivedAttributesMixin():
+class HasOnlyXyDerivedVariablesMixin():
     @classmethod
-    def get_derived_attribute_info(cls):
+    def get_derived_variable_info(cls):
         return {"xy": (2,)}
 
 # Mixin must come first, since it's overriding a class method
 # also provided by the base node type.
-class Building(HasOnlyXyDerivedAttributesMixin, IndependentSetNode):
+class Building(HasOnlyXyDerivedVariablesMixin, IndependentSetNode):
     def __init__(self):
         # TODO(gizatt): Are metaclasses *really* the answer here?
         # The problem is that instantiate_children doesn't have visibility
@@ -43,42 +43,36 @@ class Building(HasOnlyXyDerivedAttributesMixin, IndependentSetNode):
                                       type("West_Room", (Room,), {})],
                          production_probs=torch.tensor([0.5, 0.5, 0.5, 0.5]))
     def _instantiate_children_impl(self, children):
-        all_args = []
+        all_dist_sets = []
         for child in children:
             child_type = child.__class__.__name__
             if child_type == "North_Room":
-                args = {"xy": self.xy + torch.tensor([0., 5.])}
+                dists = {"xy": dist.Delta(self.xy + torch.tensor([0., 5.]))}
             elif child_type == "South_Room":
-                args = {"xy": self.xy + torch.tensor([0., -5.])}
+                dists = {"xy": dist.Delta(self.xy + torch.tensor([0., -5.]))}
             elif child_type == "East_Room":
-                args = {"xy": self.xy + torch.tensor([5., 0.])}
+                dists = {"xy": dist.Delta(self.xy + torch.tensor([5., 0.]))}
             elif child_type == "West_Room":
-                args = {"xy": self.xy + torch.tensor([-5., 0.])}
+                dists = {"xy": dist.Delta(self.xy + torch.tensor([-5., 0.]))}
             else:
                 raise ValueError(child_type)
-            all_args.append(args)
-        return all_args
-    def _conditioned_instantiate_children_impl(self, children):
-        # Trivial case: no samples in instantiate_children.
-        pass
+            all_dist_sets.append(dists)
+        return all_dist_sets
 
-class Room(HasOnlyXyDerivedAttributesMixin, AndNode):
+class Room(HasOnlyXyDerivedVariablesMixin, AndNode):
     def __init__(self):
         super().__init__(
             child_types=[Table, Table]
         )
     def _instantiate_children_impl(self, children):
         assert len(children) == 2
-        all_attrs = []
+        all_dist_sets = []
         for k in range(2):
-            new_xy = self.xy + pyro.sample("offset_%d" % k, dist.Normal(torch.zeros(2), torch.ones(2)))
-            all_attrs.append({"xy": new_xy})
-        return all_attrs
-    def _conditioned_instantiate_children_impl(self, children):
-        for k, child in enumerate(children):
-            pyro.sample("offset_%d" % k, dist.Delta(child.xy - self.xy))
+            new_xy = dist.Normal(self.xy, torch.ones(2))
+            all_dist_sets.append({"xy": new_xy})
+        return all_dist_sets
 
-class Table(HasOnlyXyDerivedAttributesMixin, OrNode):
+class Table(HasOnlyXyDerivedVariablesMixin, OrNode):
     def __init__(self):
         super().__init__(
             child_types=[ColoredObject, ObjectStack],
@@ -86,24 +80,19 @@ class Table(HasOnlyXyDerivedAttributesMixin, OrNode):
         )
     def _instantiate_children_impl(self, children):
         assert len(children) == 1
-        new_xy = self.xy + pyro.sample("offset", dist.Normal(torch.zeros(2), torch.ones(2)))
+        new_xy = dist.Normal(self.xy, torch.ones(2))
         return [{"xy": new_xy}]
-    def _conditioned_instantiate_children_impl(self, children):
-        assert len(children) == 1
-        pyro.sample("offset", dist.Delta(children[0].xy - self.xy))
 
-class ColoredObject(HasOnlyXyDerivedAttributesMixin, TerminalNode):
+class ColoredObject(HasOnlyXyDerivedVariablesMixin, TerminalNode):
     @classmethod
-    def get_local_attribute_info(cls):
+    def get_local_variable_info(cls):
         return {"color": (3,)}
-    def _instantiate_impl(self, derived_attributes):
+    def _instantiate_impl(self, derived_variable_values):
         return {
-            "color": pyro.sample("color", dist.Normal(torch.zeros(3), torch.ones(3)))
+            "color": dist.Normal(torch.zeros(3), torch.ones(3))
         }
-    def _conditioned_instantiate_impl(self, derived_attributes, local_attributes):
-        pyro.sample("color", dist.Delta(local_attributes["color"]))
 
-class ObjectStack(HasOnlyXyDerivedAttributesMixin, GeometricSetNode):
+class ObjectStack(HasOnlyXyDerivedVariablesMixin, GeometricSetNode):
     def __init__(self):
         super().__init__(
             child_type=StackedObject,
@@ -111,19 +100,15 @@ class ObjectStack(HasOnlyXyDerivedAttributesMixin, GeometricSetNode):
             max_repeats=3
         )
     def _instantiate_children_impl(self, children):
-        attrs = []
+        dists = []
         for k, child in enumerate(children):
-            x_offset = pyro.sample("offset_%d" % k, dist.Normal(torch.tensor(0.), torch.tensor(0.01)))
-            offset = torch.tensor([x_offset, 1.])
-            new_xy = self.xy + offset
-            attrs.append({"xy": new_xy})
-        return attrs
-    def _conditioned_instantiate_children_impl(self, children):
-        for k, child in enumerate(children):
-            x_offset = (child.xy - self.xy)[0]
-            pyro.sample("offset_%d" % k, dist.Delta(x_offset))
+            offset = torch.tensor([0., 1.])
+            var = torch.tensor([0.01, 0.0001])
+            new_xy = dist.Normal(self.xy + offset, var)
+            dists.append({"xy": new_xy})
+        return dists
 
-class StackedObject(HasOnlyXyDerivedAttributesMixin, TerminalNode):
+class StackedObject(HasOnlyXyDerivedVariablesMixin, TerminalNode):
     pass
 
 
@@ -136,9 +121,9 @@ def test_forward_sampling(set_seed):
     # Sanity checks forward sampling and scoring functions.
     building = Building()
     assert building.instantiated is False
-    trace = pyro.poutine.trace(building.instantiate).get_trace({"xy": torch.zeros(2)})
+    trace = pyro.poutine.trace(building.instantiate).get_trace({"xy": dist.Delta(torch.zeros(2))})
     assert building.instantiated
-    building_ll = building.get_instantiate_ll()
+    building_ll = building.get_continuous_variable_ll()
     expected_ll = trace.log_prob_sum()
     assert np.allclose(building_ll, expected_ll)
 
@@ -146,48 +131,51 @@ def test_forward_sampling(set_seed):
     tree = trace.nodes["_RETURN"]["value"]
     tree_ll = tree.get_subtree_log_prob(building)
     expected_ll = trace.log_prob_sum()
-    assert np.allclose(tree_ll, expected_ll)
+    assert np.allclose(tree_ll, expected_ll), "%s vs %s" % (tree_ll, expected_ll)
 
     # Make sure these calls are identical
     tree_ll = tree.get_subtree_log_prob(building)
     tree_ll_shorthand = tree.get_log_prob()
-    assert np.allclose(tree_ll, tree_ll_shorthand)
+    assert np.allclose(tree_ll, tree_ll_shorthand), "%s vs %s" % (tree_ll, tree_ll_shorthand)
 
+@pytest.mark.skip(reason="feature (temporarily?) removed")
 def test_conditioned_instantiate(set_seed):
     target_object = ColoredObject()
-    target_object.instantiate({"xy": torch.tensor([1., 2.])})
+    target_object.instantiate({"xy": dist.Delta(torch.tensor([1., 2.]))})
 
     new_object = ColoredObject()
     new_object.conditioned_instantiate(
-        target_object.derived_attributes,
-        target_object.local_attributes
+        target_object.derived_variables,
+        target_object.local_variables
     )
     assert torch.isclose(
         torch.tensor(new_object.instantiate_trace.log_prob_sum()),
         torch.tensor(target_object.instantiate_trace.log_prob_sum())
     )
-    assert_identical_dicts_of_tensors(new_object.derived_attributes, target_object.derived_attributes)
-    assert_identical_dicts_of_tensors(new_object.local_attributes, target_object.local_attributes)
+    assert_identical_dicts_of_tensors(new_object.derived_variables, target_object.derived_variables)
+    assert_identical_dicts_of_tensors(new_object.local_variables, target_object.local_variables)
 
+@pytest.mark.skip(reason="feature (temporarily?) removed")
 def test_conditioned_instantiate_children(set_seed):
-    instantiate_args = {"xy": torch.zeros(2)}
-    tree = SceneTree.forward_sample_from_root_type(Building, instantiate_args)
+    instantiate_dists = {"xy": dist.Delta(torch.zeros(2))}
+    tree = SceneTree.forward_sample_from_root_type(Building, instantiate_dists)
     
     for target_object_type in [Building, Room, Table]:
         target_object = tree.find_nodes_by_type(target_object_type)[0]
         children = list(tree.successors(target_object))
     
         new_object = target_object_type()
-        new_object.instantiate(target_object.derived_attributes)
+        new_object.instantiate(target_object.derived_variables)
         new_object.conditioned_instantiate_children(children)
         assert torch.isclose(
             torch.tensor(new_object.instantiate_children_trace.log_prob_sum()),
             torch.tensor(target_object.instantiate_children_trace.log_prob_sum())
         )
 
+@pytest.mark.skip(reason="feature (temporarily?) removed")
 def test_conditioned_sample_children(set_seed):
-    instantiate_args = {"xy": torch.zeros(2)}
-    tree = SceneTree.forward_sample_from_root_type(Building, instantiate_args)
+    instantiate_dists = {"xy": dist.Delta(torch.zeros(2))}
+    tree = SceneTree.forward_sample_from_root_type(Building, instantiate_dists)
     
     for target_object_type in [Building, Room, Table]:
         target_object = tree.find_nodes_by_type(target_object_type)[0]
@@ -200,9 +188,8 @@ def test_conditioned_sample_children(set_seed):
             torch.tensor(target_object.sample_children_trace.log_prob_sum())
         )
 
+@pytest.mark.skip(reason="feature (temporarily?) removed")
 def test_rebuild_trace(set_seed):
-    return
-
     # TODO: Re-enable when this feature is used again / fixed.
     trace = pyro.poutine.trace(SceneTree.forward_sample_from_root_type).get_trace(
         Building, {"xy": torch.zeros(2)}
