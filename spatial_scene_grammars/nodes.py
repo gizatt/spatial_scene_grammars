@@ -94,7 +94,7 @@ class Node():
         and local variables.
         '''
         all_attr_shapes = {**self.get_derived_variable_info(), **self.get_local_variable_info()}
-        return sum([sum(shape) for shape in all_attr_shapes.values()])
+        return sum([np.prod(shape) for shape in all_attr_shapes.values()])
 
     def _sanity_check_variable_dist_dict(self, input_dict, expected_dict_of_shapes):
         '''
@@ -219,31 +219,29 @@ class Node():
         assert self.instantiated
         return self.get_derived_variable_ll() + self.get_local_variable_ll()
 
-'''
-    def get_all_attributes(self):
+    def get_all_continuous_variable_values(self):
         assert self.instantiated
-        return {**self.derived_attributes, **self.local_attributes}
+        return {**self.derived_variable_values, **self.local_variable_values}
 
     @staticmethod
-    def _flatten_attr_dict(attr_dict):
-        elements = [v.flatten() for v in attr_dict.values()]
+    def _flatten_tensor_dict(var_dict):
+        elements = [v.flatten() for v in var_dict.values()]
         if len(elements) > 0:
             return torch.cat(elements)
         else:
             return torch.empty((0,))
 
-    def get_derived_attributes_as_vector(self):
+    def get_derived_variables_as_vector(self):
         assert self.instantiated
-        return self._flatten_attr_dict(self.derived_attributes)
+        return self._flatten_tensor_dict(self.derived_variable_values)
         
-    def get_local_attributes_as_vector(self):
+    def get_local_variables_as_vector(self):
         assert self.instantiated
-        return self._flatten_attr_dict(self.local_attributes)
+        return self._flatten_tensor_dict(self.local_variable_values)
 
-    def get_all_attributes_as_vector(self):
+    def get_all_continuous_variables_as_vector(self):
         assert self.instantiated
-        return self._flatten_attr_dict(self.get_all_attributes())
-'''
+        return self._flatten_tensor_dict(self.get_all_continuous_variable_values())
 
 
 class TerminalNode(Node):
@@ -281,9 +279,12 @@ class NonTerminalNode(Node):
         with scope(prefix=self.name + "_choose_children"):
             self.child_inclusion_values = pyro.sample(
                 "sample_children_inclusion", self.child_inclusion_dist)
-        
         # TODO: This doesn't support batching as-is.
-        child_set = [child_type_list[k]() for k in self.child_inclusion_values.bool() if k]
+        child_set = [
+            child_type_list[k]()
+            for k, active in enumerate(self.child_inclusion_values.bool())
+            if active
+        ]
         self.children_sampled = True
         return child_set
 

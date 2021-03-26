@@ -3,10 +3,6 @@ import networkx as nx
 import numpy as np
 import os
 import time
-from functools import reduce 
-import operator
-def prod(iterable):
-    return reduce(operator.mul, iterable, 1)
 
 import torch
 import torch.distributions.constraints as constraints
@@ -41,8 +37,8 @@ def estimate_observation_likelihood(candidate_nodes, observed_nodes, gaussian_va
         for matching_node in observed_nodes:
             if node.__class__ == matching_node.__class__:
                 ll = 0.
-                node_vars = node.get_all_attributes_as_vector()
-                matching_vars = matching_node.get_all_attributes_as_vector()
+                node_vars = node.get_all_continuous_variables_as_vector()
+                matching_vars = matching_node.get_all_continuous_variables_as_vector()
                 distances = node_vars - matching_vars
                 ll += error_distribution.log_prob(distances).sum()
                 if ll > max_ll:
@@ -56,7 +52,7 @@ class NodeEmbedding(torch.nn.Module):
         set of local variables of the node into a fixed size output. '''
     def __init__(self, node_prototype, output_size):
         super().__init__()
-        self.input_size = node_prototype.get_num_local_variables()
+        self.input_size = node_prototype.get_num_continuous_variables()
         self.output_size = output_size
         if self.input_size > 0:
             hidden_size = 128
@@ -99,8 +95,8 @@ class GrammarEncoder(torch.nn.Module):
         # Each entry in this dictionary maps a node in the meta tree to indices
         # into the RNN output for the product weights, local variable means + vars.
         NodeOutputInds = namedtuple('NodeOutputInds',
-            ['product_weight_inds', 'local_attribute_means_inds', 'local_attribute_vars_inds',
-            'derived_attribute_means_inds', 'derived_attribute_vars_inds']
+            ['product_weight_inds', 'local_variable_means_inds', 'local_variable_vars_inds',
+            'derived_variable_means_inds', 'derived_variable_vars_inds']
         )
         self.node_output_info = {}
         curr_output_size = 0
@@ -118,19 +114,19 @@ class GrammarEncoder(torch.nn.Module):
                 elif isinstance(node, IndependentSetNode):
                     product_weight_inds = add_elems(len(node.child_types))
                 elif isinstance(node, GeometricSetNode):
-                    product_weight_inds = add_elems(node.max_repeats)
+                    product_weight_inds = add_elems(len(node.child_types))
                 else:
                     raise NotImplementedError("Don't know how to encode Nonterminal type %s" % node.__class__.__name__)
             else:
                 product_weight_inds = []
-            num_derived_attributes = sum(prod(shape) for shape in node.get_derived_attribute_info().values())
-            num_local_attributes = sum(prod(shape) for shape in node.get_derived_attribute_info().values())  
+            num_derived_variables = sum(np.prod(shape) for shape in node.get_derived_variable_info().values())
+            num_local_variables = sum(np.prod(shape) for shape in node.get_local_variable_info().values())
             self.node_output_info[node] = NodeOutputInds(
                 product_weight_inds=product_weight_inds,
-                derived_attribute_means_inds=add_elems(num_derived_attributes),
-                derived_attribute_vars_inds=add_elems(num_derived_attributes),
-                local_attribute_means_inds=add_elems(num_local_attributes),
-                local_attribute_vars_inds=add_elems(num_local_attributes)
+                derived_variable_means_inds=add_elems(num_derived_variables),
+                derived_variable_vars_inds=add_elems(num_derived_variables),
+                local_variable_means_inds=add_elems(num_local_variables),
+                local_variable_vars_inds=add_elems(num_local_variables)
             )
         
         # Create the actual RNN.
@@ -165,7 +161,7 @@ class GrammarEncoder(torch.nn.Module):
         # and we'd like to be robust to that.
         shuffled_nodes = [observed_nodes[k] for k in torch.randperm(N_nodes)]
         for k, node in enumerate(shuffled_nodes):
-            attr = node.get_all_attributes_as_vector()
+            attr = node.get_all_continuous_variables_as_vector()
             all_x[k, :, :] = self.node_embeddings_by_type[node.__class__.__name__](attr)
         # Pass through RNN.
         output, _ = self.rnn(all_x, self.hidden_init)
@@ -186,17 +182,17 @@ class GrammarEncoder(torch.nn.Module):
         
         x_reconstructed = torch.empty(self.hidden_size)
         x_reconstructed[:] = np.nan
-        def reconstruct_hidden_attributes(meta_node, observed_node):
+        def reconstruct_hidden_variables(meta_node, observed_node):
             nonlocal x_reconstructed
             all_inds = self.node_output_info[meta_node]
-            derived_attr = observed_node.get_derived_attributes_as_vector()
+            derived_attr = observed_node.get_derived_variables_as_vector()
             if len(derived_attr) > 0:
-                x_reconstructed[all_inds.derived_attribute_means_inds] = derived_attr
-                x_reconstructed[all_inds.derived_attribute_vars_inds] = inv_softplus(assign_var)
-            local_attr = observed_node.get_local_attributes_as_vector()
+                x_reconstructed[all_inds.derived_variable_means_inds] = derived_attr
+                x_reconstructed[all_inds.derived_variable_vars_inds] = inv_softplus(assign_var)
+            local_attr = observed_node.get_local_variables_as_vector()
             if len(local_attr):
-                x_reconstructed[all_inds.local_attribute_means_inds] = local_attr
-                x_reconstructed[all_inds.local_attribute_vars_inds] = inv_softplus(assign_var)
+                x_reconstructed[all_inds.local_variable_means_inds] = local_attr
+                x_reconstructed[all_inds.local_variable_vars_inds] = inv_softplus(assign_var)
         def reconstruct_hidden_choices(meta_node, observed_node, child_inds):
             # Hidden choices is a list of the indices of the active children
             # of meta_node
@@ -227,7 +223,7 @@ class GrammarEncoder(torch.nn.Module):
 
         while len(unexpanded_nodes) > 0:
             meta_node, observed_node = unexpanded_nodes.pop(0)
-            reconstruct_hidden_attributes(meta_node, observed_node)
+            reconstruct_hidden_variables(meta_node, observed_node)
             if isinstance(observed_node, NonTerminalNode):
                 observed_children = list(observed_tree.successors(observed_node))
                 meta_children = list(meta_tree.successors(meta_node))
@@ -297,24 +293,24 @@ class GrammarEncoder(torch.nn.Module):
                 out_dict = {}
                 k = 0
                 for key, shape in dict_of_shapes.items():
-                    k_this = prod(shape)
+                    k_this = np.prod(shape)
                     out_dict[key] = z[k:(k + k_this)].reshape(shape)
                     k += k_this
                 return out_dict
         
-            derived_means = x[all_inds.derived_attribute_means_inds]
-            derived_vars = torch.nn.functional.softplus(x[all_inds.derived_attribute_vars_inds])
+            derived_means = x[all_inds.derived_variable_means_inds]
+            derived_vars = torch.nn.functional.softplus(x[all_inds.derived_variable_vars_inds])
             # Reparam to ensure we can optimize directly without REINFORCE
             derived_attrs = derived_means + derived_vars * pyro.sample("decode_derived_attrs_sample",
                                         dist.Normal(torch.zeros(derived_vars.shape),
                                                     torch.ones(derived_vars.shape)))
-            derived_attrs = pack_dict(meta_node.get_derived_attribute_info(), derived_attrs)
-            local_means = x[all_inds.local_attribute_means_inds]
-            local_vars = torch.nn.functional.softplus(x[all_inds.local_attribute_vars_inds])
+            derived_attrs = pack_dict(meta_node.get_derived_variable_info(), derived_attrs)
+            local_means = x[all_inds.local_variable_means_inds]
+            local_vars = torch.nn.functional.softplus(x[all_inds.local_variable_vars_inds])
             local_attrs = local_means = local_vars * pyro.sample("decode_local_attrs_sample",
                                       dist.Normal(torch.zeros(local_means.shape),
                                                   torch.ones(local_means.shape)))
-            local_attrs = pack_dict(meta_node.get_local_attribute_info(), local_attrs)
+            local_attrs = pack_dict(meta_node.get_local_variable_info(), local_attrs)
             
             with pyro.poutine.block():
                 new_node.conditioned_instantiate(derived_attrs, local_attrs)
@@ -403,17 +399,17 @@ class GrammarEncoder(torch.nn.Module):
                     node_queue.append(meta_child_node)
         return inclusion_log_likelihood_per_node, product_weights_per_node
 
-    def get_attribute_distributions_for_meta_node(self, meta_node, x):
+    def get_variable_distributions_for_meta_node(self, meta_node, x):
         assert meta_node in self.meta_tree.nodes
 
         all_inds = self.node_output_info[meta_node]
 
-        derived_means = x[all_inds.derived_attribute_means_inds]
-        derived_vars = torch.nn.functional.softplus(x[all_inds.derived_attribute_vars_inds])
+        derived_means = x[all_inds.derived_variable_means_inds]
+        derived_vars = torch.nn.functional.softplus(x[all_inds.derived_variable_vars_inds])
         derived_attr_dist = dist.Normal(derived_means, derived_vars)
             
-        local_means = x[all_inds.local_attribute_means_inds]
-        local_vars = torch.nn.functional.softplus(x[all_inds.local_attribute_vars_inds])
+        local_means = x[all_inds.local_variable_means_inds]
+        local_vars = torch.nn.functional.softplus(x[all_inds.local_variable_vars_inds])
         local_attr_dist = dist.Normal(local_means, local_vars)
 
         return derived_attr_dist, local_attr_dist

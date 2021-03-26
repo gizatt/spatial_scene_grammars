@@ -26,99 +26,77 @@ from spatial_scene_grammars.sampling import *
 # parsing stuff a little easier.
 
 
-class Box(TerminalNode):
+# When this mixin is used, it must come before
+# the base node type in the parent class list so
+# it overloads the default variable info methods.
+class HasDerivedXy():
     @classmethod
-    def get_derived_attribute_info(cls):
+    def get_derived_variable_info(cls):
         return {"xy": (2,)}
 
 
-class StackOfN(AndNode):
+class Box(HasDerivedXy, TerminalNode):
+    pass
+    
+
+class StackOfN(HasDerivedXy, AndNode):
     N = None
     def __init__(self):
         super().__init__(child_types=[Box]*self.__class__.N)
     def _instantiate_children_impl(self, children):
-        all_attrs = []
+        all_child_dist_dicts = []
         for k, child in enumerate(children):
-            child_xy = pyro.sample("child_%d_xy" % k,
-                dist.Normal(torch.tensor([0., float(k)]),
-                            torch.tensor([0.1, 0.0001])))
-            all_attrs.append({
-                "xy": self.xy + child_xy,
-            })
-        return all_attrs
-    def _conditioned_instantiate_children_impl(self, children):
-        # Given instantiated child set, provide proposals
-        # for my sample sites.
-        for k, child in enumerate(children):
-            child_xy = child.xy - self.xy
-            pyro.sample("child_%d_xy" % k,
-                dist.Delta(child_xy)
+            child_xy_dist = dist.Normal(
+                self.xy + torch.tensor([0., float(k)]),
+                torch.tensor([0.1, 0.0001])
             )
-    @classmethod
-    def get_derived_attribute_info(cls):
-        return {"xy": (2,)}
-
+            all_child_dist_dicts.append({
+                "xy": child_xy_dist
+            })
+        return all_child_dist_dicts
 StackOf2 = type("StackOf2", (StackOfN,), {"N": 2})
 StackOf3 = type("StackOf3", (StackOfN,), {"N": 3})
 
 
-class GroupOfN(AndNode):
+class GroupOfN(HasDerivedXy, AndNode):
     N = None
     def __init__(self):
         super().__init__(child_types=[Box]*self.__class__.N)
     def _instantiate_children_impl(self, children):
-        all_attrs = []
+        all_child_dist_dicts = []
         for k, child in enumerate(children):
-            child_xy = pyro.sample("child_%d_xy" % k,
-                dist.Normal(torch.tensor([0.0, 0.0]),
-                            torch.tensor([2.0, 0.0001])))
-            all_attrs.append({
-                "xy": self.xy + child_xy,
-            })
-        return all_attrs
-    def _conditioned_instantiate_children_impl(self, children):
-        # Given instantiated child set, provide proposals
-        # for my sample sites.
-        for k, child in enumerate(children):
-            child_xy = child.xy - self.xy
-            pyro.sample("child_%d_xy" % k,
-                dist.Delta(child_xy)
+            child_xy_dist = dist.Normal(
+                self.xy + torch.tensor([0.0, 0.0]),
+                torch.tensor([1.0, 0.0001])
             )
-    @classmethod
-    def get_derived_attribute_info(cls):
-        return {"xy": (2,)}
-
+            all_child_dist_dicts.append({
+                "xy": child_xy_dist
+            })
+        return all_child_dist_dicts
 GroupOf1 = type("GroupOf1", (GroupOfN,), {"N": 1})
 GroupOf2 = type("GroupOf2", (GroupOfN,), {"N": 2})
 GroupOf3 = type("GroupOf3", (GroupOfN,), {"N": 3})
 
 
-class Ground(OrNode):
+class Ground(HasDerivedXy, OrNode):
     def __init__(self):
         child_types = [StackOf2, StackOf3, GroupOf1, GroupOf2, GroupOf3]
         super().__init__(child_types=child_types,
                          production_weights=torch.ones(len(child_types)))
     def _instantiate_children_impl(self, children):
-        all_attrs = []
+        all_child_dist_dicts = []
         for k, child in enumerate(children):
-            child_x = pyro.sample("child_%d_x" % k,
-                dist.Normal(torch.tensor(0.), torch.tensor(2.0))).item()
-            child_y = self.xy[1] + 0.5 # Half-box height
-            all_attrs.append({
-                "xy": torch.tensor([child_x, child_y]),
-            })
-        return all_attrs
-    def _conditioned_instantiate_children_impl(self, children):
-        # Given instantiated child set, provide proposals
-        # for my sample sites.
-        for k, child in enumerate(children):
-            child_x = child.xy[0]
-            pyro.sample("child_%d_x" % k,
-                dist.Delta(child_x)
+            # Spawn the child group at the center of a single box's
+            # height, randomly somewhere along the x axis.
+            child_xy_dist = dist.Normal(
+                torch.tensor([0., self.xy[1] + 0.5]),
+                torch.tensor([1.0, 0.0001])
             )
-    @classmethod
-    def get_derived_attribute_info(cls):
-        return {"xy": (2,)}
+            all_child_dist_dicts.append({
+                "xy": child_xy_dist,
+            })
+        return all_child_dist_dicts
+
 
 class NonpenetrationConstraint(ContinuousVariableConstraint):
     def __init__(self, allowed_penetration_margin=0.0):
@@ -146,7 +124,6 @@ class NonpenetrationConstraint(ContinuousVariableConstraint):
                 edge_lengths = bb_u - bb_l - self.allowed_penetration_margin
                 if torch.all(edge_lengths > 0):
                     total_penetration_area += torch.prod(edge_lengths)
-
         return total_penetration_area
 
 
