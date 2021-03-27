@@ -96,7 +96,7 @@ class Node():
         all_attr_shapes = {**self.get_derived_variable_info(), **self.get_local_variable_info()}
         return sum([np.prod(shape) for shape in all_attr_shapes.values()])
 
-    def _sanity_check_variable_dist_dict(self, input_dict, expected_dict_of_shapes):
+    def _sanity_check_variable_dict(self, input_dict, expected_dict_of_shapes):
         '''
         Given a dictionary of distributions keyed by variable names,
         checks that the included keys and corresponding shapes exactly match
@@ -104,14 +104,20 @@ class Node():
         '''
         for key, shape in expected_dict_of_shapes.items():
             assert key in input_dict.keys(), "Variable %s not in input in class %s." % (key, self.__class__.__name__)
-            got_shape = input_dict[key].shape()
+            value = input_dict[key]
+            if isinstance(value, torch.Tensor):
+                got_shape = value.shape
+            else:
+                got_shape = input_dict[key].shape()
             assert got_shape == shape, "Variable %s of wrong shape: %s vs expected %s in class %s." % (key, got_shape, shape, self.__class__.__name__)
         for key, value in input_dict.items():
             assert key in expected_dict_of_shapes.keys(), "Variable %s not expected in class %s." % (key, self.__class__.__name__)
-            got_shape = value.shape()
+            if isinstance(value, torch.Tensor):
+                got_shape = value.shape
+            else:
+                got_shape = input_dict[key].shape()
             shape = expected_dict_of_shapes[key]
             assert got_shape == shape, "Variable %s of wrong shape: %s vs expected %s in class %s." % (key, got_shape, shape, self.__class__.__name__)
-
 
     def copy_attr_dict_to_self(self, attr_dict):
         for key, value in attr_dict.items():
@@ -157,7 +163,7 @@ class Node():
         # Sanity-checking input.
         if self.do_sanity_checks:
             assert_dists_are_all_continuous(derived_variable_distributions)
-            self._sanity_check_variable_dist_dict(
+            self._sanity_check_variable_dict(
                 derived_variable_distributions,
                 self.get_derived_variable_info()
             )
@@ -177,7 +183,7 @@ class Node():
         # Sanity-check output.
         if self.do_sanity_checks:
             assert_dists_are_all_continuous(local_variable_distributions)
-            self._sanity_check_variable_dist_dict(
+            self._sanity_check_variable_dict(
                 local_variable_distributions,
                 self.get_local_variable_info()
             )
@@ -195,6 +201,43 @@ class Node():
 
     def _instantiate_impl(self, derived_variable_values):
         return {}
+
+    def conditioned_instantiate(self, target_derived_variable_values, target_local_variable_values):
+        # Same functionality as instantiate, but sets up Delta distributions
+        # around the specified derived + local variables instead of using
+        # supplies distributions.
+        if self.do_sanity_checks:
+            self._sanity_check_variable_dict(
+                target_derived_variable_values,
+                self.get_derived_variable_info()
+            )
+            self._sanity_check_variable_dict(
+                target_local_variable_values,
+                self.get_local_variable_info()
+            )
+        self.derived_variable_distributions = {
+            key: dist.Delta(value)
+            for key, value in target_derived_variable_values.items()
+        }
+        # Sample concrete values for the derived variables.
+        with scope(prefix=self.name + "_sample_derived"):
+            self.derived_variable_values = self._sample_continuous_variables_from_dict(
+                self.derived_variable_distributions
+            )
+        self.copy_attr_dict_to_self(self.derived_variable_values)
+        
+        self.local_variable_distributions = {
+            key: dist.Delta(value)
+            for key, value in target_local_variable_values.items()
+        }
+        # Sample concrete values for the local variables.
+        with scope(prefix=self.name + "_sample_local"):
+            self.local_variable_values = self._sample_continuous_variables_from_dict(
+                self.local_variable_distributions
+            )
+        self.copy_attr_dict_to_self(self.local_variable_values)
+
+        self.instantiated = True
 
     @staticmethod
     def get_variable_ll_given_dicts(value_dict, dist_dict):
@@ -294,16 +337,30 @@ class NonTerminalNode(Node):
         the maximal child list is included in the output. '''
         raise NotImplementedError("Override _sample_children_impl.")
 
+    def conditioned_sample_children(self, children):
+        ''' Given a list of children, sets up our child inclusion
+        dist as a Delta that guarantees that we'd sample that set of
+        children. '''
+        child_type_list = self.get_maximal_child_type_list()
+        target_child_inclusion_values = self.get_child_indices_into_maximal_child_list(children).double()
+        self.child_inclusion_dist = dist.Delta(target_child_inclusion_values)
+        with scope(prefix=self.name + "_choose_children"):
+            self.child_inclusion_values = pyro.sample(
+                "sample_children_inclusion",
+                self.child_inclusion_dist
+            )
+        self.children_sampled = True
+
     def get_children_ll(self):
         assert self.children_sampled
         return self.child_inclusion_dist.log_prob(self.child_inclusion_values).sum()
 
-    #def get_child_indices_into_maximal_child_list(self, children):
-    #    ''' Returns, for each child in children, the index into the 
-    #    maximal child set for this node that that child was produced by.
-    #    Errors in ambiguous cases; assumes this child set is a feasible
-    #    full child set for this node type. '''
-    #    raise NotImplementedError('Override get_child_indices_into_maximal_child_list.')
+    def get_child_indices_into_maximal_child_list(self, children):
+        ''' Returns, for each child in children, the index into the 
+        maximal child set for this node that that child was produced by.
+        Errors in ambiguous cases; assumes this child set is a feasible
+        full child set for this node type. '''
+        raise NotImplementedError('Override get_child_indices_into_maximal_child_list.')
 
     def instantiate_children(self, children):
         ''' Instantiates the supplied children of this node, creating
@@ -414,14 +471,16 @@ class GeometricSetNode(NonTerminalNode):
     and chooses to repeat it according to a geometric distribution, capped at
     a total number of instantiations.'''
     def __init__(self, child_type, geometric_prob, max_repeats):
-        if child_type is None or geometric_prob == 0.:
-            self.child_types = []
-            self.production_dist = None
-            self.max_repeats = 0
+        assert max_repeats > 0
+        assert child_type is not None
+        self.child_types = [child_type] * max_repeats
+        self.max_repeats = max_repeats
+        if geometric_prob == 0.:
+            # Set up placeholder distribution that will never produce
+            # children.
+            self.production_dist = dist.Delta(torch.zeros(max_repeats)).to_event(1)
         else:
-            self.child_types = [child_type] * max_repeats
             self.production_dist = VectorCappedGeometricDist(geometric_prob, max_repeats)
-            self.max_repeats = torch.tensor(max_repeats, dtype=torch.int)
         super().__init__()
 
     def _sample_children_impl(self):
@@ -433,10 +492,10 @@ class GeometricSetNode(NonTerminalNode):
     def get_child_indices_into_maximal_child_list(self, children):
         for child in children:
             # All our child types should be the same.
-            assert type(child) == self.child_type[0]
+            assert type(child) == self.child_types[0]
         num_active = len(children)
         assert num_active <= self.max_repeats
-        return torch.tensor(range(num_active + 1))
+        return torch.tensor(range(num_active))
 
 '''
 

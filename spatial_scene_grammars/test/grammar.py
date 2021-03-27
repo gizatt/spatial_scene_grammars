@@ -18,15 +18,9 @@ class HasOnlyXyDerivedVariablesMixin():
 # Mixin must come first, since it's overriding a class method
 # also provided by the base node type.
 class Building(HasOnlyXyDerivedVariablesMixin, IndependentSetNode):
+    # This is d
     def __init__(self):
-        # TODO(gizatt): Are metaclasses *really* the answer here?
-        # The problem is that instantiate_children doesn't have visibility
-        # of which child rules (in terms of their index) were chosen; packing
-        # that info into the class chosen is appealing...
-        super().__init__(child_types=[type("North_Room", (Room,), {}),
-                                      type("South_Room", (Room,), {}),
-                                      type("East_Room", (Room,), {}),
-                                      type("West_Room", (Room,), {})],
+        super().__init__(child_types=[NorthRoom, WestRoom, EastRoom, SouthRoom],
                          production_probs=torch.tensor([0.5, 0.5, 0.5, 0.5]))
     def _instantiate_children_impl(self, children):
         all_dist_sets = []
@@ -57,7 +51,11 @@ class Room(HasOnlyXyDerivedVariablesMixin, AndNode):
             new_xy = dist.Normal(self.xy, torch.ones(2))
             all_dist_sets.append({"xy": new_xy})
         return all_dist_sets
-
+NorthRoom = type("North_Room", (Room,), {})
+WestRoom = type("West_Room", (Room,), {})
+EastRoom = type("East_Room", (Room,), {})
+SouthRoom = type("South_Room", (Room,), {})
+    
 class Table(HasOnlyXyDerivedVariablesMixin, OrNode):
     def __init__(self):
         super().__init__(
@@ -82,7 +80,7 @@ class ObjectStack(HasOnlyXyDerivedVariablesMixin, GeometricSetNode):
     def __init__(self):
         super().__init__(
             child_type=StackedObject,
-            geometric_prob=0.5,
+            geometric_prob=0.0,
             max_repeats=3
         )
     def _instantiate_children_impl(self, children):

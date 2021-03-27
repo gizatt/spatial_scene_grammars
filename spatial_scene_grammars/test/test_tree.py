@@ -69,42 +69,21 @@ def test_variable_getters(set_seed):
         assert total_len == len(all_cvars_vec)
         assert len(all_derived_vars_vec) + len(all_local_vars_vec) == len(all_cvars_vec)
 
-
-@pytest.mark.skip(reason="feature (temporarily?) removed")
 def test_conditioned_instantiate(set_seed):
     target_object = ColoredObject()
     target_object.instantiate({"xy": dist.Delta(torch.tensor([1., 2.]))})
 
     new_object = ColoredObject()
-    new_object.conditioned_instantiate(
-        target_object.derived_variables,
-        target_object.local_variables
+    conditioned_trace = pyro.poutine.trace(
+        new_object.conditioned_instantiate
+    ).get_trace(
+        target_object.derived_variable_values,
+        target_object.local_variable_values
     )
-    assert torch.isclose(
-        torch.tensor(new_object.instantiate_trace.log_prob_sum()),
-        torch.tensor(target_object.instantiate_trace.log_prob_sum())
-    )
-    assert_identical_dicts_of_tensors(new_object.derived_variables, target_object.derived_variables)
-    assert_identical_dicts_of_tensors(new_object.local_variables, target_object.local_variables)
+    assert np.allclose(conditioned_trace.log_prob_sum().item(), 0.)
+    assert_identical_dicts_of_tensors(new_object.derived_variable_values, target_object.derived_variable_values)
+    assert_identical_dicts_of_tensors(new_object.local_variable_values, target_object.local_variable_values)
 
-@pytest.mark.skip(reason="feature (temporarily?) removed")
-def test_conditioned_instantiate_children(set_seed):
-    instantiate_dists = {"xy": dist.Delta(torch.zeros(2))}
-    tree = SceneTree.forward_sample_from_root_type(Building, instantiate_dists)
-    
-    for target_object_type in [Building, Room, Table]:
-        target_object = tree.find_nodes_by_type(target_object_type)[0]
-        children = list(tree.successors(target_object))
-    
-        new_object = target_object_type()
-        new_object.instantiate(target_object.derived_variables)
-        new_object.conditioned_instantiate_children(children)
-        assert torch.isclose(
-            torch.tensor(new_object.instantiate_children_trace.log_prob_sum()),
-            torch.tensor(target_object.instantiate_children_trace.log_prob_sum())
-        )
-
-@pytest.mark.skip(reason="feature (temporarily?) removed")
 def test_conditioned_sample_children(set_seed):
     instantiate_dists = {"xy": dist.Delta(torch.zeros(2))}
     tree = SceneTree.forward_sample_from_root_type(Building, instantiate_dists)
@@ -114,11 +93,10 @@ def test_conditioned_sample_children(set_seed):
         children = list(tree.successors(target_object))
     
         new_object = target_object_type()
-        new_object.conditioned_sample_children(children)
-        assert torch.isclose(
-            torch.tensor(new_object.sample_children_trace.log_prob_sum()),
-            torch.tensor(target_object.sample_children_trace.log_prob_sum())
-        )
+        conditioned_trace = pyro.poutine.trace(
+            new_object.conditioned_sample_children
+        ).get_trace(children)
+        assert torch.isclose(conditioned_trace.log_prob_sum(), torch.Tensor([0.]))
 
 @pytest.mark.skip(reason="feature (temporarily?) removed")
 def test_rebuild_trace(set_seed):

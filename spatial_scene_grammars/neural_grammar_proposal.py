@@ -114,7 +114,7 @@ class GrammarEncoder(torch.nn.Module):
                 elif isinstance(node, IndependentSetNode):
                     product_weight_inds = add_elems(len(node.child_types))
                 elif isinstance(node, GeometricSetNode):
-                    product_weight_inds = add_elems(len(node.child_types))
+                    product_weight_inds = add_elems(len(node.child_types) + 1)
                 else:
                     raise NotImplementedError("Don't know how to encode Nonterminal type %s" % node.__class__.__name__)
             else:
@@ -180,7 +180,7 @@ class GrammarEncoder(torch.nn.Module):
         meta_node_to_observed_node_mapping = {}
         unexpanded_nodes = [(meta_root, observed_root)]
         
-        x_reconstructed = torch.empty(self.hidden_size)
+        x_reconstructed = torch.zeros(self.hidden_size)
         x_reconstructed[:] = np.nan
         def reconstruct_hidden_variables(meta_node, observed_node):
             nonlocal x_reconstructed
@@ -215,9 +215,14 @@ class GrammarEncoder(torch.nn.Module):
                 desired[child_inds] = 1.
                 x_reconstructed[all_inds.product_weight_inds] = inv_sigmoid(desired)
             elif isinstance(observed_node, GeometricSetNode):
-                # Invert Softmax -- make everything big
+                # Invert Softmax -- make everything big. But remember that the encoding
+                # is a 1-hot encoding of the number of children to have, so convert
+                # from child inds to that.
+                num_children = len(child_inds)
                 x_reconstructed[all_inds.product_weight_inds] = -10.
-                x_reconstructed[all_inds.product_weight_inds[child_inds]] = 10.
+                # Tensor conversion so we can use the child_inds tensor to index
+                # into the weight inds.
+                x_reconstructed[all_inds.product_weight_inds[num_children]] = 10.
             else:
                 raise NotImplementedError("Node type ", observed_node.__class__.__name__)
 
@@ -232,7 +237,7 @@ class GrammarEncoder(torch.nn.Module):
                 # Not sure I can trust nx node ordering? If these asserts are true,
                 # ordering is safe.
                 for k, child in enumerate(meta_children):
-                    assert type(child) == type(observed_node.get_maximal_child_list()[k])
+                    assert isinstance(child, observed_node.get_maximal_child_type_list()[k])
                 for child_ind, observed_child in zip(child_inds, observed_children):
                     assert type(meta_children[child_ind]) == type(observed_child)
                     unexpanded_nodes.append((meta_children[child_ind], observed_child))
@@ -262,14 +267,15 @@ class GrammarEncoder(torch.nn.Module):
             elif isinstance(meta_node, IndependentSetNode):
                 product_weights = torch.sigmoid(raw_product_weights)
                 # Independent choose whether to include each.
-                child_inclusion = pyro.sample("decode_children_sample", 
+                child_inclusion = pyro.sample("decode_children_sample",
                                               dist.Bernoulli(product_weights))
-                children = child_candidates[child_inclusion]
+                children = [child_candidates[k] for k, value in enumerate(child_inclusion) if value]
             elif isinstance(meta_node, GeometricSetNode):
                 # Choose count
                 product_weights = torch.nn.functional.softmax(raw_product_weights, dim=0)
                 num_children = pyro.sample("decode_children_sample",
                                            dist.Categorical(product_weights))
+                print("Sampled num children: ", num_children)
                 children = child_candidates[:num_children]
             else:
                 raise NotImplementedError("Don't know how to decode Nonterminal type %s" % meta_node.__class__.__name__)
