@@ -6,5 +6,5 @@ networkx
 codecov
 pytest-cov
 pytest-subtests
-pyro-ppl # implies torch
+pyro-ppl==1.5.1
 meshcat

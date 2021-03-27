@@ -18,7 +18,7 @@ install:
 
 script:
   - source ./setup.sh
-  - pytest --cov=./
+  - pytest --pyargs spatial_scene_grammars --cov=./
   
 after_success:
   - codecov

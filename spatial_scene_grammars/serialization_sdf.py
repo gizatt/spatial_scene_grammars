@@ -23,9 +23,8 @@ from pydrake.all import (
 )
 import pydrake.geometry as pydrake_geom
 
-from .nodes import SpatialNode, PhysicsGeometryNode, default_friction
 from .tree import get_tree_root
-from .drake_interop import torch_tf_to_drake_tf, resolve_catkin_package_path
+from .drake_interop import torch_tf_to_drake_tf, resolve_catkin_package_path, default_friction
 
 
 def make_sdf_root():
