@@ -6,7 +6,7 @@ from pyro.contrib.autoname import scope, name_count
 import pyro.distributions as dist
 import torch
 
-from .nodes import NonTerminalNode, TerminalNode, Node
+from .nodes import NonTerminalNode, TerminalNode, Node, NodeParameter
 from .rules import ProductionRule
 
 
@@ -17,6 +17,110 @@ def get_tree_root(tree):
     while len(list(tree.predecessors(root_node))) > 0:
         root_node = tree.predecessors(root_node)[0]
     return root_node
+
+
+class SceneGrammar(torch.nn.Module):
+    '''
+    Manages a grammar: given a root node type, provides
+    ability to sample trees under given parameter settings.
+    '''
+
+    def __init__(self, root_node_type):
+        super().__init__()
+        self.root_node_type = root_node_type
+        self.params_by_node_type = {}
+        # But our database of what parameters exist for each node type.
+        for node_type in self.get_all_types_in_grammar(root_node_type):
+            params = node_type().get_parameters()
+            self.params_by_node_type[node_type] = params
+            for name, param in params.items():
+                self.register_parameter("%s:%s" % (node_type.__name__, name), param.get_unconstrained_value())
+
+    @staticmethod
+    def get_all_types_in_grammar(root_node_type):
+        all_types = set()
+        input_queue = [root_node_type]
+        while len(input_queue) > 0:
+            curr_type = input_queue.pop(0)
+            all_types.add(curr_type)
+            if issubclass(curr_type, NonTerminalNode):
+                for new_type in curr_type().get_maximal_child_type_list():
+                    if new_type not in all_types:
+                        input_queue.append(new_type)
+        return all_types
+
+    def _apply_param_override(self, node):
+        # Set the specified node's params from the grammar's param store.
+        # TODO(gizatt) This is pretty awful. There must be a refactor,
+        # probably to the node API, to make this more natural. Something
+        # about containing exactly where the params get allocated and who
+        # they belong to. Maybe they should be passed in via the
+        # constructor, and kept track of at the grammar level?
+        assert type(node) in self.params_by_node_type.keys()
+        for name, param in self.params_by_node_type[type(node)].items():
+            assert hasattr(node, name) and isinstance(getattr(node, name), NodeParameter)
+            print("Overriding %s (%s) -> %s" % (name, getattr(node, name).get_value(), param.get_value()))
+            setattr(node, name, param)
+
+    def _generate_from_node_recursive(self, scene_tree, parent_node):
+        if isinstance(parent_node, TerminalNode):
+            return scene_tree
+        else:
+            # Choose what gets generated.
+            children = parent_node.sample_children()
+            for child in children:
+                self._apply_param_override(child)
+            # Do the actual generation of local (continuous) variables.
+            parent_node.instantiate_children(children)
+            for child_node in children:
+                scene_tree.add_node(child_node)
+                scene_tree.add_edge(parent_node, child_node)
+                if isinstance(child_node, NonTerminalNode):
+                    scene_tree = self._generate_from_node_recursive(scene_tree, child_node)
+        return scene_tree
+
+    def forward(self, root_node_instantiation_dict):
+        # Samples a tree, ensuring our stored parameters get substituted
+        # into every node that is generated.
+        scene_tree = SceneTree()
+        root_node = self.root_node_type()
+        self._apply_param_override(root_node)
+        root_node.instantiate(root_node_instantiation_dict)
+        scene_tree.add_node(root_node)
+        return self._generate_from_node_recursive(scene_tree, root_node)
+
+    def get_tree_generation_log_prob(self, scene_tree):
+        ''' Scores given tree under this grammar using the currently stored
+        parameter values and node attributes. '''
+
+        # To ensure the local parameters take effect
+        total_score = torch.tensor([0.])
+        node_queue = [get_tree_root(scene_tree)]
+        while len(node_queue) > 0:
+            curr_node = node_queue.pop(0)
+
+
+        return torch.tensor([0.])
+        
+    @staticmethod
+    def make_meta_scene_tree(root_node_type):
+        ''' Given a root node, generates a meta-tree of node types (without
+        continuous variables) for which any generated tree from this root is
+        a subgraph (again not considering continuous variables). '''
+        meta_tree = nx.DiGraph()
+        root_node = root_node_type()
+        meta_tree.add_node(root_node)
+        node_queue = [root_node]
+        while len(node_queue) > 0:
+            node = node_queue.pop(0)
+            new_node_types = node.get_maximal_child_type_list()
+            for new_node_type in new_node_types:
+                new_node = new_node_type()
+                meta_tree.add_node(new_node)
+                meta_tree.add_edge(node, new_node)
+                if isinstance(new_node, NonTerminalNode):
+                    node_queue.append(new_node)
+        return meta_tree
 
 
 class SceneTree(nx.DiGraph):
@@ -58,6 +162,7 @@ class SceneTree(nx.DiGraph):
 
         If the root node instantiation dict is *not* provided, the root node is assumed
         to be instantiated and will not be re-instantiated. '''
+        raise NotImplementedError("Not trustworthy")
         assert root_node in self.nodes
         if root_node_instantiation_dict:
             root_node.instantiate(root_node_instantiation_dict)
@@ -75,6 +180,7 @@ class SceneTree(nx.DiGraph):
         ''' Completely resamples the subtree rooted at the given root node. If the
         root node instantiating dict is supplied, resamples the root node local variables
         too; otherwise asserts that it's already instantiated. '''
+        raise NotImplementedError("Not trustworthy")
         assert root_node in self.nodes
 
         # Immediately rename root node so that attempts to resample suceed.
@@ -164,148 +270,3 @@ class SceneTree(nx.DiGraph):
     def get_log_prob(self, **kwargs):
         return self.get_subtree_log_prob(
             get_tree_root(self), **kwargs)
-
-    @staticmethod
-    def _generate_from_node_recursive(parse_tree, parent_node):
-        if isinstance(parent_node, TerminalNode):
-            return parse_tree
-        else:
-            # Choose what gets generated.
-            children = parent_node.sample_children()
-            # Do the actual generation of local (continuous) variables.
-            parent_node.instantiate_children(children)
-            for child_node in children:
-                parse_tree.add_node(child_node)
-                parse_tree.add_edge(parent_node, child_node)
-                if isinstance(child_node, NonTerminalNode):
-                    parse_tree = SceneTree._generate_from_node_recursive(parse_tree, child_node)
-        return parse_tree
-
-    @staticmethod
-    def forward_sample_from_root(root_node):
-        '''
-        Generates an unconditioned parse tree from an instantiated
-        root node type.
-        '''
-        assert root_node.instantiated
-        parse_tree = SceneTree()
-        parse_tree.add_node(root_node)
-        return SceneTree._generate_from_node_recursive(parse_tree, root_node)
-
-    @staticmethod
-    def forward_sample_from_root_type(root_node_type, root_node_instantiation_dict):
-        root = root_node_type()
-        root.instantiate(root_node_instantiation_dict)
-        return SceneTree.forward_sample_from_root(root)
-
-    @staticmethod
-    def make_meta_scene_tree(root_node):
-        ''' Given a root node, generates a meta-tree of node types (without
-        continuous variables) for which any generated tree from this root is
-        a subgraph (again not considering continuous variables). '''
-        meta_tree = nx.DiGraph()
-        meta_tree.add_node(root_node)
-        node_queue = [root_node]
-        while len(node_queue) > 0:
-            node = node_queue.pop(0)
-            new_node_types = node.get_maximal_child_type_list()
-            for new_node_type in new_node_types:
-                new_node = new_node_type()
-                meta_tree.add_node(new_node)
-                meta_tree.add_edge(node, new_node)
-                if isinstance(new_node, NonTerminalNode):
-                    node_queue.append(new_node)
-        return meta_tree
-
-
-    # PARSING AND PARSING UTILITIES
-    @staticmethod
-    def parse_greedily_from_partial_tree(root_node_type, partial_tree, max_iters=10):
-        ''' Given a partial tree (a SceneTree instance) in a state where the tree
-        may not be feasible, but where the supplied nodes are fully realized:
-        so we need to fix that non-root nodes may not have parents, and
-        non-terminal nodes may not have appropriate children.
-
-        To fix this, we:
-        1) Repeatedly randomly select single orphan nodes (non-root parentless nodes), build
-        the set of nodes that *could* be parents for them (both existing nodes + nonexisting
-        node types), and pick a random feasible parent. (For OR nodes, the parent can no longer
-        take more children; for AND and SET nodes, it might have deterministic or
-        stochastic (respectively) "holes" for additional children that will have to be populated
-        either by further parsing, or by the final forward pass to make the tree feasible.
-        2) When there are no orphans left, run a top-down pass on all nodes, adding any nodes
-        necessary to make the structure generation rules feasible.
-        3) Finally, instantiate all non-instantiated nodes, top-down.
-
-        Open questions:
-        1) Is this (probabilistically) complete? (Nonzero prob to recover the right tree?)
-        2) What's the likelihood of proposing a given tree completion using this procedure?
-        '''
-
-        def get_root_and_orphans(tree):
-            orphans = []
-            root = None
-            for node in tree:
-                if isinstance(node, root_node_type):
-                    assert root is None, "Multiple nodes of root_node_type; infeasible partial tree."
-                    root = node
-                parent = tree.get_node_parent_or_none(node)
-                if parent is None:
-                    orphans.append(node)
-            return root, orphans
-
-        # (1): Association of orphans.
-        root, orphans = get_root_and_orphans(partial_tree)
-
-        # Build up the full list of node types we have access to,
-        # and for each node type, a set of the nodes that can generate it.
-        all_node_types = []
-        input_queue = [root_node_type]
-        # Dict of sets, keyed by the child node type.
-        parent_type_possibilities = {}
-        while len(input_queue) > 0:
-            parent_type = input_queue.pop(0)
-            all_node_types.append(parent_type)
-            if issubclass(parent_type, NonTerminalNode):
-                # Convert to set to get only unique child types.
-                child_types = set([c.__class__ for c in parent_type().get_maximal_child_list()])
-                print(child_types)
-                for child_type in child_types:
-                    input_queue.append(child_type)
-                    if child_type not in parent_type_possibilities.keys():
-                        parent_type_possibilities[child_type] = {parent_type}
-                    else:
-                        parent_type_possibilities[child_type].add(parent_type)
-
-        iter_k = 0
-        while len(orphans) > 0:
-            orphan = orphans[pyro.sample(
-                "orphan_choice_%d" % iter_k,
-                dist.Categorical(torch.ones(len(orphans)))
-            )]
-            orphan_type = orphan.__class__
-
-            # What node types can generate this node?
-            parent_types = [parent_type_possibilities[orphan_type]]
-
-            # Go collect possible parents.
-            possible_parents = []
-            for parent_type in parent_types:
-                existing_nodes = partial_tree.find_nodes_by_type(parent_type)
-                for existing_node in existing_nodes:
-                    max_child_list = existing_node.get_maximal_child_list()
-
-
-            
-
-
-
-
-            iter_k += 1
-            if iter_k > max_iters:
-                return False
-        # (2): Top-down structure filling.
-
-        # (3): Top-down instantiation, where necessary.
-
-

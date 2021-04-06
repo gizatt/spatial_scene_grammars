@@ -275,7 +275,6 @@ class GrammarEncoder(torch.nn.Module):
                 product_weights = torch.nn.functional.softmax(raw_product_weights, dim=0)
                 num_children = pyro.sample("decode_children_sample",
                                            dist.Categorical(product_weights))
-                print("Sampled num children: ", num_children)
                 children = child_candidates[:num_children]
             else:
                 raise NotImplementedError("Don't know how to decode Nonterminal type %s" % meta_node.__class__.__name__)

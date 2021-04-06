@@ -9,6 +9,7 @@ import torch
 import torch.distributions.constraints as constraints
 import pyro
 import pyro.distributions as dist
+from pyro.nn import PyroParam
 
 from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
@@ -22,8 +23,7 @@ from spatial_scene_grammars.sampling import *
 # Non stack -> non-stack of 1, 2, or 3
 # Non-stacks of N -> N objects at ground level at random positions.
 
-# Explicitly implemented without SET nodes for prototyping some
-# parsing stuff a little easier.
+# Explicitly implemented without SET nodes (for legacy reasons).
 
 
 # When this mixin is used, it must come before
@@ -42,13 +42,15 @@ class Box(HasDerivedXy, TerminalNode):
 class StackOfN(HasDerivedXy, AndNode):
     N = None
     def __init__(self):
+        self.x_mean = NodeParameter(torch.tensor([0.]))
+        self.x_variance = NodeParameter(torch.tensor([1.]), constraints.positive)
         super().__init__(child_types=[Box]*self.__class__.N)
     def _instantiate_children_impl(self, children):
         all_child_dist_dicts = []
         for k, child in enumerate(children):
             child_xy_dist = dist.Normal(
-                self.xy + torch.tensor([0., float(k)]),
-                torch.tensor([0.1, 0.0001])
+                self.xy + torch.tensor([self.x_mean()[0], float(k)]),
+                torch.tensor([self.x_variance()[0], 0.0001])
             )
             all_child_dist_dicts.append({
                 "xy": child_xy_dist
@@ -61,13 +63,15 @@ StackOf3 = type("StackOf3", (StackOfN,), {"N": 3})
 class GroupOfN(HasDerivedXy, AndNode):
     N = None
     def __init__(self):
+        self.x_mean = NodeParameter(torch.tensor([0.]))
+        self.x_variance = NodeParameter(torch.tensor([1.]), constraints.positive)
         super().__init__(child_types=[Box]*self.__class__.N)
     def _instantiate_children_impl(self, children):
         all_child_dist_dicts = []
         for k, child in enumerate(children):
             child_xy_dist = dist.Normal(
-                self.xy + torch.tensor([0.0, 0.0]),
-                torch.tensor([1.0, 0.0001])
+                self.xy + torch.tensor([self.x_mean()[0], 0.0]),
+                torch.tensor([self.x_variance()[0], 0.0001])
             )
             all_child_dist_dicts.append({
                 "xy": child_xy_dist
@@ -81,16 +85,20 @@ GroupOf3 = type("GroupOf3", (GroupOfN,), {"N": 3})
 class Ground(HasDerivedXy, OrNode):
     def __init__(self):
         child_types = [StackOf2, StackOf3, GroupOf1, GroupOf2, GroupOf3]
+        self.x_mean = NodeParameter(torch.tensor([0.]))
+        self.x_variance = NodeParameter(torch.tensor([1.]), constraints.positive)
+        self.child_weights = NodeParameter(torch.ones(len(child_types)), constraints.simplex)
         super().__init__(child_types=child_types,
-                         production_weights=torch.ones(len(child_types)))
+                         production_weights=self.child_weights()
+        )
     def _instantiate_children_impl(self, children):
         all_child_dist_dicts = []
         for k, child in enumerate(children):
             # Spawn the child group at the center of a single box's
             # height, randomly somewhere along the x axis.
             child_xy_dist = dist.Normal(
-                torch.tensor([0., self.xy[1] + 0.5]),
-                torch.tensor([1.0, 0.0001])
+                torch.tensor([self.x_mean()[0], self.xy[1] + 0.5]),
+                torch.tensor([self.x_variance()[0], 0.0001])
             )
             all_child_dist_dicts.append({
                 "xy": child_xy_dist,

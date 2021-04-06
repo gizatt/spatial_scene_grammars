@@ -7,6 +7,7 @@ from pyro.distributions.torch_distribution import (
 )
 from pyro.contrib.autoname import scope
 import torch
+from torch.distributions import constraints, transform_to
 
 from .distributions import VectorCappedGeometricDist
 
@@ -36,6 +37,32 @@ def trace_to_observe_dict(trace):
     return {key: site["value"] for key, site in trace.nodes.items()
             if site["type"] is "sample"}
 
+class NodeParameter(torch.nn.Module):
+    # Based heavily on pyro's constrained param system, but detached
+    # from a global param store.
+    def __init__(self, init_value, constraint=constraints.real):
+        super().__init__()
+        self.constraint = constraint
+        self.unconstrained_value = None
+        self.set(init_value)
+    def set_unconstrained(self, unconstrained_value):
+        if self.unconstrained_value is None:
+            self.unconstrained_value = torch.nn.Parameter(unconstrained_value)
+        else:
+            self.unconstrained_value.data = unconstrained_value
+    def set(self, constrained_value):
+        with torch.no_grad():
+            unconstrained_value = transform_to(self.constraint).inv(constrained_value)
+            unconstrained_value = unconstrained_value.contiguous()
+        self.set_unconstrained(unconstrained_value)
+    def get_value(self):
+        constrained_value = transform_to(self.constraint)(self.unconstrained_value)
+        return constrained_value
+    def __call__(self):
+        return self.get_value()
+    def get_unconstrained_value(self):
+        return self.unconstrained_value
+
 
 # TODO: Expand to exhaustive list of
 # all continuous distribution constraint / support
@@ -53,11 +80,11 @@ def assert_dists_are_all_continuous(dict_of_dists):
         assert isinstance(support, continuous_support_constraints), \
             "Distribution of %s (type %s) does not have continuous support." % (key, type(value))
 
+
 class Node():
     '''
     Every node (symbol) in the grammar derives from this base.
     '''
-
     def __init__(self, do_sanity_checks=True):
         self.name = node_name_store.get_name(self)
         self.instantiated = False
@@ -67,6 +94,11 @@ class Node():
         self.physics_geometry_info = None
         self.tf = None
         super().__init__()
+
+    def get_parameters(self):
+        return {
+            key: value for key, value in self.__dict__.items() if isinstance(value, NodeParameter)
+        }
 
     @classmethod
     def get_derived_variable_info(cls):
@@ -139,7 +171,7 @@ class Node():
         '''
         out_dict = {}
         for key, dist in dict_of_dists.items():
-            value = pyro.sample("key", dist)
+            value = pyro.sample(key, dist)
             out_dict[key] = value
         return out_dict
 
@@ -205,7 +237,7 @@ class Node():
     def conditioned_instantiate(self, target_derived_variable_values, target_local_variable_values):
         # Same functionality as instantiate, but sets up Delta distributions
         # around the specified derived + local variables instead of using
-        # supplies distributions.
+        # supplied distributions.
         if self.do_sanity_checks:
             self._sanity_check_variable_dict(
                 target_derived_variable_values,
@@ -384,7 +416,7 @@ class OrNode(NonTerminalNode):
     ''' Convenience specialization of a nonterminal node: will choose one
     of the available children with probabilities given by the production weights.'''
 
-    def __init__(self, child_types, production_weights):
+    def __init__(self, child_types, production_weights, **kwargs):
         if len(production_weights) != len(child_types):
             raise ValueError("# of production rules and weights must match.")
         if len(production_weights) == 0:
@@ -392,7 +424,7 @@ class OrNode(NonTerminalNode):
         self.child_types = child_types
         self.production_weights = production_weights
         self.production_dist = dist.OneHotCategorical(probs=production_weights)
-        super().__init__()
+        super().__init__(**kwargs)
 
     def _sample_children_impl(self):
         return self.production_dist
@@ -419,10 +451,10 @@ class OrNode(NonTerminalNode):
 class AndNode(NonTerminalNode):
     ''' Convenience specialization of a nonterminal node: will choose all
     of the available children all the time.'''
-    def __init__(self, child_types):
+    def __init__(self, child_types, **kwargs):
         self.child_types = child_types
         self.production_dist = dist.Bernoulli(torch.ones(len(self.child_types))).to_event(1)
-        super().__init__()
+        super().__init__(**kwargs)
 
     def _sample_children_impl(self):
         return self.production_dist
@@ -438,11 +470,11 @@ class IndependentSetNode(NonTerminalNode):
     ''' Convenience specialization of a nonterminal node: has a list of
     children that can occur, and chooses each one as an independent
     Bernoulli choice..'''
-    def __init__(self, child_types, production_probs):
+    def __init__(self, child_types, production_probs, **kwargs):
         self.child_types = child_types
         self.production_probs = production_probs
         self.production_dist = dist.Bernoulli(production_probs).to_event(1)
-        super().__init__()
+        super().__init__(**kwargs)
 
     def _sample_children_impl(self):
         return self.production_dist
@@ -470,7 +502,7 @@ class GeometricSetNode(NonTerminalNode):
     ''' Convenience specialization: has a single child type that can occur,
     and chooses to repeat it according to a geometric distribution, capped at
     a total number of instantiations.'''
-    def __init__(self, child_type, geometric_prob, max_repeats):
+    def __init__(self, child_type, geometric_prob, max_repeats, **kwargs):
         assert max_repeats > 0
         assert child_type is not None
         self.child_types = [child_type] * max_repeats
@@ -481,7 +513,7 @@ class GeometricSetNode(NonTerminalNode):
             self.production_dist = dist.Delta(torch.zeros(max_repeats)).to_event(1)
         else:
             self.production_dist = VectorCappedGeometricDist(geometric_prob, max_repeats)
-        super().__init__()
+        super().__init__(**kwargs)
 
     def _sample_children_impl(self):
         return self.production_dist

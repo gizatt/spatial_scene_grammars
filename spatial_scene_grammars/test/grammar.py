@@ -1,6 +1,8 @@
 import pyro
 import pyro.distributions as dist
 import torch
+import torch.distributions.constraints as constraints
+from torch.nn.parameter import Parameter
 
 from spatial_scene_grammars.tree import *
 from spatial_scene_grammars.nodes import *
@@ -18,22 +20,24 @@ class HasOnlyXyDerivedVariablesMixin():
 # Mixin must come first, since it's overriding a class method
 # also provided by the base node type.
 class Building(HasOnlyXyDerivedVariablesMixin, IndependentSetNode):
-    # This is d
     def __init__(self):
+        self.room_spacing = NodeParameter(torch.tensor([5.]))
+        self.child_probs = NodeParameter(torch.tensor([0.5, 0.5, 0.5, 0.5]), constraint=constraints.unit_interval)
         super().__init__(child_types=[NorthRoom, WestRoom, EastRoom, SouthRoom],
-                         production_probs=torch.tensor([0.5, 0.5, 0.5, 0.5]))
+                         production_probs=self.child_probs.get_value())
     def _instantiate_children_impl(self, children):
         all_dist_sets = []
+        offset = self.room_spacing.get_value()[0]
         for child in children:
             child_type = child.__class__.__name__
             if child_type == "North_Room":
-                dists = {"xy": dist.Delta(self.xy + torch.tensor([0., 5.]))}
+                dists = {"xy": dist.Delta(self.xy + torch.tensor([0., offset]))}
             elif child_type == "South_Room":
-                dists = {"xy": dist.Delta(self.xy + torch.tensor([0., -5.]))}
+                dists = {"xy": dist.Delta(self.xy + torch.tensor([0., -offset]))}
             elif child_type == "East_Room":
-                dists = {"xy": dist.Delta(self.xy + torch.tensor([5., 0.]))}
+                dists = {"xy": dist.Delta(self.xy + torch.tensor([offset, 0.]))}
             elif child_type == "West_Room":
-                dists = {"xy": dist.Delta(self.xy + torch.tensor([-5., 0.]))}
+                dists = {"xy": dist.Delta(self.xy + torch.tensor([-offset, 0.]))}
             else:
                 raise ValueError(child_type)
             all_dist_sets.append(dists)

@@ -20,6 +20,8 @@ from spatial_scene_grammars.test.grammar import *
 torch.set_default_tensor_type(torch.DoubleTensor)
 pyro.enable_validation(True)
 
+root_node_type = Building
+inst_dict = {"xy": dist.Delta(torch.zeros(2))}
 
 @pytest.fixture(params=range(10))
 def set_seed(request):
@@ -28,7 +30,8 @@ def set_seed(request):
 
 
 def test_estimate_observation_likelihood(set_seed):
-    generated_tree = SceneTree.forward_sample_from_root_type(Building, {"xy": dist.Delta(torch.zeros(2))})
+    grammar = SceneGrammar(root_node_type)
+    generated_tree = grammar(inst_dict)
     observed_nodes = [n for n in generated_tree.nodes() if isinstance(n, TerminalNode)]
 
     # Error with itself should be zero. (Error is log-prob sum of likelihood
@@ -37,19 +40,17 @@ def test_estimate_observation_likelihood(set_seed):
     assert np.allclose(error.item(), 0.)
 
 def test_node_embedding():
-    test_embedding = NodeEmbedding(Building(), output_size=64)
-    test_building = Building()
+    test_embedding = NodeEmbedding(root_node_type(), output_size=64)
+    test_building = root_node_type()
     test_building.instantiate({"xy": dist.Delta(torch.zeros(2))})
     out = test_embedding(test_building.get_all_continuous_variables_as_vector())
     assert torch.all(torch.isfinite(out))
 
 def test_grammar_encoder(set_seed):
-    root_node_type = Building
-    generated_tree = SceneTree.forward_sample_from_root_type(
-        root_node_type, {"xy": dist.Delta(torch.zeros(2))}
-    )
+    grammar = SceneGrammar(root_node_type)
+    generated_tree = grammar(inst_dict)
     observed_nodes = [n for n in generated_tree.nodes() if isinstance(n, TerminalNode)]
-    meta_tree = SceneTree.make_meta_scene_tree(root_node_type())
+    meta_tree = SceneGrammar.make_meta_scene_tree(root_node_type)
 
     # Can we encode?
     encoder = GrammarEncoder(meta_tree, embedding_size=64)
