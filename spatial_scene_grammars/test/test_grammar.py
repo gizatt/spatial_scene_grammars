@@ -44,7 +44,7 @@ def test_get_all_types():
         assert type in expected_types
 
 def test_get_params():
-    building = root_node_type()
+    building = root_node_type.init_with_default_parameters()
     params = building.get_parameters()
     for k in ["room_spacing", "child_probs"]:
         assert k in params.keys()
@@ -92,7 +92,7 @@ def test_variable_getters(set_seed):
         assert len(all_derived_vars_vec) + len(all_local_vars_vec) == len(all_cvars_vec)
 
 def test_node_instantiate(set_seed):
-    building = root_node_type()
+    building = root_node_type.init_with_default_parameters()
     assert building.instantiated is False
     trace = pyro.poutine.trace(building.instantiate).get_trace(inst_dict)
     assert building.instantiated
@@ -101,10 +101,10 @@ def test_node_instantiate(set_seed):
     assert np.allclose(building_ll, expected_ll)
 
 def test_conditioned_instantiate(set_seed):
-    target_object = ColoredObject()
+    target_object = ColoredObject.init_with_default_parameters()
     target_object.instantiate({"xy": dist.Delta(torch.tensor([1., 2.]))})
 
-    new_object = ColoredObject()
+    new_object = ColoredObject.init_with_default_parameters()
     conditioned_trace = pyro.poutine.trace(
         new_object.conditioned_instantiate
     ).get_trace(
@@ -122,12 +122,17 @@ def test_conditioned_sample_children(set_seed):
     for target_object_type in [root_node_type, Room, Table]:
         target_object = generated_tree.find_nodes_by_type(target_object_type)[0]
         children = list(generated_tree.successors(target_object))
-    
-        new_object = target_object_type()
+        child_types = [type(c) for c in children]
+
+        new_object = target_object_type.init_with_default_parameters()
         conditioned_trace = pyro.poutine.trace(
             new_object.conditioned_sample_children
-        ).get_trace(children)
+        ).get_trace(child_types)
         assert torch.isclose(conditioned_trace.log_prob_sum(), torch.Tensor([0.]))
+        assert torch.allclose(
+            new_object.get_child_indicator_vector(child_types),
+            new_object.child_inclusion_values
+        )
 
 def test_meta_scene_tree(set_seed):
     meta_tree = SceneGrammar.make_meta_scene_tree(root_node_type)
@@ -145,7 +150,9 @@ def test_grammar_parameter_update(set_seed):
 
     # See that we can re-score both trees under new params, and that the
     # orig tree's score has changed.
-
+    orig_tree_rerun_prob = grammar.get_tree_generation_log_prob(default_tree, inst_dict)
+    orig_tree_prob = default_tree.get_log_prob()
+    assert not torch.isclose(orig_tree_prob, orig_tree_rerun_prob)
 
 
 if __name__ == "__main__":

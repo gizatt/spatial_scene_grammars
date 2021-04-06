@@ -85,7 +85,7 @@ class Node():
     '''
     Every node (symbol) in the grammar derives from this base.
     '''
-    def __init__(self, do_sanity_checks=True):
+    def __init__(self, parameters={}, do_sanity_checks=True):
         self.name = node_name_store.get_name(self)
         self.instantiated = False
         self.do_sanity_checks = True
@@ -93,12 +93,34 @@ class Node():
         # node tf.
         self.physics_geometry_info = None
         self.tf = None
+        if do_sanity_checks:
+            # Check that passed parameters are the right size with
+            # the right entries compared to our registered defaults.
+            expected_param_dict = self.get_default_parameters()
+            assert set(expected_param_dict.keys()) == set(parameters.keys())
+            for key, value in expected_param_dict.items():
+                assert value.get_value().shape == parameters[key].get_value().shape
+        self.parameters = parameters
+        for name, value in self.parameters.items():
+            assert not hasattr(self, name), "Parameter name %s conflicts with existing class value." % name
+            setattr(self, name, value)
         super().__init__()
 
+    @classmethod
+    def init_with_default_parameters(cls):
+        return cls(parameters=cls.get_default_parameters())
+
+    @classmethod
+    def get_default_parameters(cls):
+        ''' Provide a dictionary of default values of parameters, keyed by
+        their names, as NodeParameter objects. They will be wrapped
+        tracked by the containing grammar, and stored both in self.parameters
+        and as members of the class (i.e. parameter named "foo" will be at self.foo)
+        when the class is constructed. '''
+        return {}
+
     def get_parameters(self):
-        return {
-            key: value for key, value in self.__dict__.items() if isinstance(value, NodeParameter)
-        }
+        return self.parameters
 
     @classmethod
     def get_derived_variable_info(cls):
@@ -162,7 +184,7 @@ class Node():
                         key, str(curr_value.shape), value.shape)
             setattr(self, key, value)
 
-    def _sample_continuous_variables_from_dict(self, dict_of_dists):
+    def _sample_continuous_variables_from_dict(self, dict_of_dists, observed_dict=None):
         '''
         For each key, dist pair in the dict, sample from the distribution;
         form an output dict of keys and sampled values; and for convenience,
@@ -171,25 +193,31 @@ class Node():
         '''
         out_dict = {}
         for key, dist in dict_of_dists.items():
-            value = pyro.sample(key, dist)
+            if observed_dict is not None and key in observed_dict.keys():
+                obs = observed_dict[key]
+            else:
+                obs = None
+            value = pyro.sample(key, dist, obs=obs)
             out_dict[key] = value
         return out_dict
 
-    def instantiate(self, derived_variable_distributions):
+    def instantiate(self, derived_variable_distributions,
+                    observed_derived_variables=None,
+                    observed_local_variables=None):
         '''
         Given a dictionary of derived variable distributions (matching
         the expected derived variables from `get_derived_variable_info`):
         1) Samples concrete values for the derived variables, storing
         them as correspondingly-named attributes of the class.
         2) Uses the concrete values to calculate distributions over the
-        local variables (implemented by _instantiate_impl; the local variable
+        local variables (implemented by get_local_variable_dists; the local variable
         distribution set should match the shapes from `get_local_variable_info`).
         3) Samples the local variables and stores them as
         correspondingly-named attributes of the class.
 
-        The indirection here allows subclass implementation of `_instantiate_impl`
-        to focus on just spitting out the right distributions; actual sampling
-        and distribution bookkeeping is done here.
+        The indirection here allows subclass implementation of
+        `get_local_variable_dists` to focus on just spitting out the right
+        distributions; actual sampling and distribution bookkeeping is done here.
         '''
 
         # Sanity-checking input.
@@ -204,13 +232,14 @@ class Node():
         # Sample concrete values for the derived variables.
         with scope(prefix=self.name + "_sample_derived"):
             self.derived_variable_values = self._sample_continuous_variables_from_dict(
-                self.derived_variable_distributions
+                self.derived_variable_distributions,
+                observed_derived_variables
             )
         # TODO(gizatt) Is this too risky?
         self.copy_attr_dict_to_self(self.derived_variable_values)
         
         # Call instantiate implementation.
-        local_variable_distributions = self._instantiate_impl(self.derived_variable_values)
+        local_variable_distributions = self.get_local_variable_dists(self.derived_variable_values)
 
         # Sanity-check output.
         if self.do_sanity_checks:
@@ -224,14 +253,15 @@ class Node():
         # Sample concrete values for the local variables.
         with scope(prefix=self.name + "_sample_local"):
             self.local_variable_values = self._sample_continuous_variables_from_dict(
-                self.local_variable_distributions
+                self.local_variable_distributions,
+                observed_local_variables
             )
         # TODO(gizatt) Is this too risky?
         self.copy_attr_dict_to_self(self.local_variable_values)
 
         self.instantiated = True
 
-    def _instantiate_impl(self, derived_variable_values):
+    def get_local_variable_dists(self, derived_variable_values):
         return {}
 
     def conditioned_instantiate(self, target_derived_variable_values, target_local_variable_values):
@@ -293,6 +323,14 @@ class Node():
     def get_continuous_variable_ll(self):
         assert self.instantiated
         return self.get_derived_variable_ll() + self.get_local_variable_ll()
+    
+    def get_derived_variable_values(self):
+        assert self.instantiated
+        return self.derived_variable_values
+
+    def get_local_variable_values(self):
+        assert self.instantiated
+        return self.local_variable_values
 
     def get_all_continuous_variable_values(self):
         assert self.instantiated
@@ -337,8 +375,8 @@ class NonTerminalNode(Node):
         of that list. '''
         raise NotImplementedError("Override get_maximal_child_type_list.")
 
-    def sample_children(self):
-        ''' Samples a list of children for this node. '''
+    def sample_children(self, observed_child_types=None):
+        ''' Samples a list of child types for this node. '''
         # Get distribution over children.
         child_type_list = self.get_maximal_child_type_list()
         child_inclusion_dist = self._sample_children_impl()
@@ -351,12 +389,17 @@ class NonTerminalNode(Node):
         self.child_inclusion_dist = child_inclusion_dist
 
         # Sample an included child set.
+        if observed_child_types is not None:
+            observed_indicator = self.get_child_indicator_vector(observed_child_types)
+        else:
+            observed_indicator = None
         with scope(prefix=self.name + "_choose_children"):
             self.child_inclusion_values = pyro.sample(
-                "sample_children_inclusion", self.child_inclusion_dist)
+                "sample_children_inclusion", self.child_inclusion_dist,
+                obs=observed_indicator)
         # TODO: This doesn't support batching as-is.
         child_set = [
-            child_type_list[k]()
+            child_type_list[k]
             for k, active in enumerate(self.child_inclusion_values.bool())
             if active
         ]
@@ -367,14 +410,14 @@ class NonTerminalNode(Node):
         ''' Should return a distribution that, when sampled, produces
         a binary vector indicating whether each of the children in
         the maximal child list is included in the output. '''
-        raise NotImplementedError("Override _sample_children_impl.")
+        raise NotImplementedError("Override _sample_children_impl().")
 
-    def conditioned_sample_children(self, children):
-        ''' Given a list of children, sets up our child inclusion
+    def conditioned_sample_children(self, observed_child_types):
+        ''' Given a list of child types, sets up our child inclusion
         dist as a Delta that guarantees that we'd sample that set of
         children. '''
         child_type_list = self.get_maximal_child_type_list()
-        target_child_inclusion_values = self.get_child_indices_into_maximal_child_list(children).double()
+        target_child_inclusion_values = self.get_child_indicator_vector(observed_child_types).double()
         self.child_inclusion_dist = dist.Delta(target_child_inclusion_values)
         with scope(prefix=self.name + "_choose_children"):
             self.child_inclusion_values = pyro.sample(
@@ -387,29 +430,26 @@ class NonTerminalNode(Node):
         assert self.children_sampled
         return self.child_inclusion_dist.log_prob(self.child_inclusion_values).sum()
 
-    def get_child_indices_into_maximal_child_list(self, children):
+    def get_child_indices_into_maximal_child_list(self, observed_child_types):
         ''' Returns, for each child in children, the index into the 
         maximal child set for this node that that child was produced by.
         Errors in ambiguous cases; assumes this child set is a feasible
         full child set for this node type. '''
-        raise NotImplementedError('Override get_child_indices_into_maximal_child_list.')
+        raise NotImplementedError('Override get_child_indices_into_maximal_child_list().')
 
-    def instantiate_children(self, children):
-        ''' Instantiates the supplied children of this node, creating
-        derived variable distributions for each of them and passing those
-        down into their own instantiate methods. '''
-        assert self.instantiated, "Node should be instantiated before instantiating children."
-        child_derived_variable_dists = self._instantiate_children_impl(children)
-        assert len(child_derived_variable_dists) == len(children)
-        for child, dist_dict in zip(children, child_derived_variable_dists):
-            child.instantiate(dist_dict)
-        self.children_instantiated = True
+    def get_child_indicator_vector(self, observed_child_types):
+        ''' Returns an indicator vector of which children in the
+        maximal_child_list would be active for this observed child set. '''
+        inds = self.get_child_indices_into_maximal_child_list(observed_child_types)
+        ind_vec = torch.zeros(len(self.get_maximal_child_type_list()))
+        ind_vec[inds.long()] = 1.
+        return ind_vec
 
-    def _instantiate_children_impl(self, children):
-        if len(children) > 0:
-            for child in children:
+    def get_derived_variable_dists_for_children(self, child_types):
+        if len(child_types) > 0:
+            for child in child_types:
                 if len(child.get_derived_variable_info().items()) > 0:
-                    raise NotImplementedError("Override _instantiate_children_impl.")
+                    raise NotImplementedError("Override get_derived_variable_dists_for_children().")
 
 
 class OrNode(NonTerminalNode):
@@ -432,11 +472,11 @@ class OrNode(NonTerminalNode):
     def get_maximal_child_type_list(self):
         return self.child_types
 
-    def get_child_indices_into_maximal_child_list(self, children):
-        assert len(children) == 1
+    def get_child_indices_into_maximal_child_list(self, observed_child_types):
+        assert len(observed_child_types) == 1
         production_weights = torch.zeros(len(self.child_types))
-        child = children[0]
-        inds = [k for k in range(len(self.child_types)) if self.child_types[k] == type(child)]
+        child = observed_child_types[0]
+        inds = [k for k in range(len(self.child_types)) if self.child_types[k] == child]
         if len(inds) > 1:
             # In this case, the child matches multiple of the production types.
             # This is legal under the grammar, but is strange in the sense that
@@ -462,8 +502,8 @@ class AndNode(NonTerminalNode):
     def get_maximal_child_type_list(self):
         return [child for child in self.child_types]
 
-    def get_child_indices_into_maximal_child_list(self, children):
-        assert len(children) == len(self.child_types)
+    def get_child_indices_into_maximal_child_list(self, observed_child_types):
+        assert len(observed_child_types) == len(self.child_types)
         return torch.tensor(range(len(self.child_types)))
 
 class IndependentSetNode(NonTerminalNode):
@@ -482,12 +522,12 @@ class IndependentSetNode(NonTerminalNode):
     def get_maximal_child_type_list(self):
         return self.child_types
 
-    def get_child_indices_into_maximal_child_list(self, children):
+    def get_child_indices_into_maximal_child_list(self, observed_child_types):
         inds = []
         for k, child_type in enumerate(self.child_types):
             matching_children_inds = [
-                k for (k, child) in enumerate(children)
-                if type(child) == child_type
+                k for (k, observed_child_type) in enumerate(observed_child_types)
+                if child_type == observed_child_type
             ]
             if len(matching_children_inds) > 1:
                 # Same case as in the OR rule -- this is legal under the grammar but would
@@ -521,11 +561,11 @@ class GeometricSetNode(NonTerminalNode):
     def get_maximal_child_type_list(self):
         return self.child_types
 
-    def get_child_indices_into_maximal_child_list(self, children):
-        for child in children:
+    def get_child_indices_into_maximal_child_list(self, observed_child_types):
+        for observed_child_type in observed_child_types:
             # All our child types should be the same.
-            assert type(child) == self.child_types[0]
-        num_active = len(children)
+            assert observed_child_type == self.child_types[0]
+        num_active = len(observed_child_types)
         assert num_active <= self.max_repeats
         return torch.tensor(range(num_active))
 

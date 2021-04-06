@@ -30,7 +30,7 @@ def estimate_observation_likelihood(candidate_nodes, observed_nodes, gaussian_va
     # a gaussian error model of given variance.
     # This is *not* a good observation model, since it doesn't enforce one-to-one
     # correspondence, but I'm using it to get off the ground.
-    total_log_prob = 0.
+    total_log_prob = torch.tensor([0.])
     error_distribution = dist.Normal(0., gaussian_variance)
     for node in candidate_nodes:
         max_ll = -np.inf
@@ -164,7 +164,10 @@ class GrammarEncoder(torch.nn.Module):
             attr = node.get_all_continuous_variables_as_vector()
             all_x[k, :, :] = self.node_embeddings_by_type[node.__class__.__name__](attr)
         # Pass through RNN.
-        output, _ = self.rnn(all_x, self.hidden_init)
+        if N_nodes > 0:
+            output, _ = self.rnn(all_x, self.hidden_init)
+        else:
+            output = self.hidden_init
         output = self.final_fc(output)
         # Return the final hidden state, removing the batch dim.
         return output[-1, 0, :]
@@ -231,8 +234,9 @@ class GrammarEncoder(torch.nn.Module):
             reconstruct_hidden_variables(meta_node, observed_node)
             if isinstance(observed_node, NonTerminalNode):
                 observed_children = list(observed_tree.successors(observed_node))
+                observed_child_types = [type(c) for c in observed_children]
                 meta_children = list(meta_tree.successors(meta_node))
-                child_inds = observed_node.get_child_indices_into_maximal_child_list(observed_children)
+                child_inds = observed_node.get_child_indices_into_maximal_child_list(observed_child_types)
                 reconstruct_hidden_choices(meta_node, observed_node, child_inds)
                 # Not sure I can trust nx node ordering? If these asserts are true,
                 # ordering is safe.
@@ -278,10 +282,10 @@ class GrammarEncoder(torch.nn.Module):
                 children = child_candidates[:num_children]
             else:
                 raise NotImplementedError("Don't know how to decode Nonterminal type %s" % meta_node.__class__.__name__)
-                
-            new_children = [type(meta_child)() for meta_child in children]
+            
             with pyro.poutine.block():
-                new_node.conditioned_sample_children(new_children)
+                new_node.conditioned_sample_children([type(c) for c in children])
+            new_children = [type(meta_child).init_with_default_parameters() for meta_child in children]
             return children, new_children
 
         def instantiate_node(meta_node, new_node):
@@ -327,7 +331,7 @@ class GrammarEncoder(torch.nn.Module):
             # This is nasty...
             meta_root_node = get_tree_root(meta_tree)
             new_tree = SceneTree()
-            new_root_node = type(meta_root_node)()
+            new_root_node = type(meta_root_node).init_with_default_parameters()
             new_tree.add_node(new_root_node)
             # Elements are tuple (meta_tree_node, new_tree_node)
             expansion_queue = [(meta_root_node, new_root_node)]

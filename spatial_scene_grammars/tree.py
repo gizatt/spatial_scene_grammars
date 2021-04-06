@@ -25,13 +25,14 @@ class SceneGrammar(torch.nn.Module):
     ability to sample trees under given parameter settings.
     '''
 
-    def __init__(self, root_node_type):
+    def __init__(self, root_node_type, do_sanity_checks=True):
         super().__init__()
         self.root_node_type = root_node_type
+        self.do_sanity_checks = do_sanity_checks
         self.params_by_node_type = {}
         # But our database of what parameters exist for each node type.
         for node_type in self.get_all_types_in_grammar(root_node_type):
-            params = node_type().get_parameters()
+            params = node_type.get_default_parameters()
             self.params_by_node_type[node_type] = params
             for name, param in params.items():
                 self.register_parameter("%s:%s" % (node_type.__name__, name), param.get_unconstrained_value())
@@ -44,35 +45,26 @@ class SceneGrammar(torch.nn.Module):
             curr_type = input_queue.pop(0)
             all_types.add(curr_type)
             if issubclass(curr_type, NonTerminalNode):
-                for new_type in curr_type().get_maximal_child_type_list():
+                for new_type in curr_type.init_with_default_parameters().get_maximal_child_type_list():
                     if new_type not in all_types:
                         input_queue.append(new_type)
         return all_types
 
-    def _apply_param_override(self, node):
-        # Set the specified node's params from the grammar's param store.
-        # TODO(gizatt) This is pretty awful. There must be a refactor,
-        # probably to the node API, to make this more natural. Something
-        # about containing exactly where the params get allocated and who
-        # they belong to. Maybe they should be passed in via the
-        # constructor, and kept track of at the grammar level?
-        assert type(node) in self.params_by_node_type.keys()
-        for name, param in self.params_by_node_type[type(node)].items():
-            assert hasattr(node, name) and isinstance(getattr(node, name), NodeParameter)
-            print("Overriding %s (%s) -> %s" % (name, getattr(node, name).get_value(), param.get_value()))
-            setattr(node, name, param)
+    def _spawn_node_with_our_params(self, node_type):
+        return node_type(parameters=self.params_by_node_type[node_type])
 
     def _generate_from_node_recursive(self, scene_tree, parent_node):
         if isinstance(parent_node, TerminalNode):
             return scene_tree
         else:
             # Choose what gets generated.
-            children = parent_node.sample_children()
-            for child in children:
-                self._apply_param_override(child)
-            # Do the actual generation of local (continuous) variables.
-            parent_node.instantiate_children(children)
-            for child_node in children:
+            child_types = parent_node.sample_children()
+            child_derived_dicts = parent_node.get_derived_variable_dists_for_children(child_types)
+            # Spawn and instantiate the children.
+            children = [self._spawn_node_with_our_params(child_type)
+                        for child_type in child_types]
+            for child_node, child_dict in zip(children, child_derived_dicts):
+                child_node.instantiate(child_dict)
                 scene_tree.add_node(child_node)
                 scene_tree.add_edge(parent_node, child_node)
                 if isinstance(child_node, NonTerminalNode):
@@ -83,24 +75,52 @@ class SceneGrammar(torch.nn.Module):
         # Samples a tree, ensuring our stored parameters get substituted
         # into every node that is generated.
         scene_tree = SceneTree()
-        root_node = self.root_node_type()
-        self._apply_param_override(root_node)
+        root_node = self._spawn_node_with_our_params(self.root_node_type)
         root_node.instantiate(root_node_instantiation_dict)
         scene_tree.add_node(root_node)
         return self._generate_from_node_recursive(scene_tree, root_node)
 
-    def get_tree_generation_log_prob(self, scene_tree):
+    def get_tree_generation_log_prob(self, scene_tree, root_node_instantiation_dict):
         ''' Scores given tree under this grammar using the currently stored
         parameter values and node attributes. '''
 
-        # To ensure the local parameters take effect
-        total_score = torch.tensor([0.])
-        node_queue = [get_tree_root(scene_tree)]
+        # Regenerate the tree using our local parameter store, conditioning
+        # the actual sampling to take the target scene tree values.
+        root = get_tree_root(scene_tree)
+        node_queue = [(root, root_node_instantiation_dict, None)]
+        new_tree = SceneTree()
         while len(node_queue) > 0:
-            curr_node = node_queue.pop(0)
-
-
-        return torch.tensor([0.])
+            # Create the clone node.
+            curr_node, curr_node_inst_dict, parent = node_queue.pop(0)
+            resampled_node = self._spawn_node_with_our_params(type(curr_node))
+            new_tree.add_node(resampled_node)
+            if parent is not None:
+                new_tree.add_edge(parent, resampled_node)
+            # Sample its local variables given parent info.
+            resampled_node.instantiate(
+                curr_node_inst_dict,
+                observed_derived_variables=curr_node.get_derived_variable_values(),
+                observed_local_variables=curr_node.get_local_variable_values()
+            )
+            # Sanity-check that variables came out identical.
+            if self.do_sanity_checks:
+                assert torch.allclose(resampled_node.get_all_continuous_variables_as_vector(),
+                                      curr_node.get_all_continuous_variables_as_vector())
+            if isinstance(curr_node, NonTerminalNode):
+                children = list(scene_tree.successors(curr_node))
+                # Simulate sampling the desired child set.
+                child_types = [type(c) for c in children]
+                new_child_types = resampled_node.sample_children(observed_child_types=child_types)
+                if self.do_sanity_checks:
+                    # Imperfect sanity-check that the child sets did come out identical.
+                    assert len(new_child_types) == len(child_types), (new_child_types, child_types)
+                    for c1, c2 in zip(child_types, new_child_types):
+                        assert c1 == c2
+                # Prepare child derived variable dists.
+                child_derived_dicts = resampled_node.get_derived_variable_dists_for_children(child_types)
+                for child, child_dict in zip(children, child_derived_dicts):
+                    node_queue.append((child, child_dict, resampled_node))
+        return new_tree.get_log_prob()
         
     @staticmethod
     def make_meta_scene_tree(root_node_type):
@@ -108,14 +128,14 @@ class SceneGrammar(torch.nn.Module):
         continuous variables) for which any generated tree from this root is
         a subgraph (again not considering continuous variables). '''
         meta_tree = nx.DiGraph()
-        root_node = root_node_type()
+        root_node = root_node_type.init_with_default_parameters()
         meta_tree.add_node(root_node)
         node_queue = [root_node]
         while len(node_queue) > 0:
             node = node_queue.pop(0)
             new_node_types = node.get_maximal_child_type_list()
             for new_node_type in new_node_types:
-                new_node = new_node_type()
+                new_node = new_node_type.init_with_default_parameters()
                 meta_tree.add_node(new_node)
                 meta_tree.add_edge(node, new_node)
                 if isinstance(new_node, NonTerminalNode):
@@ -210,47 +230,6 @@ class SceneTree(nx.DiGraph):
             node_queue += children
         # Done!
         return root_node
-
-    def get_trace(self):
-        ''' Returns a pyro trace of the forward sampling of this tree.
-        This is reconstructed from each individual node in the tree, so if you've
-        modified / resampled subtrees, this will still rebuild a correct overall trace. '''
-        # This is a little hard -- the "easy" way to do it would be
-        # to collect all sample site values from all nodes, and then
-        # re-run forward_sample_from_root. But that'd create brand new
-        # nodes, and we'd rather preserve our existing nodes (so we keep
-        # the same names). Instead, I'll build a routine that manually
-        # calls every node's sample and instantiate methods, but throwing
-        # out the new nodes and keeping the old ones.
-        # Still super funky... Pyro and graph-structured data like this
-        # just don't play very well, do they?
-        raise NotImplementedError("Needs reimplementation -- doesn't handle instantiation of local attributes correctly.")
-        def trace_to_observe_dict(trace):
-            return {key: site["value"] for key, site in trace.nodes.items()
-                    if site["type"] is "sample"}
-        def resample_tree_in_place(scene_tree):
-            # The root is the only node that doesn't get instantiated
-            # by its parent, so call that manually.
-            root = get_tree_root(self)
-            assert root.instantiated
-            pyro.poutine.condition(
-                root.instantiate,
-                data=trace_to_observe_dict(root.instantiate_trace)
-            )(root.derived_attributes)
-            # Then, for every node, "re-run" (with fixed output) the
-            # child resampling and instantiation.
-            for node in scene_tree.nodes():
-                if isinstance(node, NonTerminalNode):
-                    assert node.children_sampled
-                    pyro.poutine.condition(node.sample_children, 
-                        data=trace_to_observe_dict(node.sample_children_trace))()
-                    children = list(scene_tree.successors(node))
-                    pyro.poutine.condition(
-                        node.instantiate_children,
-                        data=trace_to_observe_dict(node.instantiate_children_trace)
-                    )(children=children)
-            return scene_tree
-        return pyro.poutine.trace(resample_tree_in_place).get_trace(self)
 
     def get_subtree_log_prob(self, root_node, include_continuous=True, include_discrete=True):
         assert root_node in self.nodes

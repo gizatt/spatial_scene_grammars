@@ -40,8 +40,8 @@ def test_estimate_observation_likelihood(set_seed):
     assert np.allclose(error.item(), 0.)
 
 def test_node_embedding():
-    test_embedding = NodeEmbedding(root_node_type(), output_size=64)
-    test_building = root_node_type()
+    test_embedding = NodeEmbedding(root_node_type.init_with_default_parameters(), output_size=64)
+    test_building = root_node_type.init_with_default_parameters()
     test_building.instantiate({"xy": dist.Delta(torch.zeros(2))})
     out = test_embedding(test_building.get_all_continuous_variables_as_vector())
     assert torch.all(torch.isfinite(out))
