@@ -6,7 +6,7 @@ from torch.nn.parameter import Parameter
 
 from spatial_scene_grammars.tree import *
 from spatial_scene_grammars.nodes import *
-
+from spatial_scene_grammars.constraints import *
 
 torch.set_default_tensor_type(torch.DoubleTensor)
 pyro.enable_validation(True)
@@ -91,7 +91,7 @@ class ObjectStack(HasOnlyXyDerivedVariablesMixin, GeometricSetNode):
     def __init__(self, **kwargs):
         super().__init__(
             child_type=StackedObject,
-            geometric_prob=0.0,
+            geometric_prob=0.5,
             max_repeats=3,
             **kwargs
         )
@@ -106,3 +106,10 @@ class ObjectStack(HasOnlyXyDerivedVariablesMixin, GeometricSetNode):
 
 class StackedObject(HasOnlyXyDerivedVariablesMixin, TerminalNode):
     pass
+
+class StackedObjectCountConstraint(TopologyConstraint):
+    def __init__(self):
+        super().__init__(lower_bound=torch.tensor(1.0), upper_bound=torch.tensor(np.inf))
+    def eval(self, scene_tree):
+        # Counts how many planets there are
+        return torch.tensor(len(list(scene_tree.find_nodes_by_type(StackedObject))))

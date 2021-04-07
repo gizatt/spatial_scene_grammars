@@ -6,8 +6,8 @@ import pyro
 import pyro.distributions as dist
 from .nodes import Node
 from .rules import ProductionRule
-from .factors import TopologyConstraint, ContinuousVariableConstraint
-from .tree import SceneTree, get_tree_root
+from .constraints import TopologyConstraint, ContinuousVariableConstraint
+from .tree import SceneGrammar, SceneTree, get_tree_root
 
 
 def eval_total_constraint_set_violation(scene_tree, constraints):
@@ -59,8 +59,8 @@ def rejection_sample_under_constraints_with_trace(
     current_best_violation = torch.tensor(np.inf)
     for k in range(max_num_attempts):
         trace = pyro.poutine.trace(
-            SceneTree.forward_sample_from_root_type).get_trace(
-                root_node_type, root_node_instantiation_dict)
+            SceneGrammar(root_node_type).forward
+            ).get_trace(root_node_instantiation_dict)
         scene_tree = trace.nodes["_RETURN"]["value"]
         total_violation = eval_total_constraint_set_violation(scene_tree, constraints)
         if total_violation <= torch.tensor(0.0):
@@ -388,8 +388,7 @@ def sample_tree_from_root_type_with_constraints(
     # Short-circuit if there are no factors -- forward sampling
     # is enough.
     if len(constraints) == 0:
-        return [SceneTree.forward_sample_from_root_type(
-            root_node_type, root_node_instantiation_dict)], True
+        return [SceneGrammar(root_node_type)(root_node_instantiation_dict)], True
 
     if backend == "rejection":
         backend_handler = _sample_backend_rejection
