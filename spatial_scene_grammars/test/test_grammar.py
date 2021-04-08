@@ -140,6 +140,12 @@ def test_meta_scene_tree(set_seed):
 def test_grammar_parameter_update(set_seed):
     grammar = SceneGrammar(root_node_type)
     default_tree = grammar(inst_dict)
+
+    # Scoring tree should be the same as the tree score.
+    orig_tree_rerun_prob = grammar.get_tree_generation_log_prob(default_tree, inst_dict)
+    orig_tree_prob = default_tree.get_log_prob()
+    assert torch.isclose(orig_tree_prob, orig_tree_rerun_prob)
+    
     # Change parameters of root node children
     grammar.params_by_node_type[root_node_type]["child_probs"].set(torch.tensor([1.0, 0.0, 0.0, 0.0]))
     new_tree = grammar(inst_dict)

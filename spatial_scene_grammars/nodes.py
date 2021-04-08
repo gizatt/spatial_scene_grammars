@@ -219,7 +219,6 @@ class Node():
         `get_local_variable_dists` to focus on just spitting out the right
         distributions; actual sampling and distribution bookkeeping is done here.
         '''
-
         # Sanity-checking input.
         if self.do_sanity_checks:
             assert_dists_are_all_continuous(derived_variable_distributions)
@@ -304,8 +303,9 @@ class Node():
     @staticmethod
     def get_variable_ll_given_dicts(value_dict, dist_dict):
         total_ll = 0.
+        print("Scoring %s in %s" % (value_dict, dist_dict))
         for key, value in value_dict.items():
-            total_ll += dist_dict[key].log_prob(value).sum()
+            total_ll = total_ll + dist_dict[key].log_prob(value).sum()
         return total_ll
 
     def get_derived_variable_ll(self):

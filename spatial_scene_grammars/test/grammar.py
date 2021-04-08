@@ -20,10 +20,10 @@ class HasOnlyXyDerivedVariablesMixin():
 # Mixin must come first, since it's overriding a class method
 # also provided by the base node type.
 class Building(HasOnlyXyDerivedVariablesMixin, IndependentSetNode):
-    def __init__(self, parameters):
+    def __init__(self, parameters, **kwargs):
         super().__init__(child_types=[NorthRoom, WestRoom, EastRoom, SouthRoom],
                          production_probs=parameters["child_probs"].get_value(),
-                         parameters=parameters)
+                         parameters=parameters, **kwargs)
     @classmethod
     def get_default_parameters(cls):
         return {

@@ -37,6 +37,10 @@ class SceneGrammar(torch.nn.Module):
             for name, param in params.items():
                 self.register_parameter("%s:%s" % (node_type.__name__, name), param.get_unconstrained_value())
 
+    def get_current_parameter_values(self):
+        # Gets the current *constrained** parameter values.
+        return self.params_by_node_type            
+
     @staticmethod
     def get_all_types_in_grammar(root_node_type):
         all_types = set()
@@ -80,46 +84,52 @@ class SceneGrammar(torch.nn.Module):
         scene_tree.add_node(root_node)
         return self._generate_from_node_recursive(scene_tree, root_node)
 
+    def _regen_tree_under_new_params(self, scene_tree, root_node_instantiation_dict):
+        target_root = get_tree_root(scene_tree)
+        node_queue = [(target_root, root_node_instantiation_dict, None)]
+        new_tree = SceneTree()
+        while len(node_queue) > 0:
+            # Create the clone node.
+            target_curr_node, curr_node_inst_dict, parent = node_queue.pop(0)
+            resampled_node = self._spawn_node_with_our_params(type(target_curr_node))
+            new_tree.add_node(resampled_node)
+            if parent is not None:
+                new_tree.add_edge(parent, resampled_node)
+            # Sample its local variables given parent info.
+            def detach_all(dict):
+                return {k: v.detach() for k, v in dict.items()}
+            resampled_node.instantiate(
+                curr_node_inst_dict,
+                observed_derived_variables=detach_all(target_curr_node.get_derived_variable_values()),
+                observed_local_variables=detach_all(target_curr_node.get_local_variable_values())
+            )
+            # Sanity-check that variables came out identical.
+            if self.do_sanity_checks:
+                assert torch.allclose(resampled_node.get_all_continuous_variables_as_vector(),
+                                      target_curr_node.get_all_continuous_variables_as_vector())
+            if isinstance(target_curr_node, NonTerminalNode):
+                target_children = list(scene_tree.successors(target_curr_node))
+                # Simulate sampling the desired child set.
+                target_child_types = [type(c) for c in target_children]
+                new_child_types = resampled_node.sample_children(observed_child_types=target_child_types)
+                if self.do_sanity_checks:
+                    # Imperfect sanity-check that the child sets did come out identical.
+                    assert len(new_child_types) == len(target_child_types), (new_child_types, target_child_types)
+                    for c1, c2 in zip(target_child_types, new_child_types):
+                        assert c1 == c2
+                # Prepare child derived variable dists.
+                child_derived_dicts = resampled_node.get_derived_variable_dists_for_children(new_child_types)
+                for target_child, new_child_dict in zip(target_children, child_derived_dicts):
+                    node_queue.append((target_child, new_child_dict, resampled_node))
+        return new_tree
+
     def get_tree_generation_log_prob(self, scene_tree, root_node_instantiation_dict):
         ''' Scores given tree under this grammar using the currently stored
         parameter values and node attributes. '''
 
         # Regenerate the tree using our local parameter store, conditioning
         # the actual sampling to take the target scene tree values.
-        root = get_tree_root(scene_tree)
-        node_queue = [(root, root_node_instantiation_dict, None)]
-        new_tree = SceneTree()
-        while len(node_queue) > 0:
-            # Create the clone node.
-            curr_node, curr_node_inst_dict, parent = node_queue.pop(0)
-            resampled_node = self._spawn_node_with_our_params(type(curr_node))
-            new_tree.add_node(resampled_node)
-            if parent is not None:
-                new_tree.add_edge(parent, resampled_node)
-            # Sample its local variables given parent info.
-            resampled_node.instantiate(
-                curr_node_inst_dict,
-                observed_derived_variables=curr_node.get_derived_variable_values(),
-                observed_local_variables=curr_node.get_local_variable_values()
-            )
-            # Sanity-check that variables came out identical.
-            if self.do_sanity_checks:
-                assert torch.allclose(resampled_node.get_all_continuous_variables_as_vector(),
-                                      curr_node.get_all_continuous_variables_as_vector())
-            if isinstance(curr_node, NonTerminalNode):
-                children = list(scene_tree.successors(curr_node))
-                # Simulate sampling the desired child set.
-                child_types = [type(c) for c in children]
-                new_child_types = resampled_node.sample_children(observed_child_types=child_types)
-                if self.do_sanity_checks:
-                    # Imperfect sanity-check that the child sets did come out identical.
-                    assert len(new_child_types) == len(child_types), (new_child_types, child_types)
-                    for c1, c2 in zip(child_types, new_child_types):
-                        assert c1 == c2
-                # Prepare child derived variable dists.
-                child_derived_dicts = resampled_node.get_derived_variable_dists_for_children(child_types)
-                for child, child_dict in zip(children, child_derived_dicts):
-                    node_queue.append((child, child_dict, resampled_node))
+        new_tree = self._regen_tree_under_new_params(scene_tree, root_node_instantiation_dict)
         return new_tree.get_log_prob()
         
     @staticmethod
