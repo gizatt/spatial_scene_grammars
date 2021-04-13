@@ -27,24 +27,31 @@ class Building(HasOnlyXyDerivedVariablesMixin, IndependentSetNode):
     @classmethod
     def get_default_parameters(cls):
         return {
-            "room_spacing": NodeParameter(torch.tensor([5.])),
+            "room_spacing": NodeParameter(torch.tensor([5.]), constraint=constraints.positive),
             "child_probs": NodeParameter(torch.tensor([0.5, 0.5, 0.5, 0.5]), constraint=constraints.unit_interval)
         }
     def get_derived_variable_dists_for_children(self, child_types):
         all_dist_sets = []
         offset = self.room_spacing.get_value()[0]
         for child_type in child_types:
+            # It's important to *not* build the offsets like
+            # tensor([offset[0], 0.0]) -- that strips gradient info.
             child_name = child_type.__name__
             if child_name == "North_Room":
-                dists = {"xy": dist.Delta(self.xy + torch.tensor([0., offset]))}
+                room_offset = torch.zeros(2)
+                room_offset[1] = offset
             elif child_name == "South_Room":
-                dists = {"xy": dist.Delta(self.xy + torch.tensor([0., -offset]))}
+                room_offset = torch.zeros(2)
+                room_offset[1] = -offset
             elif child_name == "East_Room":
-                dists = {"xy": dist.Delta(self.xy + torch.tensor([offset, 0.]))}
+                room_offset = torch.zeros(2)
+                room_offset[0] = offset
             elif child_name == "West_Room":
-                dists = {"xy": dist.Delta(self.xy + torch.tensor([-offset, 0.]))}
+                room_offset = torch.zeros(2)
+                room_offset[0] = -offset
             else:
                 raise ValueError(child_name)
+            dists = {"xy": dist.Normal(self.xy + room_offset, torch.ones(2)*0.001)}
             all_dist_sets.append(dists)
         return all_dist_sets
 

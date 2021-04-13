@@ -52,10 +52,13 @@ class StackOfN(HasDerivedXy, AndNode):
     def get_derived_variable_dists_for_children(self, child_types):
         all_child_dist_dicts = []
         for k, child in enumerate(child_types):
-            child_xy_dist = dist.Normal(
-                self.xy + torch.tensor([self.x_mean()[0], float(k)]),
-                torch.tensor([self.x_variance()[0], 0.01])
-            )
+            offset = torch.empty(2)
+            offset[0] = self.x_mean()[0]
+            offset[1] = float(k)
+            variance = torch.empty(2)
+            variance[0] = self.x_variance()[0]
+            variance[1] = 0.01
+            child_xy_dist = dist.Normal(self.xy + offset, variance)
             all_child_dist_dicts.append({
                 "xy": child_xy_dist
             })
@@ -77,10 +80,12 @@ class GroupOfN(HasDerivedXy, AndNode):
     def get_derived_variable_dists_for_children(self, child_types):
         all_child_dist_dicts = []
         for k, child in enumerate(child_types):
-            child_xy_dist = dist.Normal(
-                self.xy + torch.tensor([self.x_mean()[0], 0.0]),
-                torch.tensor([self.x_variance()[0], 0.01])
-            )
+            offset = torch.zeros(2)
+            offset[0] = self.x_mean()[0]
+            variance = torch.empty(2)
+            variance[0] = self.x_variance()[0]
+            variance[1] = 0.01
+            child_xy_dist = dist.Normal(self.xy + offset, variance)
             all_child_dist_dicts.append({
                 "xy": child_xy_dist
             })
@@ -109,11 +114,13 @@ class Ground(HasDerivedXy, OrNode):
         for k, child in enumerate(child_types):
             # Spawn the child group at the center of a single box's
             # height, randomly somewhere along the x axis.
-            print("Our x mean: ", id(self.x_mean), self.x_mean, self.x_mean())
-            child_xy_dist = dist.Normal(
-                torch.tensor([self.x_mean()[0], self.xy[1] + 0.5]),
-                torch.tensor([self.x_variance()[0], 0.01])
-            )
+            offset = torch.empty(2)
+            offset[0] = self.x_mean()[0]
+            offset[1] = self.xy[1] + 0.5
+            variance = torch.empty(2)
+            variance[0] = self.x_variance()[0]
+            variance[1] = 0.01
+            child_xy_dist = dist.Normal(self.xy + offset, variance)
             all_child_dist_dicts.append({
                 "xy": child_xy_dist,
             })

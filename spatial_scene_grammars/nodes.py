@@ -302,8 +302,7 @@ class Node():
 
     @staticmethod
     def get_variable_ll_given_dicts(value_dict, dist_dict):
-        total_ll = 0.
-        print("Scoring %s in %s" % (value_dict, dist_dict))
+        total_ll = torch.tensor(0.)
         for key, value in value_dict.items():
             total_ll = total_ll + dist_dict[key].log_prob(value).sum()
         return total_ll

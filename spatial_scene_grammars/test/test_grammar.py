@@ -75,6 +75,19 @@ def test_forward_sampling(set_seed):
     tree_ll_shorthand = tree.get_log_prob().detach().numpy()
     assert np.allclose(tree_ll, tree_ll_shorthand), "%s vs %s" % (tree_ll, tree_ll_shorthand)
 
+    # Make sure gradients go backwards as we expect.
+    rooms = list(tree.successors(root_node))
+    if len(rooms) > 0:
+        tree_ll = tree.get_log_prob()
+        tree_ll.backward()
+        # Collect into a dict so our failure message is more
+        # informative about which parameters don't have grads.
+        parameters_have_grad = {}
+        for name, parameter in grammar.named_parameters():
+            parameters_have_grad[name] = parameter.grad is not None
+        assert all(parameters_have_grad.values()), parameters_have_grad
+    
+
 def test_variable_getters(set_seed):
     grammar = SceneGrammar(root_node_type)
     generated_tree = grammar.forward(inst_dict)
