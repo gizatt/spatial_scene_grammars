@@ -7,4 +7,5 @@ codecov
 pytest-cov
 pytest-subtests
 pyro-ppl==1.5.1
+torchviz
 meshcat

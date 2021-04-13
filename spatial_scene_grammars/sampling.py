@@ -8,7 +8,7 @@ from .nodes import Node
 from .rules import ProductionRule
 from .constraints import TopologyConstraint, ContinuousVariableConstraint
 from .tree import SceneGrammar, SceneTree, get_tree_root
-
+from .random_walk_kernel import RandomWalkKernel
 
 def eval_total_constraint_set_violation(scene_tree, constraints):
     # Returns the total violation across all constraints, summed
@@ -95,7 +95,7 @@ def split_constraints(constraints):
 
 def do_fixed_structure_mcmc(root_node_type, root_node_instantiation_dict, feasible_trace,
                            constraints, callback, num_samples, verbose=False,
-                           kernel_constructor=pyro.infer.mcmc.RandomWalkKernel, **kwargs):
+                           kernel_constructor=RandomWalkKernel, **kwargs):
     # Kernel type should be one of ["RandomWalkKernel", "HMC", "NUTS"].
     # kwargs is passed to the mcmc kernel constructor.
 
@@ -219,7 +219,7 @@ def _sample_backend_metroplis_procedural_modeling(
             # Do diffusion step with constraints in mind
             mcmc, fixed_tree = do_fixed_structure_mcmc(root_node_type, root_node_instantiation_dict, current_trace,
                 constraints, callback=None, num_samples=1,
-                kernel_constructor=pyro.infer.mcmc.RandomWalkKernel,
+                kernel_constructor=RandomWalkKernel,
                 variance=0.1)
             if not mcmc._samples:
                 print("MCMC didn't get any samples. Rejected this fixed-structure pass.")
