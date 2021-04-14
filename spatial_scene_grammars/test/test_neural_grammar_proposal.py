@@ -60,7 +60,7 @@ def test_grammar_encoder(set_seed):
     # Can we recover parameters that would reproduce a given tree?
     # Make sure we can directly encode trees for supervision correctly.
     x_enc = encoder.get_grammar_parameters_from_actual_tree(meta_tree, generated_tree, assign_var=0.00001)
-    sampled_tree, ll, _ = encoder.sample_tree_from_grammar_vector(meta_tree, x_enc)
+    sampled_tree, ll, _ = encoder.sample_tree_from_grammar_vector(meta_tree, x_enc, inst_dict)
 
     # While I can't guarantee the trees have the same variable ordering, some high-order
     # stats should agree: the value of each continuous variable in the original tree
@@ -76,6 +76,7 @@ def test_grammar_encoder(set_seed):
     # V2 will be normally distributed very close to the value of v1, but not exactly.
     assert torch.isclose(min(torch.min(all_to_all, dim=0)[0]), torch.Tensor([0.]), atol=1E-3), min(torch.min(all_to_all, dim=0)[0])
     assert torch.isclose(min(torch.min(all_to_all, dim=1)[0]), torch.Tensor([0.]), atol=1E-3), min(torch.min(all_to_all, dim=1)[0])
+
 
 if __name__ == "__main__":
     pytest.main()

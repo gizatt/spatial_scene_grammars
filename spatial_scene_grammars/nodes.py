@@ -263,43 +263,6 @@ class Node():
     def get_local_variable_dists(self, derived_variable_values):
         return {}
 
-    def conditioned_instantiate(self, target_derived_variable_values, target_local_variable_values):
-        # Same functionality as instantiate, but sets up Delta distributions
-        # around the specified derived + local variables instead of using
-        # supplied distributions.
-        if self.do_sanity_checks:
-            self._sanity_check_variable_dict(
-                target_derived_variable_values,
-                self.get_derived_variable_info()
-            )
-            self._sanity_check_variable_dict(
-                target_local_variable_values,
-                self.get_local_variable_info()
-            )
-        self.derived_variable_distributions = {
-            key: dist.Delta(value)
-            for key, value in target_derived_variable_values.items()
-        }
-        # Sample concrete values for the derived variables.
-        with scope(prefix=self.name + "_sample_derived"):
-            self.derived_variable_values = self._sample_continuous_variables_from_dict(
-                self.derived_variable_distributions
-            )
-        self.copy_attr_dict_to_self(self.derived_variable_values)
-        
-        self.local_variable_distributions = {
-            key: dist.Delta(value)
-            for key, value in target_local_variable_values.items()
-        }
-        # Sample concrete values for the local variables.
-        with scope(prefix=self.name + "_sample_local"):
-            self.local_variable_values = self._sample_continuous_variables_from_dict(
-                self.local_variable_distributions
-            )
-        self.copy_attr_dict_to_self(self.local_variable_values)
-
-        self.instantiated = True
-
     @staticmethod
     def get_variable_ll_given_dicts(value_dict, dist_dict):
         total_ll = torch.tensor(0.)
@@ -410,20 +373,6 @@ class NonTerminalNode(Node):
         a binary vector indicating whether each of the children in
         the maximal child list is included in the output. '''
         raise NotImplementedError("Override _sample_children_impl().")
-
-    def conditioned_sample_children(self, observed_child_types):
-        ''' Given a list of child types, sets up our child inclusion
-        dist as a Delta that guarantees that we'd sample that set of
-        children. '''
-        child_type_list = self.get_maximal_child_type_list()
-        target_child_inclusion_values = self.get_child_indicator_vector(observed_child_types).double()
-        self.child_inclusion_dist = dist.Delta(target_child_inclusion_values)
-        with scope(prefix=self.name + "_choose_children"):
-            self.child_inclusion_values = pyro.sample(
-                "sample_children_inclusion",
-                self.child_inclusion_dist
-            )
-        self.children_sampled = True
 
     def get_children_ll(self):
         assert self.children_sampled

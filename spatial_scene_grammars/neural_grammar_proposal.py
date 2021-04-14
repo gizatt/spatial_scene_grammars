@@ -25,7 +25,8 @@ from spatial_scene_grammars.torch_utils import (
 )
 
 
-def estimate_observation_likelihood(candidate_nodes, observed_nodes, gaussian_variance):
+def estimate_observation_likelihood(candidate_nodes, observed_nodes, gaussian_variance,
+                                    detach_first=False, detach_second=False):
     # Dumbest possible version: Chamfer distance of like types, scored according to
     # a gaussian error model of given variance.
     # This is *not* a good observation model, since it doesn't enforce one-to-one
@@ -39,12 +40,17 @@ def estimate_observation_likelihood(candidate_nodes, observed_nodes, gaussian_va
                 ll = 0.
                 node_vars = node.get_all_continuous_variables_as_vector()
                 matching_vars = matching_node.get_all_continuous_variables_as_vector()
+                if detach_first:
+                    node_vars = node_vars.detach()
+                if detach_second:
+                    matching_vars = matching_vars.detach()
                 distances = node_vars - matching_vars
                 ll += error_distribution.log_prob(distances).sum()
                 if ll > max_ll:
                     max_ll = ll
         total_log_prob += max_ll
     return total_log_prob / max(len(candidate_nodes), 1)
+
 
 class NodeEmbedding(torch.nn.Module):
     ''' Takes a node class (instantiated, but it doesn't matter with what)
@@ -70,6 +76,7 @@ class NodeEmbedding(torch.nn.Module):
             return x
         else:
             return self.output_vec
+
 
 class GrammarEncoder(torch.nn.Module):
     ''' Transforms a set of observed nodes to a distribution over
@@ -161,7 +168,10 @@ class GrammarEncoder(torch.nn.Module):
         # and we'd like to be robust to that.
         shuffled_nodes = [observed_nodes[k] for k in torch.randperm(N_nodes)]
         for k, node in enumerate(shuffled_nodes):
-            attr = node.get_all_continuous_variables_as_vector()
+            # The node variables need to be detached, as they might be
+            # derived from node parameters that we don't want to backwards
+            # through.
+            attr = node.get_all_continuous_variables_as_vector().detach()
             all_x[k, :, :] = self.node_embeddings_by_type[node.__class__.__name__](attr)
         # Pass through RNN.
         if N_nodes > 0:
@@ -188,11 +198,11 @@ class GrammarEncoder(torch.nn.Module):
         def reconstruct_hidden_variables(meta_node, observed_node):
             nonlocal x_reconstructed
             all_inds = self.node_output_info[meta_node]
-            derived_attr = observed_node.get_derived_variables_as_vector()
+            derived_attr = observed_node.get_derived_variables_as_vector().detach()
             if len(derived_attr) > 0:
                 x_reconstructed[all_inds.derived_variable_means_inds] = derived_attr
                 x_reconstructed[all_inds.derived_variable_vars_inds] = inv_softplus(assign_var)
-            local_attr = observed_node.get_local_variables_as_vector()
+            local_attr = observed_node.get_local_variables_as_vector().detach()
             if len(local_attr):
                 x_reconstructed[all_inds.local_variable_means_inds] = local_attr
                 x_reconstructed[all_inds.local_variable_vars_inds] = inv_softplus(assign_var)
@@ -247,7 +257,7 @@ class GrammarEncoder(torch.nn.Module):
                     unexpanded_nodes.append((meta_children[child_ind], observed_child))
         return x_reconstructed
 
-    def sample_tree_from_grammar_vector(self, meta_tree, x):
+    def sample_tree_from_grammar_vector(self, meta_tree, x, root_instantiation_dict):
         assert len(x.shape) == 1 and x.shape[0] == self.hidden_size
         # This is largely disgusting to have all in one method and ought
         # to be supported first-class by the scene tree. But I'm prototyping...
@@ -283,12 +293,13 @@ class GrammarEncoder(torch.nn.Module):
             else:
                 raise NotImplementedError("Don't know how to decode Nonterminal type %s" % meta_node.__class__.__name__)
             
+            # Get node child info set up, but keep out of our trace.
             with pyro.poutine.block():
-                new_node.conditioned_sample_children([type(c) for c in children])
+                new_node.sample_children(observed_child_types=[type(c) for c in children])
             new_children = [type(meta_child).init_with_default_parameters() for meta_child in children]
             return children, new_children
 
-        def instantiate_node(meta_node, new_node):
+        def instantiate_node(meta_node, new_node, new_derived_attr_dists):
             # Pull out the distribution parameters for the local vars, and
             # sample them.
             all_inds = self.node_output_info[meta_node]
@@ -316,14 +327,19 @@ class GrammarEncoder(torch.nn.Module):
             derived_attrs = pack_dict(meta_node.get_derived_variable_info(), derived_attrs)
             local_means = x[all_inds.local_variable_means_inds]
             local_vars = torch.nn.functional.softplus(x[all_inds.local_variable_vars_inds])
-            local_attrs = local_means = local_vars * pyro.sample("decode_local_attrs_sample",
+            local_attrs = local_means + local_vars * pyro.sample("decode_local_attrs_sample",
                                       dist.Normal(torch.zeros(local_means.shape),
                                                   torch.ones(local_means.shape)))
             local_attrs = pack_dict(meta_node.get_local_variable_info(), local_attrs)
-            
-            with pyro.poutine.block():
-                new_node.conditioned_instantiate(derived_attrs, local_attrs)
-            
+        
+            # Get node attributes set up, but keep it out of our trace.
+            with pyro.poutine.block():    
+                new_node.instantiate(
+                    new_derived_attr_dists,
+                    observed_derived_variables=derived_attrs,
+                    observed_local_variables=local_attrs
+                )
+        
         def make_new_tree():
             # First choose tree topology by traversing meta-tree.
             # We're traversing the meta-tree, but building our own
@@ -334,23 +350,27 @@ class GrammarEncoder(torch.nn.Module):
             new_root_node = type(meta_root_node).init_with_default_parameters()
             new_tree.add_node(new_root_node)
             # Elements are tuple (meta_tree_node, new_tree_node)
-            expansion_queue = [(meta_root_node, new_root_node)]
+            expansion_queue = [(meta_root_node, new_root_node, root_instantiation_dict)]
             while len(expansion_queue) > 0:
-                meta_expand_node, new_expand_node = expansion_queue.pop(0)
+                meta_expand_node, new_expand_node, new_derived_attr_dists = expansion_queue.pop(0)
                 # Instantiate this node, using the node in the meta tree to
                 # look up the appropriate parts from the grammar vector.
                 with scope(prefix=meta_expand_node.name):
-                    instantiate_node(meta_expand_node, new_expand_node)
+                    instantiate_node(meta_expand_node, new_expand_node, new_derived_attr_dists)
                     if isinstance(meta_expand_node, NonTerminalNode):
                         # Selects a child set from the meta tree node using the
                         # passed grammar vector as selection weights.
                         meta_children, new_children = sample_children_from_meta_tree_node(
                             meta_expand_node, new_expand_node)
+                        child_derived_dicts = new_expand_node.get_derived_variable_dists_for_children(
+                            [type(c) for c in new_children]
+                        )
                         # Create copies of children of the same types in our tree.
-                        for meta_child, new_child in zip(meta_children, new_children):
+                        for meta_child, new_child, child_derived_attr_dists in zip(
+                                meta_children, new_children, child_derived_dicts):
                             new_tree.add_node(new_child)
                             new_tree.add_edge(new_expand_node, new_child)
-                            expansion_queue.append((meta_child, new_child))
+                            expansion_queue.append((meta_child, new_child, child_derived_attr_dists))
             return new_tree
         proposal_trace = pyro.poutine.trace(make_new_tree).get_trace()
         # Compute log prob for all + for just non-reparam'd nodes.
