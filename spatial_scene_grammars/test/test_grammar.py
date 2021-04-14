@@ -113,40 +113,6 @@ def test_node_instantiate(set_seed):
     expected_ll = trace.log_prob_sum().detach().numpy()
     assert np.allclose(building_ll, expected_ll)
 
-def test_conditioned_instantiate(set_seed):
-    target_object = ColoredObject.init_with_default_parameters()
-    target_object.instantiate({"xy": dist.Delta(torch.tensor([1., 2.]))})
-
-    new_object = ColoredObject.init_with_default_parameters()
-    conditioned_trace = pyro.poutine.trace(
-        new_object.conditioned_instantiate
-    ).get_trace(
-        target_object.derived_variable_values,
-        target_object.local_variable_values
-    )
-    assert np.allclose(conditioned_trace.log_prob_sum().item(), 0.)
-    assert_identical_dicts_of_tensors(new_object.derived_variable_values, target_object.derived_variable_values)
-    assert_identical_dicts_of_tensors(new_object.local_variable_values, target_object.local_variable_values)
-
-def test_conditioned_sample_children(set_seed):
-    grammar = SceneGrammar(root_node_type)
-    generated_tree = grammar.forward(inst_dict)
-    
-    for target_object_type in [root_node_type, Room, Table]:
-        target_object = generated_tree.find_nodes_by_type(target_object_type)[0]
-        children = list(generated_tree.successors(target_object))
-        child_types = [type(c) for c in children]
-
-        new_object = target_object_type.init_with_default_parameters()
-        conditioned_trace = pyro.poutine.trace(
-            new_object.conditioned_sample_children
-        ).get_trace(child_types)
-        assert torch.isclose(conditioned_trace.log_prob_sum(), torch.Tensor([0.]))
-        assert torch.allclose(
-            new_object.get_child_indicator_vector(child_types),
-            new_object.child_inclusion_values
-        )
-
 def test_meta_scene_tree(set_seed):
     meta_tree = SceneGrammar.make_meta_scene_tree(root_node_type)
 
