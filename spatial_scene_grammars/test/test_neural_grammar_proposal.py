@@ -12,7 +12,7 @@ import pyro.distributions as dist
 
 from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
-from spatial_scene_grammars.tree import *
+from spatial_scene_grammars.scene_grammar import *
 from spatial_scene_grammars.neural_grammar_proposal import *
 
 from spatial_scene_grammars.test.grammar import *
@@ -30,8 +30,8 @@ def set_seed(request):
 
 
 def test_estimate_observation_likelihood(set_seed):
-    grammar = SceneGrammar(root_node_type)
-    generated_tree = grammar(inst_dict)
+    grammar = SceneGrammar(root_node_type, inst_dict)
+    generated_tree = grammar()
     observed_nodes = [n for n in generated_tree.nodes() if isinstance(n, TerminalNode)]
 
     # Error with itself should be zero. (Error is log-prob sum of likelihood
@@ -47,8 +47,8 @@ def test_node_embedding():
     assert torch.all(torch.isfinite(out))
 
 def test_grammar_encoder(set_seed):
-    grammar = SceneGrammar(root_node_type)
-    generated_tree = grammar(inst_dict)
+    grammar = SceneGrammar(root_node_type, inst_dict)
+    generated_tree = grammar()
     observed_nodes = [n for n in generated_tree.nodes() if isinstance(n, TerminalNode)]
     meta_tree = SceneGrammar.make_meta_scene_tree(root_node_type)
 

@@ -10,7 +10,7 @@ import pyro
 import pyro.distributions as dist
 import torch
 
-from spatial_scene_grammars.tree import *
+from spatial_scene_grammars.scene_grammar import *
 from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
 from spatial_scene_grammars.sampling import *
@@ -30,7 +30,7 @@ def set_seed(request):
     torch.manual_seed(request.param)
 
 def test_rejection(set_seed):
-    grammar = SceneGrammar(root_node_type)
+    grammar = SceneGrammar(root_node_type, inst_dict)
     trees, success = sample_tree_from_root_type_with_constraints(
         root_node_type,
         inst_dict,

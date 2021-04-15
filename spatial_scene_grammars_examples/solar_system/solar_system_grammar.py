@@ -12,7 +12,7 @@ import pyro.distributions as dist
 
 from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
-from spatial_scene_grammars.tree import *
+from spatial_scene_grammars.scene_grammar import *
 from spatial_scene_grammars.sampling import *
 
 class OrbitalBody(GeometricSetNode):

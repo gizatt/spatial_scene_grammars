@@ -10,7 +10,7 @@ import pyro
 import pyro.distributions as dist
 import torch
 
-from spatial_scene_grammars.tree import *
+from spatial_scene_grammars.scene_grammar import *
 from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
 
@@ -51,8 +51,8 @@ def test_get_params():
         assert isinstance(params[k], NodeParameter)
 
 def test_grammar_params(set_seed):
-    grammar = SceneGrammar(root_node_type)
-    scene_tree = grammar({"xy": dist.Delta(torch.zeros(2))})
+    grammar = SceneGrammar(root_node_type, inst_dict)
+    scene_tree = grammar()
     assert isinstance(scene_tree, SceneTree)
 
     torch_param_dict = {k: v for k, v in grammar.named_parameters()}
@@ -61,8 +61,8 @@ def test_grammar_params(set_seed):
 
 def test_forward_sampling(set_seed):
     # Sanity checks forward sampling and scoring functions.
-    grammar = SceneGrammar(root_node_type)
-    trace = pyro.poutine.trace(grammar.forward).get_trace(inst_dict)
+    grammar = SceneGrammar(root_node_type, inst_dict)
+    trace = pyro.poutine.trace(grammar.forward).get_trace()
     tree = trace.nodes["_RETURN"]["value"]
 
     root_node = get_tree_root(tree)
@@ -89,8 +89,8 @@ def test_forward_sampling(set_seed):
     
 
 def test_variable_getters(set_seed):
-    grammar = SceneGrammar(root_node_type)
-    generated_tree = grammar.forward(inst_dict)
+    grammar = SceneGrammar(root_node_type, inst_dict)
+    generated_tree = grammar.forward()
 
     # Not a detailed test, but make sure these calls don't fail,
     # and agree with each other.
@@ -117,17 +117,17 @@ def test_meta_scene_tree(set_seed):
     meta_tree = SceneGrammar.make_meta_scene_tree(root_node_type)
 
 def test_grammar_parameter_update(set_seed):
-    grammar = SceneGrammar(root_node_type)
-    default_tree = grammar(inst_dict)
+    grammar = SceneGrammar(root_node_type, inst_dict)
+    default_tree = grammar()
 
     # Scoring tree should be the same as the tree score.
-    orig_tree_rerun_prob = grammar.get_tree_generation_log_prob(default_tree, inst_dict)
+    orig_tree_rerun_prob = grammar.score(default_tree)
     orig_tree_prob = default_tree.get_log_prob()
     assert torch.isclose(orig_tree_prob, orig_tree_rerun_prob)
     
     # Change parameters of root node children
     grammar.params_by_node_type[root_node_type]["child_probs"].set(torch.tensor([1.0, 0.0, 0.0, 0.0]))
-    new_tree = grammar(inst_dict)
+    new_tree = grammar()
     assert len(new_tree.find_nodes_by_type(NorthRoom)) == 1
     assert len(new_tree.find_nodes_by_type(SouthRoom)) == 0
     assert len(new_tree.find_nodes_by_type(WestRoom)) == 0
@@ -135,7 +135,7 @@ def test_grammar_parameter_update(set_seed):
 
     # See that we can re-score both trees under new params, and that the
     # orig tree's score has changed.
-    orig_tree_rerun_prob = grammar.get_tree_generation_log_prob(default_tree, inst_dict)
+    orig_tree_rerun_prob = grammar.score(default_tree)
     orig_tree_prob = default_tree.get_log_prob()
     assert not torch.isclose(orig_tree_prob, orig_tree_rerun_prob)
 

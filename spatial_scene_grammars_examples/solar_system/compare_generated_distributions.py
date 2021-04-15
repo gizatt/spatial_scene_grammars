@@ -1,5 +1,5 @@
 from spatial_scene_grammars_examples.solar_system.solar_system_grammar import *
-from spatial_scene_grammars.tree import get_tree_root
+from spatial_scene_grammars.scene_grammar import get_tree_root
 import numpy as np
 import matplotlib.pyplot as plt
 

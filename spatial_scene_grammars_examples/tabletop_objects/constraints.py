@@ -19,7 +19,7 @@ from pyro.contrib.autoname import name_count
 
 from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
-from spatial_scene_grammars.tree import *
+from spatial_scene_grammars.scene_grammar import *
 from spatial_scene_grammars.factors import *
 from spatial_scene_grammars.transform_utils import *
 from spatial_scene_grammars.drake_interop import *

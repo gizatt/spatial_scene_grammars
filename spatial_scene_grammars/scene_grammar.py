@@ -8,6 +8,7 @@ import torch
 
 from .nodes import NonTerminalNode, TerminalNode, Node, NodeParameter
 from .rules import ProductionRule
+from .scene_generative_program import SceneGenerativeProgram
 
 
 def get_tree_root(tree):
@@ -19,15 +20,18 @@ def get_tree_root(tree):
     return root_node
 
 
-class SceneGrammar(torch.nn.Module):
+class SceneGrammar(SceneGenerativeProgram):
     '''
-    Manages a grammar: given a root node type, provides
-    ability to sample trees under given parameter settings.
+    Manages a scene grammar that produces scene trees by composition
+    of subclasses of the node types in this repo.
     '''
 
-    def __init__(self, root_node_type, do_sanity_checks=True):
+    def __init__(self, root_node_type, root_node_instantiation_dict, do_sanity_checks=True):
+        ''' Given a root node type and an instantiation dict specifying its
+        derived variable distributions, prepares this grammar for use. '''
         super().__init__()
         self.root_node_type = root_node_type
+        self.root_node_instantiation_dict = root_node_instantiation_dict
         self.do_sanity_checks = do_sanity_checks
         self.params_by_node_type = {}
         # But our database of what parameters exist for each node type.
@@ -37,8 +41,11 @@ class SceneGrammar(torch.nn.Module):
             for name, param in params.items():
                 self.register_parameter("%s:%s" % (node_type.__name__, name), param.get_unconstrained_value())
 
-    def get_current_parameter_values(self):
-        # Gets the current *constrained** parameter values.
+    def get_node_params_by_node_type(self):
+        '''
+        Gets a dict of the parameter values (keyed by node type, values are
+        NodeParameter instances).
+        '''
         return self.params_by_node_type            
 
     @staticmethod
@@ -75,18 +82,18 @@ class SceneGrammar(torch.nn.Module):
                     scene_tree = self._generate_from_node_recursive(scene_tree, child_node)
         return scene_tree
 
-    def forward(self, root_node_instantiation_dict):
+    def forward(self):
         # Samples a tree, ensuring our stored parameters get substituted
         # into every node that is generated.
         scene_tree = SceneTree()
         root_node = self._spawn_node_with_our_params(self.root_node_type)
-        root_node.instantiate(root_node_instantiation_dict)
+        root_node.instantiate(self.root_node_instantiation_dict)
         scene_tree.add_node(root_node)
         return self._generate_from_node_recursive(scene_tree, root_node)
 
-    def _regen_tree_under_new_params(self, scene_tree, root_node_instantiation_dict):
+    def _regen_tree_under_new_params(self, scene_tree):
         target_root = get_tree_root(scene_tree)
-        node_queue = [(target_root, root_node_instantiation_dict, None)]
+        node_queue = [(target_root, self.root_node_instantiation_dict, None)]
         new_tree = SceneTree()
         while len(node_queue) > 0:
             # Create the clone node.
@@ -123,15 +130,14 @@ class SceneGrammar(torch.nn.Module):
                     node_queue.append((target_child, new_child_dict, resampled_node))
         return new_tree
 
-    def get_tree_generation_log_prob(self, scene_tree, root_node_instantiation_dict):
+    def score(self, scene_tree):
         ''' Scores given tree under this grammar using the currently stored
         parameter values and node attributes. '''
-
         # Regenerate the tree using our local parameter store, conditioning
         # the actual sampling to take the target scene tree values.
-        new_tree = self._regen_tree_under_new_params(scene_tree, root_node_instantiation_dict)
+        new_tree = self._regen_tree_under_new_params(scene_tree)
         return new_tree.get_log_prob()
-        
+
     @staticmethod
     def make_meta_scene_tree(root_node_type):
         ''' Given a root node, generates a meta-tree of node types (without

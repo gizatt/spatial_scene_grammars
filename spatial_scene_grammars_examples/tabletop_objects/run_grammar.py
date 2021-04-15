@@ -17,7 +17,7 @@ from spatial_scene_grammars_examples.tabletop_objects.constraints import *
 
 from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
-from spatial_scene_grammars.tree import *
+from spatial_scene_grammars.scene_grammar import *
 from spatial_scene_grammars.sampling import *
 from spatial_scene_grammars.factors import *
 

@@ -4,7 +4,7 @@ import torch
 import torch.distributions.constraints as constraints
 from torch.nn.parameter import Parameter
 
-from spatial_scene_grammars.tree import *
+from spatial_scene_grammars.scene_grammar import *
 from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.constraints import *
 

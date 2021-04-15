@@ -21,7 +21,7 @@ from pydrake.all import (
 )
 import pydrake.geometry as pydrake_geom
 
-from .tree import get_tree_root
+from .scene_grammar import get_tree_root
 from .drake_interop import torch_tf_to_drake_tf, resolve_catkin_package_path, default_friction
 from .serialization_sdf import save_sdf_with_node_geometry
 

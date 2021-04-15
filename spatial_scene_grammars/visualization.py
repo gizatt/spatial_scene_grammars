@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from spatial_scene_grammars.transform_utils import *
-from spatial_scene_grammars.tree import get_tree_root
+from spatial_scene_grammars.scene_grammar import get_tree_root
 
 def rgb_2_hex(rgb):
     # Turn a list of R,G,B elements (any indexable list

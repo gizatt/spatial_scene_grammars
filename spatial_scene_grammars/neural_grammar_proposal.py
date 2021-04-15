@@ -17,7 +17,7 @@ from spatial_scene_grammars.nodes import (
     IndependentSetNode,
     AndNode
 )
-from spatial_scene_grammars.tree import (
+from spatial_scene_grammars.scene_grammar import (
     SceneTree, get_tree_root
 )
 from spatial_scene_grammars.torch_utils import (
@@ -29,8 +29,8 @@ def estimate_observation_likelihood(candidate_nodes, observed_nodes, gaussian_va
                                     detach_first=False, detach_second=False):
     # Dumbest possible version: Chamfer distance of like types, scored according to
     # a gaussian error model of given variance.
-    # This is *not* a good observation model, since it doesn't enforce one-to-one
-    # correspondence, but I'm using it to get off the ground.
+    # Not an ideal observation model, since it doesn't enforce one-to-one
+    # correspondence, but it's not totally baseless.
     total_log_prob = torch.tensor([0.])
     error_distribution = dist.Normal(0., gaussian_variance)
     for node in candidate_nodes:
@@ -56,12 +56,11 @@ class NodeEmbedding(torch.nn.Module):
     ''' Takes a node class (instantiated, but it doesn't matter with what)
         and prepares an embedding module for it that will transform the
         set of local variables of the node into a fixed size output. '''
-    def __init__(self, node_prototype, output_size):
+    def __init__(self, node_prototype, output_size, hidden_size=128):
         super().__init__()
         self.input_size = node_prototype.get_num_continuous_variables()
         self.output_size = output_size
         if self.input_size > 0:
-            hidden_size = 128
             self.fc1 = torch.nn.Linear(self.input_size, hidden_size)
             self.fc2 = torch.nn.Linear(hidden_size, self.output_size)
         else:
@@ -389,6 +388,7 @@ class GrammarEncoder(torch.nn.Module):
         return proposal_trace.nodes["_RETURN"]["value"], total_ll, total_nonreparam_ll
 
     def get_product_weights_and_inclusion_lls(self, meta_tree, x):
+        # TODO: Should this be a grammar function?
         # Top-down, calculate product weights and production inclusion probalities
         # for the potential children.
         starting_node = get_tree_root(meta_tree)
@@ -429,6 +429,8 @@ class GrammarEncoder(torch.nn.Module):
         return inclusion_log_likelihood_per_node, product_weights_per_node
 
     def get_variable_distributions_for_meta_node(self, meta_node, x):
+        # Implements a mean-field approx for the derived and local variables
+        # of the given meta node, using the meta-node's variable sizing info.
         assert meta_node in self.meta_tree.nodes
 
         all_inds = self.node_output_info[meta_node]
