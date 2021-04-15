@@ -125,8 +125,8 @@ class GrammarEncoder(torch.nn.Module):
                     raise NotImplementedError("Don't know how to encode Nonterminal type %s" % node.__class__.__name__)
             else:
                 product_weight_inds = []
-            num_derived_variables = sum(np.prod(shape) for shape in node.get_derived_variable_info().values())
-            num_local_variables = sum(np.prod(shape) for shape in node.get_local_variable_info().values())
+            num_derived_variables = sum(np.prod(info.shape) for info in node.get_derived_variable_info().values())
+            num_local_variables = sum(np.prod(info.shape) for info in node.get_local_variable_info().values())
             self.node_output_info[node] = NodeOutputInds(
                 product_weight_inds=product_weight_inds,
                 derived_variable_means_inds=add_elems(num_derived_variables),
@@ -303,7 +303,7 @@ class GrammarEncoder(torch.nn.Module):
             # sample them.
             all_inds = self.node_output_info[meta_node]
             
-            def pack_dict(dict_of_shapes, z):
+            def pack_dict(dict_of_infos, z):
                 # Dangerously assumes deterministic orders...
                 # The complete mapping per-variable-name for each node of the
                 # meta-tree into the encoded grammar vector could conceivably
@@ -311,9 +311,9 @@ class GrammarEncoder(torch.nn.Module):
                 # blocks?
                 out_dict = {}
                 k = 0
-                for key, shape in dict_of_shapes.items():
-                    k_this = np.prod(shape)
-                    out_dict[key] = z[k:(k + k_this)].reshape(shape)
+                for key, info in dict_of_infos.items():
+                    k_this = np.prod(info.shape)
+                    out_dict[key] = z[k:(k + k_this)].reshape(info.shape)
                     k += k_this
                 return out_dict
         

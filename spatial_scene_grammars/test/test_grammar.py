@@ -20,7 +20,7 @@ torch.set_default_tensor_type(torch.DoubleTensor)
 pyro.enable_validation(True)
 
 root_node_type = Building
-inst_dict = {"xy": dist.Delta(torch.zeros(2))}
+inst_dict = {"xy": dist.Normal(torch.zeros(2), torch.ones(2)*0.001)}
 
 def assert_identical_dicts_of_tensors(d1, d2):
     for key, value in d1.items():

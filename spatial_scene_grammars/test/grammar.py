@@ -15,7 +15,7 @@ pyro.enable_validation(True)
 class HasOnlyXyDerivedVariablesMixin():
     @classmethod
     def get_derived_variable_info(cls):
-        return {"xy": (2,)}
+        return {"xy": NodeVariableInfo(shape=(2,))}
 
 # Mixin must come first, since it's overriding a class method
 # also provided by the base node type.
@@ -88,10 +88,10 @@ class Table(HasOnlyXyDerivedVariablesMixin, OrNode):
 class ColoredObject(HasOnlyXyDerivedVariablesMixin, TerminalNode):
     @classmethod
     def get_local_variable_info(cls):
-        return {"color": (3,)}
+        return {"color": NodeVariableInfo(shape=(3,), support=constraints.unit_interval)}
     def get_local_variable_dists(self, derived_variable_values):
         return {
-            "color": dist.Normal(torch.zeros(3), torch.ones(3))
+            "color": dist.Uniform(torch.zeros(3), torch.ones(3))
         }
 
 class ObjectStack(HasOnlyXyDerivedVariablesMixin, GeometricSetNode):

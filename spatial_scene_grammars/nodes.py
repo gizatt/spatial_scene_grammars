@@ -1,4 +1,5 @@
 from copy import deepcopy
+from collections import namedtuple
 import numpy as np
 import pyro
 import pyro.distributions as dist
@@ -64,6 +65,12 @@ class NodeParameter(torch.nn.Module):
         return self.unconstrained_value
 
 
+class NodeVariableInfo:
+    def __init__(self, shape, support=None):
+        self.shape = shape
+        self.support = support
+
+
 # TODO: Expand to exhaustive list of
 # all continuous distribution constraint / support
 # types. I didn't see any obvious inheritence hierarchy
@@ -127,7 +134,8 @@ class Node():
         ''' 
         Provide a dictionary of derived variables that instances of this
         class will expect to receive at instantiation time.
-        Keys are variable names; values are the expected tensor shapes.
+        Keys are variable names; values are NodeVariableInfo structs
+        encoding expected distribution and shape.
         '''
         return {}
 
@@ -135,8 +143,9 @@ class Node():
     def get_local_variable_info(cls):
         '''
         Provide a dictionary of local variables that instances of this
-        class will produce during instantiation. Keys are attribute names;
-        values are the expected tensor shapes.
+        class will produce during instantiation.
+        Keys are variable names; values are NodeVariableInfo structs
+        encoding expected distribution and shape.
         '''
         return {}
 
@@ -147,30 +156,30 @@ class Node():
         is the sum of the products of the shapes of all of the derived
         and local variables.
         '''
-        all_attr_shapes = {**self.get_derived_variable_info(), **self.get_local_variable_info()}
-        return sum([np.prod(shape) for shape in all_attr_shapes.values()])
+        all_attr_infos = {**self.get_derived_variable_info(), **self.get_local_variable_info()}
+        return sum([np.prod(info.shape) for info in all_attr_infos.values()])
 
-    def _sanity_check_variable_dict(self, input_dict, expected_dict_of_shapes):
+    def _sanity_check_variable_dict(self, input_dict, expected_dict_of_infos):
         '''
         Given a dictionary of distributions keyed by variable names,
         checks that the included keys and corresponding shapes exactly match
-        a dictionary of expected tensor shapes keyed by the same variable names.
+        a dictionary of expected dist types + shapes keyed by the same variable names.
         '''
-        for key, shape in expected_dict_of_shapes.items():
+        for key, info in expected_dict_of_infos.items():
             assert key in input_dict.keys(), "Variable %s not in input in class %s." % (key, self.__class__.__name__)
             value = input_dict[key]
             if isinstance(value, torch.Tensor):
                 got_shape = value.shape
             else:
                 got_shape = input_dict[key].shape()
-            assert got_shape == shape, "Variable %s of wrong shape: %s vs expected %s in class %s." % (key, got_shape, shape, self.__class__.__name__)
+            assert got_shape == info.shape, "Variable %s of wrong shape: %s vs expected %s in class %s." % (key, got_shape, info.shape, self.__class__.__name__)
         for key, value in input_dict.items():
-            assert key in expected_dict_of_shapes.keys(), "Variable %s not expected in class %s." % (key, self.__class__.__name__)
+            assert key in expected_dict_of_infos.keys(), "Variable %s not expected in class %s." % (key, self.__class__.__name__)
             if isinstance(value, torch.Tensor):
                 got_shape = value.shape
             else:
                 got_shape = input_dict[key].shape()
-            shape = expected_dict_of_shapes[key]
+            shape = expected_dict_of_infos[key].shape
             assert got_shape == shape, "Variable %s of wrong shape: %s vs expected %s in class %s." % (key, got_shape, shape, self.__class__.__name__)
 
     def copy_attr_dict_to_self(self, attr_dict):

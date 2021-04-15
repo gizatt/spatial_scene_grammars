@@ -159,6 +159,32 @@ class SceneGrammar(SceneGenerativeProgram):
         return meta_tree
 
 
+class FullyParameterizedGrammar(SceneGenerativeProgram):
+    '''
+    Manages a grammar that follows the same structure as a normal
+    SceneGrammar, but instead of following the node's supplied
+    generative rules, provides parameterization to control all
+    of the choices that can be made in the grammar rollout.
+
+    Used as a representation for parsing.
+    '''
+    def __init__(self, root_node_type, root_node_instantiation_dict, do_sanity_checks=True):
+        ''' Given a root node type and an instantiation dict specifying its
+        derived variable distributions, prepares this grammar for use. '''
+        super().__init__()
+        self.root_node_type = root_node_type
+        self.root_node_instantiation_dict = root_node_instantiation_dict
+        self.do_sanity_checks = do_sanity_checks
+        self.params_by_node_type = {}
+        # But our database of what the decision making (and corresponding parameters)
+        # that is done by each node type.
+        for node_type in SceneGrammar.get_all_types_in_grammar(root_node_type):
+            params = node_type.get_default_parameters()
+            self.params_by_node_type[node_type] = params
+            for name, param in params.items():
+                self.register_parameter("%s:%s" % (node_type.__name__, name), param.get_unconstrained_value())
+
+
 class SceneTree(nx.DiGraph):
     def __init__(self):
         nx.DiGraph.__init__(self)
