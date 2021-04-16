@@ -4,6 +4,7 @@ import torch
 import torch.distributions.constraints as constraints
 from torch.nn.parameter import Parameter
 
+from spatial_scene_grammars.torch_utils import ConstrainedParameter
 from spatial_scene_grammars.scene_grammar import *
 from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.constraints import *
@@ -27,8 +28,8 @@ class Building(HasOnlyXyDerivedVariablesMixin, IndependentSetNode):
     @classmethod
     def get_default_parameters(cls):
         return {
-            "room_spacing": NodeParameter(torch.tensor([5.]), constraint=constraints.positive),
-            "child_probs": NodeParameter(torch.tensor([0.5, 0.5, 0.5, 0.5]), constraint=constraints.unit_interval)
+            "room_spacing": ConstrainedParameter(torch.tensor([5.]), constraint=constraints.positive),
+            "child_probs": ConstrainedParameter(torch.tensor([0.5, 0.5, 0.5, 0.5]), constraint=constraints.unit_interval)
         }
     def get_derived_variable_dists_for_children(self, child_types):
         all_dist_sets = []

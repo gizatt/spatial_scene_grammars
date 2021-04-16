@@ -1,3 +1,4 @@
+from collections import namedtuple
 from functools import partial
 import networkx as nx
 
@@ -6,7 +7,8 @@ from pyro.contrib.autoname import scope, name_count
 import pyro.distributions as dist
 import torch
 
-from .nodes import NonTerminalNode, TerminalNode, Node, NodeParameter
+from .torch_utils import ConstrainedParameter
+from .nodes import NonTerminalNode, TerminalNode, Node
 from .rules import ProductionRule
 from .scene_generative_program import SceneGenerativeProgram
 
@@ -44,7 +46,7 @@ class SceneGrammar(SceneGenerativeProgram):
     def get_node_params_by_node_type(self):
         '''
         Gets a dict of the parameter values (keyed by node type, values are
-        NodeParameter instances).
+        ConstrainedParameter instances).
         '''
         return self.params_by_node_type            
 
@@ -168,6 +170,17 @@ class FullyParameterizedGrammar(SceneGenerativeProgram):
 
     Used as a representation for parsing.
     '''
+
+    MeanFieldInfo = namedtuple("MeanFieldInfo", [
+        "means", # Parameter
+        "vars"   # Parameter of matching size
+    ])
+    NodeParams = namedtuple("NodeParams", [
+        "child_weights", # Parameter; Interpreted differently according to the type of node.
+        "derived_attrs", # OrderedDict of MeanFieldInfo by attr name
+        "local_attrs", # OrderedDict of MeanFieldInfo by attr name
+    ])
+
     def __init__(self, root_node_type, root_node_instantiation_dict, do_sanity_checks=True):
         ''' Given a root node type and an instantiation dict specifying its
         derived variable distributions, prepares this grammar for use. '''
@@ -175,10 +188,21 @@ class FullyParameterizedGrammar(SceneGenerativeProgram):
         self.root_node_type = root_node_type
         self.root_node_instantiation_dict = root_node_instantiation_dict
         self.do_sanity_checks = do_sanity_checks
+
         self.params_by_node_type = {}
         # But our database of what the decision making (and corresponding parameters)
         # that is done by each node type.
         for node_type in SceneGrammar.get_all_types_in_grammar(root_node_type):
+            # Possible children of this node?
+            prototype_node = node_type.init_with_default_parameters()
+            all_child_types = prototype_node.get_maximal_child_type_list()
+
+
+            # Attributes + their supports of this node?
+            derived_attr_infos = node_type.get_derived_variable_info()
+            local_attr_infos = node_type.get_local_variable_info()
+
+
             params = node_type.get_default_parameters()
             self.params_by_node_type[node_type] = params
             for name, param in params.items():

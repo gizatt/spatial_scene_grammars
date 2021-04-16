@@ -8,9 +8,10 @@ from pyro.distributions.torch_distribution import (
 )
 from pyro.contrib.autoname import scope
 import torch
-from torch.distributions import constraints, transform_to
+from torch.distributions import constraints
 
 from .distributions import VectorCappedGeometricDist
+from .torch_utils import ConstrainedParameter
 
 import pydrake
 from pydrake.all import (
@@ -18,6 +19,7 @@ from pydrake.all import (
     SpatialInertia,
     UnitInertia
 )
+
 
 # Global name store for avoiding name collisions.
 class NodeNameManager():
@@ -34,35 +36,10 @@ class NodeNameManager():
         return class_name + "_%d" % n
 node_name_store = NodeNameManager()
 
+
 def trace_to_observe_dict(trace):
     return {key: site["value"] for key, site in trace.nodes.items()
             if site["type"] is "sample"}
-
-class NodeParameter(torch.nn.Module):
-    # Based heavily on pyro's constrained param system, but detached
-    # from a global param store.
-    def __init__(self, init_value, constraint=constraints.real):
-        super().__init__()
-        self.constraint = constraint
-        self.unconstrained_value = None
-        self.set(init_value)
-    def set_unconstrained(self, unconstrained_value):
-        if self.unconstrained_value is None:
-            self.unconstrained_value = torch.nn.Parameter(unconstrained_value)
-        else:
-            self.unconstrained_value.data = unconstrained_value
-    def set(self, constrained_value):
-        with torch.no_grad():
-            unconstrained_value = transform_to(self.constraint).inv(constrained_value)
-            unconstrained_value = unconstrained_value.contiguous()
-        self.set_unconstrained(unconstrained_value)
-    def get_value(self):
-        constrained_value = transform_to(self.constraint)(self.unconstrained_value)
-        return constrained_value
-    def __call__(self):
-        return self.get_value()
-    def get_unconstrained_value(self):
-        return self.unconstrained_value
 
 
 class NodeVariableInfo:
@@ -120,7 +97,7 @@ class Node():
     @classmethod
     def get_default_parameters(cls):
         ''' Provide a dictionary of default values of parameters, keyed by
-        their names, as NodeParameter objects. They will be wrapped
+        their names, as ConstrainedParameter objects. They will be wrapped
         tracked by the containing grammar, and stored both in self.parameters
         and as members of the class (i.e. parameter named "foo" will be at self.foo)
         when the class is constructed. '''

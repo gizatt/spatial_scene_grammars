@@ -13,6 +13,7 @@ import torch
 from spatial_scene_grammars.scene_grammar import *
 from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
+from spatial_scene_grammars.torch_utils import ConstrainedParameter
 
 from spatial_scene_grammars.test.grammar import *
 
@@ -48,7 +49,7 @@ def test_get_params():
     params = building.get_parameters()
     for k in ["room_spacing", "child_probs"]:
         assert k in params.keys()
-        assert isinstance(params[k], NodeParameter)
+        assert isinstance(params[k], ConstrainedParameter)
 
 def test_grammar_params(set_seed):
     grammar = SceneGrammar(root_node_type, inst_dict)
