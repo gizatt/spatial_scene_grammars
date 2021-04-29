@@ -52,6 +52,22 @@ def test_VectorCappedGeometricDist():
         target_ll = np.log(target_p)
         assert np.allclose(ll, target_ll), "ll %f vs %f at %d" % (ll, target_ll, stop_k) 
 
+def test_LeftSidedRepeatingOnesDist():
+    N = 5
+    weights = torch.arange(0, N+1) + 1.
+    weights /= weights.sum()
+    print(weights)
+    dist = LeftSidedRepeatingOnesDist(categorical_probs=weights, validate_args=True)
+    vec = dist.sample()
+    assert vec.shape == (N,)
+
+    for k in range(N+1):
+        test_vec = torch.zeros(N).int()
+        test_vec[:k] = 1
+        ll = dist.log_prob(test_vec).item()
+        target_ll = torch.log(weights[k])
+        assert np.allclose(ll, target_ll), "ll %f vs %f" % (ll, target_ll)
+
 
 if __name__ == "__main__":
     pytest.main()
