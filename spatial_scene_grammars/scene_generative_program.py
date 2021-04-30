@@ -17,6 +17,9 @@ class SceneGenerativeProgram(torch.nn.Module):
 
     def forward(self):
         # Sample scene using current parameter values.
+        # A pyro.poutine.trace() that wraps this method should
+        # grab all internal sample sites, and I think its log_prob_sum
+        # should match the output from score().
         raise NotImplementedError()
 
     def score(self, **kwargs):

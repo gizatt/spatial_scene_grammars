@@ -189,7 +189,8 @@ class Node():
 
     def instantiate(self, derived_variable_distributions,
                     observed_derived_variables=None,
-                    observed_local_variables=None):
+                    observed_local_variables=None,
+                    local_variable_distributions_override=None):
         '''
         Given a dictionary of derived variable distributions (matching
         the expected derived variables from `get_derived_variable_info`):
@@ -200,6 +201,9 @@ class Node():
         distribution set should match the shapes from `get_local_variable_info`).
         3) Samples the local variables and stores them as
         correspondingly-named attributes of the class.
+
+        If local variable distributions are supplied, they'll be used
+        rather than the class's get_local_variable_dists.
 
         The indirection here allows subclass implementation of
         `get_local_variable_dists` to focus on just spitting out the right
@@ -222,9 +226,12 @@ class Node():
             )
         # TODO(gizatt) Is this too risky?
         self.copy_attr_dict_to_self(self.derived_variable_values)
-        
-        # Call instantiate implementation.
-        local_variable_distributions = self.get_local_variable_dists(self.derived_variable_values)
+
+        if local_variable_distributions_override is None:
+            # Call instantiate implementation.
+            local_variable_distributions = self.get_local_variable_dists(self.derived_variable_values)
+        else:
+            local_variable_distributions = local_variable_distributions_override
 
         # Sanity-check output.
         if self.do_sanity_checks:
@@ -323,11 +330,15 @@ class NonTerminalNode(Node):
         of that list. '''
         raise NotImplementedError("Override get_maximal_child_type_list.")
 
-    def sample_children(self, observed_child_types=None):
+    def sample_children(self, observed_child_types=None,
+                        child_inclusion_dist_override=None):
         ''' Samples a list of child types for this node. '''
         # Get distribution over children.
         child_type_list = self.get_maximal_child_type_list()
-        child_inclusion_dist = self._sample_children_impl()
+        if child_inclusion_dist_override:
+            child_inclusion_dist = child_inclusion_dist_override
+        else:
+            child_inclusion_dist = self._sample_children_impl()
         if self.do_sanity_checks:
             assert child_inclusion_dist.event_shape == (len(child_type_list),), \
                 "Inclusion dist %s has event_shape %s vs child list %s" % (
@@ -481,6 +492,7 @@ class GeometricSetNode(NonTerminalNode):
         assert child_type is not None
         self.child_types = [child_type] * max_repeats
         self.max_repeats = max_repeats
+        self.geometric_prob = geometric_prob
         if geometric_prob == 0.:
             # Set up placeholder distribution that will never produce
             # children.

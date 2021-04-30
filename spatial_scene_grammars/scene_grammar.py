@@ -1,4 +1,4 @@
-from collections import namedtuple
+from collections import namedtuple, OrderedDict
 from functools import partial
 import networkx as nx
 
@@ -6,11 +6,16 @@ import pyro
 from pyro.contrib.autoname import scope, name_count
 import pyro.distributions as dist
 import torch
+import torch.distributions.constraints as constraints
 
 from .torch_utils import ConstrainedParameter
-from .nodes import NonTerminalNode, TerminalNode, Node
+from .nodes import (
+    NonTerminalNode, TerminalNode, Node,
+    AndNode, OrNode, GeometricSetNode, IndependentSetNode
+)
 from .rules import ProductionRule
 from .scene_generative_program import SceneGenerativeProgram
+from .distributions import LeftSidedRepeatingOnesDist
 
 
 def get_tree_root(tree):
@@ -67,9 +72,7 @@ class SceneGrammar(SceneGenerativeProgram):
         return node_type(parameters=self.params_by_node_type[node_type])
 
     def _generate_from_node_recursive(self, scene_tree, parent_node):
-        if isinstance(parent_node, TerminalNode):
-            return scene_tree
-        else:
+        if isinstance(parent_node, NonTerminalNode):
             # Choose what gets generated.
             child_types = parent_node.sample_children()
             child_derived_dicts = parent_node.get_derived_variable_dists_for_children(child_types)
@@ -80,8 +83,7 @@ class SceneGrammar(SceneGenerativeProgram):
                 child_node.instantiate(child_dict)
                 scene_tree.add_node(child_node)
                 scene_tree.add_edge(parent_node, child_node)
-                if isinstance(child_node, NonTerminalNode):
-                    scene_tree = self._generate_from_node_recursive(scene_tree, child_node)
+                scene_tree = self._generate_from_node_recursive(scene_tree, child_node)
         return scene_tree
 
     def forward(self):
@@ -151,13 +153,14 @@ class SceneGrammar(SceneGenerativeProgram):
         node_queue = [root_node]
         while len(node_queue) > 0:
             node = node_queue.pop(0)
+            if isinstance(node, TerminalNode):
+                continue
             new_node_types = node.get_maximal_child_type_list()
             for new_node_type in new_node_types:
                 new_node = new_node_type.init_with_default_parameters()
                 meta_tree.add_node(new_node)
                 meta_tree.add_edge(node, new_node)
-                if isinstance(new_node, NonTerminalNode):
-                    node_queue.append(new_node)
+                node_queue.append(new_node)
         return meta_tree
 
 
@@ -172,8 +175,8 @@ class FullyParameterizedGrammar(SceneGenerativeProgram):
     '''
 
     MeanFieldInfo = namedtuple("MeanFieldInfo", [
-        "means", # Parameter
-        "vars"   # Parameter of matching size
+        "mean", # Parameter
+        "var"   # Parameter of matching size
     ])
     NodeParams = namedtuple("NodeParams", [
         "child_weights", # Parameter; Interpreted differently according to the type of node.
@@ -193,20 +196,149 @@ class FullyParameterizedGrammar(SceneGenerativeProgram):
         # But our database of what the decision making (and corresponding parameters)
         # that is done by each node type.
         for node_type in SceneGrammar.get_all_types_in_grammar(root_node_type):
-            # Possible children of this node?
-            prototype_node = node_type.init_with_default_parameters()
-            all_child_types = prototype_node.get_maximal_child_type_list()
+            self._add_params_for_node_type(node_type)
 
+    def _add_params_for_node_type(self, node_type):
+        # Sets up the NodeParams entry for this node type.
+        
+        # Set up child_weights by looking at the child set of this node.
+        node = node_type.init_with_default_parameters()
+        if isinstance(node, NonTerminalNode):
+            all_child_types = node.get_maximal_child_type_list()
+            if isinstance(node, AndNode):
+                child_weights = ConstrainedParameter(torch.tensor([]))
+            elif isinstance(node, OrNode):
+                child_weights = ConstrainedParameter(node.production_weights.detach(),
+                                                     constraint=constraints.simplex)
+            elif isinstance(node, IndependentSetNode):
+                child_weights = ConstrainedParameter(node.production_probs.detach(),
+                                                     constraint=constraints.unit_interval)
+            elif isinstance(node, GeometricSetNode):
+                p = node.geometric_prob
+                if isinstance(p, torch.Tensor):
+                    p = p.detach()
+                # Start with a prior indicating mirroring the original node's chance
+                # of sampling each number of children.
+                # TODO: Slight error on the probability of picking the final
+                # child, since the probability is actually a bit higher due to the
+                # truncation.
+                n_children_choices = torch.arange(0, len(node.child_types) + 1)
+                geometric_child_choice_probs = torch.exp(dist.Geometric(p).log_prob(n_children_choices))
+                child_weights = ConstrainedParameter(geometric_child_choice_probs,
+                                                     constraint=constraints.simplex)
+            else:
+                raise NotImplementedError("Don't know how to encode Nonterminal type %s" % node.__class__.__name__)
+            self.register_parameter("%s:%s" % (node_type.__name__, "child_weights"),
+                                    child_weights.get_unconstrained_value())
+        else:
+            child_weights = None
 
-            # Attributes + their supports of this node?
-            derived_attr_infos = node_type.get_derived_variable_info()
-            local_attr_infos = node_type.get_local_variable_info()
+        # Create mean field approximations of the continuous variables
+        # of this node type.
+        def create_mean_field_params(dict_of_variable_infos):
+            param_dict = OrderedDict()
+            for key, info in dict_of_variable_infos.items():
+                if info.support is not None:
+                    raise NotImplementedError("Constrained mean-field estimates not implemented for type ", type(info.support))
+                mean = torch.nn.Parameter(torch.zeros(info.shape))
+                var = torch.nn.Parameter(torch.ones(info.shape))
+                self.register_parameter("%s:%s" % (node_type.__name__, key + "_mean"), mean)
+                self.register_parameter("%s:%s" % (node_type.__name__, key + "_var"), var)
+                param_dict[key] = FullyParameterizedGrammar.MeanFieldInfo(
+                    mean=mean,
+                    var=var
+                )
+            return param_dict
 
+        derived_attr_infos = node_type.get_derived_variable_info()
+        derived_attrs = create_mean_field_params(derived_attr_infos)
+        local_attr_infos = node_type.get_local_variable_info()
+        local_attrs = create_mean_field_params(local_attr_infos)
 
-            params = node_type.get_default_parameters()
-            self.params_by_node_type[node_type] = params
-            for name, param in params.items():
-                self.register_parameter("%s:%s" % (node_type.__name__, name), param.get_unconstrained_value())
+        # Put entry into the class param listing.
+        self.params_by_node_type[node_type] = FullyParameterizedGrammar.NodeParams(
+            child_weights=child_weights,
+            derived_attrs=derived_attrs,
+            local_attrs=local_attrs
+        )
+
+    def _instantiate_node_from_mean_field(self, node):
+        node_type = type(node)
+        assert node_type in self.params_by_node_type.keys()
+        param_info = self.params_by_node_type[node_type]
+        # Build distributions for sampling both attr types
+        derived_var_dists = {
+            key: dist.Normal(mean_field_info.mean,
+                             mean_field_info.var)
+            for key, mean_field_info in param_info.derived_attrs.items()
+        }
+        local_var_dist = {
+            key: dist.Normal(mean_field_info.mean,
+                             mean_field_info.var)
+            for key, mean_field_info in param_info.local_attrs.items()
+        }
+        node.instantiate(derived_variable_distributions=derived_var_dists,
+                         local_variable_distributions_override=local_var_dist)
+
+    def _sample_children_from_parent_node(self, parent_node):
+        # Creates an overriding child-selecting distribution for
+        # the parent node and samples a set of child types using that
+        # overriding distribution.
+        assert isinstance(parent_node, NonTerminalNode)
+        # Get *constrained* values of the child weights to be used
+        # as child-choosing distribution parameters.
+        child_weights = self.params_by_node_type[type(parent_node)].child_weights()
+        child_candidates = parent_node.get_maximal_child_type_list()
+        # Craft the overriding child inclusion dist by reinterpreting the
+        # constrained child weights appropriately for each node type.
+        if isinstance(parent_node, AndNode):
+            # The complete list of successors is correct.
+            inclusion_dist = dist.Bernoulli(torch.ones(len(child_candidates))).to_event(1)
+        elif isinstance(parent_node, OrNode):
+            # Choose one from the list of successors.
+            inclusion_dist = dist.OneHotCategorical(child_weights)
+        elif isinstance(parent_node, IndependentSetNode):
+            # Independent choose whether to include each.
+            inclusion_dist = dist.Bernoulli(child_weights).to_event(1)
+        elif isinstance(parent_node, GeometricSetNode):
+            # Choose how many children to have and create a vector of
+            # 1's up to that many children.
+            inclusion_dist = LeftSidedRepeatingOnesDist(child_weights)
+        else:
+            raise NotImplementedError("Don't know how to decode Nonterminal type %s" % meta_node.__class__.__name__)
+        
+        return parent_node.sample_children(child_inclusion_dist_override=inclusion_dist)
+
+    def _generate_from_node_recursive(self, scene_tree, parent_node):
+        # Assume parent_node is a fully instantiated node.
+        # If it's nonterminal, choose and instantiate its
+        # children, and call this on each of them.
+        if isinstance(parent_node, NonTerminalNode):
+            # Choose what gets generated.
+            child_types = self._sample_children_from_parent_node(parent_node)
+
+            # Instantiate the node using our mean field params.
+            for child_type in child_types:
+                # Default params will have no influence on node variables,
+                # but this allows us to easily spawn the node.
+                child_node = child_type.init_with_default_parameters()
+                self._instantiate_node_from_mean_field(child_node)
+                scene_tree.add_node(child_node)
+                scene_tree.add_edge(parent_node, child_node)
+                scene_tree = self._generate_from_node_recursive(scene_tree, child_node)
+        return scene_tree
+
+    def forward(self):
+        # Samples a tree, ensuring our stored parameters get substituted
+        # into every node that is generated.
+        scene_tree = SceneTree()
+        root_node = self.root_node_type.init_with_default_parameters()
+        self._instantiate_node_from_mean_field(root_node)
+        scene_tree.add_node(root_node)
+        return self._generate_from_node_recursive(scene_tree, root_node)
+
+    def score(self, scene_tree):
+        raise NotImplementedError()
 
 
 class SceneTree(nx.DiGraph):

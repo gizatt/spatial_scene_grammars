@@ -86,6 +86,9 @@ def test_forward_sampling(set_seed):
         parameters_have_grad = {}
         for name, parameter in grammar.named_parameters():
             parameters_have_grad[name] = parameter.grad is not None
+        # For this particular test grammar, the parameters are all
+        # going to always appear in any tree (since they belong to
+        # the root node). So they all should have gradients.
         assert all(parameters_have_grad.values()), parameters_have_grad
     
 
@@ -140,6 +143,36 @@ def test_grammar_parameter_update(set_seed):
     orig_tree_prob = default_tree.get_log_prob()
     assert not torch.isclose(orig_tree_prob, orig_tree_rerun_prob)
 
+def test_fully_param_grammar(set_seed):
+    # Sanity checks forward sampling and scoring functions.
+    grammar = FullyParameterizedGrammar(root_node_type, inst_dict)
+    trace = pyro.poutine.trace(grammar.forward).get_trace()
+    tree = trace.nodes["_RETURN"]["value"]
+
+    root_node = get_tree_root(tree)
+    tree_ll = tree.get_subtree_log_prob(root_node).detach().numpy()
+    expected_ll = trace.log_prob_sum().detach().numpy()
+    assert np.allclose(tree_ll, expected_ll), "%s vs %s" % (tree_ll, expected_ll)
+
+    # Make sure these calls are identical
+    tree_ll = tree.get_subtree_log_prob(root_node).detach().numpy()
+    tree_ll_shorthand = tree.get_log_prob().detach().numpy()
+    assert np.allclose(tree_ll, tree_ll_shorthand), "%s vs %s" % (tree_ll, tree_ll_shorthand)
+
+    # Make sure gradients go backwards as we expect.
+    rooms = list(tree.successors(root_node))
+    if len(rooms) > 0:
+        tree_ll = tree.get_log_prob()
+        tree_ll.backward()
+        # Collect into a dict so our failure message is more
+        # informative about which parameters don't have grads.
+        parameters_have_grad = {}
+        for name, parameter in grammar.named_parameters():
+            parameters_have_grad[name] = parameter.grad is not None
+        # Not all parameters will have a grad every time (since not
+        # all node types will always be present), but at least
+        # *some* of them should, as a basic sanity check.
+        assert any(parameters_have_grad.values()), parameters_have_grad
 
 if __name__ == "__main__":
     pytest.main()

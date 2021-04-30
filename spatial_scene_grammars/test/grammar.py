@@ -89,7 +89,7 @@ class Table(HasOnlyXyDerivedVariablesMixin, OrNode):
 class ColoredObject(HasOnlyXyDerivedVariablesMixin, TerminalNode):
     @classmethod
     def get_local_variable_info(cls):
-        return {"color": NodeVariableInfo(shape=(3,), support=constraints.unit_interval)}
+        return {"color": NodeVariableInfo(shape=(3,))}
     def get_local_variable_dists(self, derived_variable_values):
         return {
             "color": dist.Uniform(torch.zeros(3), torch.ones(3))
