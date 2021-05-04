@@ -27,7 +27,32 @@ def get_tree_root(tree):
     return root_node
 
 
-class SceneGrammar(SceneGenerativeProgram):
+class SceneGrammarBase(SceneGenerativeProgram):
+    '''
+    Basic form of a grammar derived from nodes from nodes.py
+    '''
+    def __init__(self, root_node_type, root_node_instantiation_dict):
+        super().__init__()
+        self.root_node_type = root_node_type
+        self.root_node_instantiation_dict = root_node_instantiation_dict
+
+    def get_all_types_in_grammar(self):
+        return self.get_all_types_in_grammar_given_root(self.root_node_type)
+
+    @staticmethod
+    def get_all_types_in_grammar_given_root(root_node_type):
+        all_types = set()
+        input_queue = [root_node_type]
+        while len(input_queue) > 0:
+            curr_type = input_queue.pop(0)
+            all_types.add(curr_type)
+            if issubclass(curr_type, NonTerminalNode):
+                for new_type in curr_type.init_with_default_parameters().get_maximal_child_type_list():
+                    if new_type not in all_types:
+                        input_queue.append(new_type)
+        return all_types
+
+class SceneGrammar(SceneGrammarBase):
     '''
     Manages a scene grammar that produces scene trees by composition
     of subclasses of the node types in this repo.
@@ -36,13 +61,14 @@ class SceneGrammar(SceneGenerativeProgram):
     def __init__(self, root_node_type, root_node_instantiation_dict, do_sanity_checks=True):
         ''' Given a root node type and an instantiation dict specifying its
         derived variable distributions, prepares this grammar for use. '''
-        super().__init__()
+        super().__init__(root_node_type=root_node_type,
+                         root_node_instantiation_dict=root_node_instantiation_dict)
         self.root_node_type = root_node_type
         self.root_node_instantiation_dict = root_node_instantiation_dict
         self.do_sanity_checks = do_sanity_checks
         self.params_by_node_type = {}
         # But our database of what parameters exist for each node type.
-        for node_type in self.get_all_types_in_grammar(root_node_type):
+        for node_type in self.get_all_types_in_grammar():
             params = node_type.get_default_parameters()
             self.params_by_node_type[node_type] = params
             for name, param in params.items():
@@ -54,19 +80,6 @@ class SceneGrammar(SceneGenerativeProgram):
         ConstrainedParameter instances).
         '''
         return self.params_by_node_type            
-
-    @staticmethod
-    def get_all_types_in_grammar(root_node_type):
-        all_types = set()
-        input_queue = [root_node_type]
-        while len(input_queue) > 0:
-            curr_type = input_queue.pop(0)
-            all_types.add(curr_type)
-            if issubclass(curr_type, NonTerminalNode):
-                for new_type in curr_type.init_with_default_parameters().get_maximal_child_type_list():
-                    if new_type not in all_types:
-                        input_queue.append(new_type)
-        return all_types
 
     def _spawn_node_with_our_params(self, node_type):
         return node_type(parameters=self.params_by_node_type[node_type])
@@ -164,7 +177,7 @@ class SceneGrammar(SceneGenerativeProgram):
         return meta_tree
 
 
-class FullyParameterizedGrammar(SceneGenerativeProgram):
+class FullyParameterizedGrammar(SceneGrammarBase):
     '''
     Manages a grammar that follows the same structure as a normal
     SceneGrammar, but instead of following the node's supplied
@@ -187,15 +200,14 @@ class FullyParameterizedGrammar(SceneGenerativeProgram):
     def __init__(self, root_node_type, root_node_instantiation_dict, do_sanity_checks=True):
         ''' Given a root node type and an instantiation dict specifying its
         derived variable distributions, prepares this grammar for use. '''
-        super().__init__()
-        self.root_node_type = root_node_type
-        self.root_node_instantiation_dict = root_node_instantiation_dict
+        super().__init__(root_node_type=root_node_type,
+                         root_node_instantiation_dict=root_node_instantiation_dict)
         self.do_sanity_checks = do_sanity_checks
 
         self.params_by_node_type = {}
         # But our database of what the decision making (and corresponding parameters)
         # that is done by each node type.
-        for node_type in SceneGrammar.get_all_types_in_grammar(root_node_type):
+        for node_type in self.get_all_types_in_grammar():
             self._add_params_for_node_type(node_type)
 
     def _add_params_for_node_type(self, node_type):
@@ -240,10 +252,10 @@ class FullyParameterizedGrammar(SceneGenerativeProgram):
             for key, info in dict_of_variable_infos.items():
                 if info.support is not None:
                     raise NotImplementedError("Constrained mean-field estimates not implemented for type ", type(info.support))
-                mean = torch.nn.Parameter(torch.zeros(info.shape))
-                var = torch.nn.Parameter(torch.ones(info.shape))
-                self.register_parameter("%s:%s" % (node_type.__name__, key + "_mean"), mean)
-                self.register_parameter("%s:%s" % (node_type.__name__, key + "_var"), var)
+                mean = ConstrainedParameter(torch.zeros(info.shape))
+                var = ConstrainedParameter(torch.ones(info.shape), constraint=constraints.positive)
+                self.register_parameter("%s:%s" % (node_type.__name__, key + "_mean"), mean.get_unconstrained_value())
+                self.register_parameter("%s:%s" % (node_type.__name__, key + "_var"), var.get_unconstrained_value())
                 param_dict[key] = FullyParameterizedGrammar.MeanFieldInfo(
                     mean=mean,
                     var=var
@@ -262,32 +274,38 @@ class FullyParameterizedGrammar(SceneGenerativeProgram):
             local_attrs=local_attrs
         )
 
-    def _instantiate_node_from_mean_field(self, node):
-        node_type = type(node)
+    def _make_variable_mean_fields(self, node_type):
+        # For a given node type, creates the derived and local
+        # variable mean fields.
         assert node_type in self.params_by_node_type.keys()
         param_info = self.params_by_node_type[node_type]
         # Build distributions for sampling both attr types
         derived_var_dists = {
-            key: dist.Normal(mean_field_info.mean,
-                             mean_field_info.var)
+            key: dist.Normal(mean_field_info.mean(),
+                             mean_field_info.var())
             for key, mean_field_info in param_info.derived_attrs.items()
         }
-        local_var_dist = {
-            key: dist.Normal(mean_field_info.mean,
-                             mean_field_info.var)
+        local_var_dists = {
+            key: dist.Normal(mean_field_info.mean(),
+                             mean_field_info.var())
             for key, mean_field_info in param_info.local_attrs.items()
         }
-        node.instantiate(derived_variable_distributions=derived_var_dists,
-                         local_variable_distributions_override=local_var_dist)
+        return derived_var_dists, local_var_dists
 
-    def _sample_children_from_parent_node(self, parent_node):
-        # Creates an overriding child-selecting distribution for
-        # the parent node and samples a set of child types using that
-        # overriding distribution.
+    def _instantiate_node_from_mean_field(self, node):
+        derived_var_dists, local_var_dists = self._make_variable_mean_fields(type(node))
+        node.instantiate(derived_variable_distributions=derived_var_dists,
+                         local_variable_distributions_override=local_var_dists)
+
+    def _make_inclusion_dist(self, parent_node):
+        # For a given node type, creates its child inclusion dist
+        # from our parameters.
+        node_type = type(parent_node)
         assert isinstance(parent_node, NonTerminalNode)
+        assert node_type in self.params_by_node_type.keys()
         # Get *constrained* values of the child weights to be used
         # as child-choosing distribution parameters.
-        child_weights = self.params_by_node_type[type(parent_node)].child_weights()
+        child_weights = self.params_by_node_type[node_type].child_weights()
         child_candidates = parent_node.get_maximal_child_type_list()
         # Craft the overriding child inclusion dist by reinterpreting the
         # constrained child weights appropriately for each node type.
@@ -306,7 +324,13 @@ class FullyParameterizedGrammar(SceneGenerativeProgram):
             inclusion_dist = LeftSidedRepeatingOnesDist(child_weights)
         else:
             raise NotImplementedError("Don't know how to decode Nonterminal type %s" % meta_node.__class__.__name__)
+        return inclusion_dist
         
+    def _sample_children_from_parent_node(self, parent_node):
+        # Creates an overriding child-selecting distribution for
+        # the parent node and samples a set of child types using that
+        # overriding distribution.
+        inclusion_dist = self._make_inclusion_dist(parent_node)
         return parent_node.sample_children(child_inclusion_dist_override=inclusion_dist)
 
     def _generate_from_node_recursive(self, scene_tree, parent_node):
@@ -338,7 +362,33 @@ class FullyParameterizedGrammar(SceneGenerativeProgram):
         return self._generate_from_node_recursive(scene_tree, root_node)
 
     def score(self, scene_tree):
-        raise NotImplementedError()
+        ''' Scores given tree under this grammar using the grammar's currently
+        stored parameter values, but the scene tree node's stored attributes.'''
+        total_ll = 0.
+        for node in scene_tree.nodes:
+            # Score node attributes vs our mean fields.
+            derived_var_dists, local_var_dists = self._make_variable_mean_fields(type(node))
+            def calc_score(value_dict, dist_dict):
+                # Detach the values
+                detached_value_dict = {key: value.detach() for key, value in value_dict.items()}
+                return node.get_variable_ll_given_dicts(detached_value_dict, dist_dict)
+            total_ll = total_ll + calc_score(
+                node.get_derived_variable_values(),
+                derived_var_dists
+            )
+            total_ll = total_ll + calc_score(
+                node.get_local_variable_values(),
+                local_var_dists
+            )
+
+            # Score node children.
+            if isinstance(node, NonTerminalNode):
+                children = list(scene_tree.successors(node))
+                inclusion_dist = self._make_inclusion_dist(type(node))
+                inclusion_value = node.get_child_indicator_vector(children)
+                total_ll = total_ll + inclusion_dist.log_prob(inclusion_value)
+
+        return total_ll
 
 
 class SceneTree(nx.DiGraph):

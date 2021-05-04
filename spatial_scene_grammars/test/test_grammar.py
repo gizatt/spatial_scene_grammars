@@ -37,7 +37,7 @@ def set_seed(request):
     torch.manual_seed(request.param)
 
 def test_get_all_types():
-    all_types = SceneGrammar.get_all_types_in_grammar(root_node_type)
+    all_types = SceneGrammarBase.get_all_types_in_grammar_given_root(root_node_type)
     expected_types = set([root_node_type, NorthRoom, SouthRoom, EastRoom, WestRoom, Table, ColoredObject, StackedObject, ObjectStack])
     for type in expected_types:
         assert type in all_types

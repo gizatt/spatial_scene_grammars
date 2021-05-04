@@ -18,7 +18,9 @@ from spatial_scene_grammars.nodes import (
     AndNode
 )
 from spatial_scene_grammars.scene_grammar import (
-    SceneTree, get_tree_root
+    SceneGrammarBase,
+    SceneTree,
+    get_tree_root
 )
 from spatial_scene_grammars.torch_utils import (
     inv_softplus, inv_sigmoid
@@ -27,8 +29,8 @@ from spatial_scene_grammars.torch_utils import (
 
 def estimate_observation_likelihood(candidate_nodes, observed_nodes, gaussian_variance,
                                     detach_first=False, detach_second=False):
-    # Dumbest possible version: Chamfer distance of like types, scored according to
-    # a gaussian error model of given variance.
+    # Score the distance between two node sets using a Gaussian penalty on
+    # node-wise Chamfer distance between variables of same-type nodes.
     # Not an ideal observation model, since it doesn't enforce one-to-one
     # correspondence, but it's not totally baseless.
     total_log_prob = torch.tensor([0.])
@@ -56,8 +58,9 @@ class NodeEmbedding(torch.nn.Module):
     ''' Takes a node class (instantiated, but it doesn't matter with what)
         and prepares an embedding module for it that will transform the
         set of local variables of the node into a fixed size output. '''
-    def __init__(self, node_prototype, output_size, hidden_size=128):
+    def __init__(self, node_type, output_size, hidden_size=128):
         super().__init__()
+        node_prototype = node_type.init_with_default_parameters()
         self.input_size = node_prototype.get_num_continuous_variables()
         self.output_size = output_size
         if self.input_size > 0:
@@ -78,65 +81,29 @@ class NodeEmbedding(torch.nn.Module):
 
 
 class GrammarEncoder(torch.nn.Module):
-    ''' Transforms a set of observed nodes to a distribution over
-    grammar parameters for the meta-tree, where the grammar parameters
-    describe derivations through the meta-tree that are likely to
-    generate the observed node. '''
-    def __init__(self, meta_tree, embedding_size):
+    ''' Encodes a set of observed nodes to a distribution over
+    grammar parameters for a specified grammar that might produce
+    those nodes, where the grammar parameters describe derivations
+    through that grammar that are likely to generate the observed nodes.
+    (In other words, this is an inverse procedural model using the
+    specified grammar as the model and the observed node set as the
+    target output.) '''
+    def __init__(self, inference_grammar, embedding_size):
         super().__init__()
+        self.inference_grammar = inference_grammar
         self.embedding_size = embedding_size
-        self.meta_tree = meta_tree
-        self.make_rnn(meta_tree, embedding_size)
-        self.make_embedding_modules(meta_tree, embedding_size)
+        self.make_rnn(inference_grammar, embedding_size)
+        self.make_embedding_modules(inference_grammar, embedding_size)
 
-    def make_rnn(self, meta_tree, embedding_size):
-        # Makes an RNN that directly regresses grammar parameters
-        # defined according to the meta-tree:
-        #   For each node in the meta-tree:
-        #     - If it is nonterminal, regress a replacement set of product weights
-        #       according to the node type (so that any tree generated is still
-        #       feasible w.r.t the original tree).
-        #     - Regress a (mean-field) mean + variance for each continuous variable
-        
-        # Each entry in this dictionary maps a node in the meta tree to indices
-        # into the RNN output for the product weights, local variable means + vars.
-        NodeOutputInds = namedtuple('NodeOutputInds',
-            ['product_weight_inds', 'local_variable_means_inds', 'local_variable_vars_inds',
-            'derived_variable_means_inds', 'derived_variable_vars_inds']
-        )
-        self.node_output_info = {}
-        curr_output_size = 0
-        def add_elems(n):
-            nonlocal curr_output_size
-            inds = range(curr_output_size, curr_output_size + n)
-            curr_output_size += n
-            return inds
-        for node in meta_tree:
-            if isinstance(node, NonTerminalNode):
-                if isinstance(node, AndNode):
-                    product_weight_inds = []
-                elif isinstance(node, OrNode):
-                    product_weight_inds = add_elems(len(node.child_types))
-                elif isinstance(node, IndependentSetNode):
-                    product_weight_inds = add_elems(len(node.child_types))
-                elif isinstance(node, GeometricSetNode):
-                    product_weight_inds = add_elems(len(node.child_types) + 1)
-                else:
-                    raise NotImplementedError("Don't know how to encode Nonterminal type %s" % node.__class__.__name__)
-            else:
-                product_weight_inds = []
-            num_derived_variables = sum(np.prod(info.shape) for info in node.get_derived_variable_info().values())
-            num_local_variables = sum(np.prod(info.shape) for info in node.get_local_variable_info().values())
-            self.node_output_info[node] = NodeOutputInds(
-                product_weight_inds=product_weight_inds,
-                derived_variable_means_inds=add_elems(num_derived_variables),
-                derived_variable_vars_inds=add_elems(num_derived_variables),
-                local_variable_means_inds=add_elems(num_local_variables),
-                local_variable_vars_inds=add_elems(num_local_variables)
-            )
-        
+    def make_rnn(self, inference_grammar, embedding_size):
+        # Makes an RNN that directly regresses grammar parameters of the
+        # inference grammar.
+        assert isinstance(inference_grammar, SceneGrammarBase)
+        x = torch.nn.utils.parameters_to_vector(inference_grammar.parameters())
+        n_parameters = len(x)
+
         # Create the actual RNN.
-        self.hidden_size = curr_output_size
+        self.hidden_size = n_parameters
         self.num_layers = 2
         self.batch_size = 1
         self.rnn = torch.nn.GRU(
@@ -150,13 +117,13 @@ class GrammarEncoder(torch.nn.Module):
             torch.normal(mean=0., std=1., size=(self.num_layers, self.batch_size, self.hidden_size))
         )
         
-    def make_embedding_modules(self, meta_tree, embedding_size):
+    def make_embedding_modules(self, inference_grammar, embedding_size):
         # Make embedding module for each node type.
         self.node_embeddings_by_type = torch.nn.ModuleDict()
-        for node in meta_tree.nodes:
-            if node.__class__ not in self.node_embeddings_by_type.keys():
-                embedding = NodeEmbedding(node, embedding_size)
-                self.node_embeddings_by_type[node.__class__.__name__] = embedding 
+        for node_type in self.inference_grammar.get_all_types_in_grammar():
+            if node_type not in self.node_embeddings_by_type.keys():
+                embedding = NodeEmbedding(node_type, embedding_size)
+                self.node_embeddings_by_type[node_type.__name__] = embedding 
 
     def forward(self, observed_nodes):
         # Initialize RNN
@@ -180,200 +147,17 @@ class GrammarEncoder(torch.nn.Module):
         output = self.final_fc(output)
         # Return the final hidden state, removing the batch dim.
         return output[-1, 0, :]
-    
-    def get_grammar_parameters_from_actual_tree(self, meta_tree, observed_tree, assign_var=0.01):
-        # Descend down the observed tree from the top, figuring out how it
-        # fits into the meta-tree. Once we have correspondences, we can
-        # apply appropriate inverse-transforms to get the corresponding
-        # grammar parameters that would have led (deterministically) to the
-        # observed tree.
-        meta_root = get_tree_root(meta_tree)
-        observed_root = get_tree_root(observed_tree)
-        meta_node_to_observed_node_mapping = {}
-        unexpanded_nodes = [(meta_root, observed_root)]
-        
-        x_reconstructed = torch.zeros(self.hidden_size)
-        x_reconstructed[:] = np.nan
-        def reconstruct_hidden_variables(meta_node, observed_node):
-            nonlocal x_reconstructed
-            all_inds = self.node_output_info[meta_node]
-            derived_attr = observed_node.get_derived_variables_as_vector().detach()
-            if len(derived_attr) > 0:
-                x_reconstructed[all_inds.derived_variable_means_inds] = derived_attr
-                x_reconstructed[all_inds.derived_variable_vars_inds] = inv_softplus(assign_var)
-            local_attr = observed_node.get_local_variables_as_vector().detach()
-            if len(local_attr):
-                x_reconstructed[all_inds.local_variable_means_inds] = local_attr
-                x_reconstructed[all_inds.local_variable_vars_inds] = inv_softplus(assign_var)
-        def reconstruct_hidden_choices(meta_node, observed_node, child_inds):
-            # Hidden choices is a list of the indices of the active children
-            # of meta_node
-            nonlocal x_reconstructed
-            all_inds = self.node_output_info[meta_node]    
-            x_reconstructed[all_inds.product_weight_inds] = 0.
-            assert isinstance(observed_node, NonTerminalNode)
-            if isinstance(observed_node, AndNode):
-                pass # No choices, no appearance in x_reconstructed
-            elif isinstance(observed_node, OrNode):
-                # Invert softmax -- make everything big
-                # TODO this is ugly. Major refactor where the post-transforms
-                # of each variable set (means / vars / etc) are tracked more sensibly
-                # are necessary if this starts panning out.
-                x_reconstructed[all_inds.product_weight_inds] = -10
-                x_reconstructed[all_inds.product_weight_inds[child_inds]] = 10.
-            elif isinstance(observed_node, IndependentSetNode):
-                # Invert sigmoid via logit.
-                desired = torch.zeros(len(all_inds.product_weight_inds))
-                desired[child_inds] = 1.
-                x_reconstructed[all_inds.product_weight_inds] = inv_sigmoid(desired)
-            elif isinstance(observed_node, GeometricSetNode):
-                # Invert Softmax -- make everything big. But remember that the encoding
-                # is a 1-hot encoding of the number of children to have, so convert
-                # from child inds to that.
-                num_children = len(child_inds)
-                x_reconstructed[all_inds.product_weight_inds] = -10.
-                # Tensor conversion so we can use the child_inds tensor to index
-                # into the weight inds.
-                x_reconstructed[all_inds.product_weight_inds[num_children]] = 10.
-            else:
-                raise NotImplementedError("Node type ", observed_node.__class__.__name__)
 
-        while len(unexpanded_nodes) > 0:
-            meta_node, observed_node = unexpanded_nodes.pop(0)
-            reconstruct_hidden_variables(meta_node, observed_node)
-            if isinstance(observed_node, NonTerminalNode):
-                observed_children = list(observed_tree.successors(observed_node))
-                observed_child_types = [type(c) for c in observed_children]
-                meta_children = list(meta_tree.successors(meta_node))
-                child_inds = observed_node.get_child_indices_into_maximal_child_list(observed_child_types)
-                reconstruct_hidden_choices(meta_node, observed_node, child_inds)
-                # Not sure I can trust nx node ordering? If these asserts are true,
-                # ordering is safe.
-                for k, child in enumerate(meta_children):
-                    assert isinstance(child, observed_node.get_maximal_child_type_list()[k])
-                for child_ind, observed_child in zip(child_inds, observed_children):
-                    assert type(meta_children[child_ind]) == type(observed_child)
-                    unexpanded_nodes.append((meta_children[child_ind], observed_child))
-        return x_reconstructed
-
-    def sample_tree_from_grammar_vector(self, meta_tree, x, root_instantiation_dict):
+    def sample_tree_from_grammar_vector(self, x):
+        # Set our inference grammar's parameters accordingly.
         assert len(x.shape) == 1 and x.shape[0] == self.hidden_size
-        # This is largely disgusting to have all in one method and ought
-        # to be supported first-class by the scene tree. But I'm prototyping...
-        
-        def sample_children_from_meta_tree_node(meta_node, new_node):
-            # Samples a child set, creates the new nodes, and calls
-            # the conditioned sample child function on new_node.
-            inds = self.node_output_info[meta_node].product_weight_inds
-            raw_product_weights = x[inds]
-            child_candidates = list(meta_tree.successors(meta_node))
-            assert isinstance(meta_node, NonTerminalNode)
-            if isinstance(meta_node, AndNode):
-                # The complete list of successors is correct.
-                children = child_candidates
-            elif isinstance(meta_node, OrNode):
-                # Choose one from the list of successors.
-                product_weights = torch.nn.functional.softmax(raw_product_weights, dim=0)
-                child_ind = pyro.sample("decode_children_sample",
-                                        dist.Categorical(product_weights))
-                children = [child_candidates[child_ind]]
-            elif isinstance(meta_node, IndependentSetNode):
-                product_weights = torch.sigmoid(raw_product_weights)
-                # Independent choose whether to include each.
-                child_inclusion = pyro.sample("decode_children_sample",
-                                              dist.Bernoulli(product_weights))
-                children = [child_candidates[k] for k, value in enumerate(child_inclusion) if value]
-            elif isinstance(meta_node, GeometricSetNode):
-                # Choose count
-                product_weights = torch.nn.functional.softmax(raw_product_weights, dim=0)
-                num_children = pyro.sample("decode_children_sample",
-                                           dist.Categorical(product_weights))
-                children = child_candidates[:num_children]
-            else:
-                raise NotImplementedError("Don't know how to decode Nonterminal type %s" % meta_node.__class__.__name__)
-            
-            # Get node child info set up, but keep out of our trace.
-            with pyro.poutine.block():
-                new_node.sample_children(observed_child_types=[type(c) for c in children])
-            new_children = [type(meta_child).init_with_default_parameters() for meta_child in children]
-            return children, new_children
+        params = torch.nn.utils.vector_to_parameters(x, self.inference_grammar.parameters())
 
-        def instantiate_node(meta_node, new_node, new_derived_attr_dists):
-            # Pull out the distribution parameters for the local vars, and
-            # sample them.
-            all_inds = self.node_output_info[meta_node]
-            
-            def pack_dict(dict_of_infos, z):
-                # Dangerously assumes deterministic orders...
-                # The complete mapping per-variable-name for each node of the
-                # meta-tree into the encoded grammar vector could conceivably
-                # be generated and stored rather than derived-and-local-vectorized
-                # blocks?
-                out_dict = {}
-                k = 0
-                for key, info in dict_of_infos.items():
-                    k_this = np.prod(info.shape)
-                    out_dict[key] = z[k:(k + k_this)].reshape(info.shape)
-                    k += k_this
-                return out_dict
-        
-            derived_means = x[all_inds.derived_variable_means_inds]
-            derived_vars = torch.nn.functional.softplus(x[all_inds.derived_variable_vars_inds])
-            # Reparam to ensure we can optimize directly without REINFORCE
-            derived_attrs = derived_means + derived_vars * pyro.sample("decode_derived_attrs_sample",
-                                        dist.Normal(torch.zeros(derived_vars.shape),
-                                                    torch.ones(derived_vars.shape)))
-            derived_attrs = pack_dict(meta_node.get_derived_variable_info(), derived_attrs)
-            local_means = x[all_inds.local_variable_means_inds]
-            local_vars = torch.nn.functional.softplus(x[all_inds.local_variable_vars_inds])
-            local_attrs = local_means + local_vars * pyro.sample("decode_local_attrs_sample",
-                                      dist.Normal(torch.zeros(local_means.shape),
-                                                  torch.ones(local_means.shape)))
-            local_attrs = pack_dict(meta_node.get_local_variable_info(), local_attrs)
-        
-            # Get node attributes set up, but keep it out of our trace.
-            with pyro.poutine.block():    
-                new_node.instantiate(
-                    new_derived_attr_dists,
-                    observed_derived_variables=derived_attrs,
-                    observed_local_variables=local_attrs
-                )
-        
-        def make_new_tree():
-            # First choose tree topology by traversing meta-tree.
-            # We're traversing the meta-tree, but building our own
-            # copy of the set of nodes we've traversed at the same time.
-            # This is nasty...
-            meta_root_node = get_tree_root(meta_tree)
-            new_tree = SceneTree()
-            new_root_node = type(meta_root_node).init_with_default_parameters()
-            new_tree.add_node(new_root_node)
-            # Elements are tuple (meta_tree_node, new_tree_node)
-            expansion_queue = [(meta_root_node, new_root_node, root_instantiation_dict)]
-            while len(expansion_queue) > 0:
-                meta_expand_node, new_expand_node, new_derived_attr_dists = expansion_queue.pop(0)
-                # Instantiate this node, using the node in the meta tree to
-                # look up the appropriate parts from the grammar vector.
-                with scope(prefix=meta_expand_node.name):
-                    instantiate_node(meta_expand_node, new_expand_node, new_derived_attr_dists)
-                    if isinstance(meta_expand_node, NonTerminalNode):
-                        # Selects a child set from the meta tree node using the
-                        # passed grammar vector as selection weights.
-                        meta_children, new_children = sample_children_from_meta_tree_node(
-                            meta_expand_node, new_expand_node)
-                        child_derived_dicts = new_expand_node.get_derived_variable_dists_for_children(
-                            [type(c) for c in new_children]
-                        )
-                        # Create copies of children of the same types in our tree.
-                        for meta_child, new_child, child_derived_attr_dists in zip(
-                                meta_children, new_children, child_derived_dicts):
-                            new_tree.add_node(new_child)
-                            new_tree.add_edge(new_expand_node, new_child)
-                            expansion_queue.append((meta_child, new_child, child_derived_attr_dists))
-            return new_tree
-        proposal_trace = pyro.poutine.trace(make_new_tree).get_trace()
-        # Compute log prob for all + for just non-reparam'd nodes.
+        # Get tree, and also its proposal density (including only the
+        # non-reparam'd part).
+        proposal_trace = pyro.poutine.trace(self.inference_grammar.forward).get_trace()
         proposal_trace.compute_log_prob()
+
         total_ll = 0.
         total_nonreparam_ll = 0.
 
@@ -427,20 +211,3 @@ class GrammarEncoder(torch.nn.Module):
                     inclusion_log_likelihood_per_node[meta_child_node] = inclusion_lls[k]
                     node_queue.append(meta_child_node)
         return inclusion_log_likelihood_per_node, product_weights_per_node
-
-    def get_variable_distributions_for_meta_node(self, meta_node, x):
-        # Implements a mean-field approx for the derived and local variables
-        # of the given meta node, using the meta-node's variable sizing info.
-        assert meta_node in self.meta_tree.nodes
-
-        all_inds = self.node_output_info[meta_node]
-
-        derived_means = x[all_inds.derived_variable_means_inds]
-        derived_vars = torch.nn.functional.softplus(x[all_inds.derived_variable_vars_inds])
-        derived_attr_dist = dist.Normal(derived_means, derived_vars)
-            
-        local_means = x[all_inds.local_variable_means_inds]
-        local_vars = torch.nn.functional.softplus(x[all_inds.local_variable_vars_inds])
-        local_attr_dist = dist.Normal(local_means, local_vars)
-
-        return derived_attr_dist, local_attr_dist
