@@ -56,13 +56,37 @@ def test_grammar_params(set_seed):
     scene_tree = grammar()
     assert isinstance(scene_tree, SceneTree)
 
-    torch_param_dict = {k: v for k, v in grammar.named_parameters()}
     for k in ["Building:room_spacing", "Building:child_probs"]:
-        assert k in torch_param_dict.keys()
+        assert k in grammar.default_params.keys()
 
-def test_forward_sampling(set_seed):
+grammar_types = [FullyParameterizedGrammar, SceneGrammar]
+@pytest.mark.parametrize('grammar_type', grammar_types)
+def test_grammar_param_override(set_seed, grammar_type):
+    grammar = grammar_type(root_node_type, inst_dict)
+
+    # Forward sample under default grammar params should work
+    # normally.
+    scene_tree = grammar()
+
+    # Forward sample under new grammar params
+    default_param_dict = grammar.get_default_param_dict()
+    new_param_dict = deepcopy(default_param_dict)
+    for v in new_param_dict.values():
+        x = torch.nn.Parameter(torch.zeros(v().shape))
+        y = x ** 2
+        v.set_unconstrained(y)
+    new_tree = grammar(params=new_param_dict)
+    tree_ll = new_tree.get_log_prob()
+    matching_ll = grammar.score(new_tree, params=new_param_dict)
+    assert torch.allclose(tree_ll, matching_ll)
+    # This should work but I can't guarantee what the output is.
+    diff_ll = grammar.score(new_tree, params=None)
+
+grammar_types = [FullyParameterizedGrammar, SceneGrammar]
+@pytest.mark.parametrize('grammar_type', grammar_types)
+def test_forward_sampling(set_seed, grammar_type):
     # Sanity checks forward sampling and scoring functions.
-    grammar = SceneGrammar(root_node_type, inst_dict)
+    grammar = grammar_type(root_node_type, inst_dict)
     trace = pyro.poutine.trace(grammar.forward).get_trace()
     tree = trace.nodes["_RETURN"]["value"]
 
@@ -130,7 +154,8 @@ def test_grammar_parameter_update(set_seed):
     assert torch.isclose(orig_tree_prob, orig_tree_rerun_prob)
     
     # Change parameters of root node children
-    grammar.params_by_node_type[root_node_type]["child_probs"].set(torch.tensor([1.0, 0.0, 0.0, 0.0]))
+    full_name = grammar._get_name_for_param(root_node_type, "child_probs")
+    grammar.default_params[full_name].set(torch.tensor([1.0, 0.0, 0.0, 0.0]))
     new_tree = grammar()
     assert len(new_tree.find_nodes_by_type(NorthRoom)) == 1
     assert len(new_tree.find_nodes_by_type(SouthRoom)) == 0
@@ -143,36 +168,6 @@ def test_grammar_parameter_update(set_seed):
     orig_tree_prob = default_tree.get_log_prob()
     assert not torch.isclose(orig_tree_prob, orig_tree_rerun_prob)
 
-def test_fully_param_grammar(set_seed):
-    # Sanity checks forward sampling and scoring functions.
-    grammar = FullyParameterizedGrammar(root_node_type, inst_dict)
-    trace = pyro.poutine.trace(grammar.forward).get_trace()
-    tree = trace.nodes["_RETURN"]["value"]
-
-    root_node = get_tree_root(tree)
-    tree_ll = tree.get_subtree_log_prob(root_node).detach().numpy()
-    expected_ll = trace.log_prob_sum().detach().numpy()
-    assert np.allclose(tree_ll, expected_ll), "%s vs %s" % (tree_ll, expected_ll)
-
-    # Make sure these calls are identical
-    tree_ll = tree.get_subtree_log_prob(root_node).detach().numpy()
-    tree_ll_shorthand = tree.get_log_prob().detach().numpy()
-    assert np.allclose(tree_ll, tree_ll_shorthand), "%s vs %s" % (tree_ll, tree_ll_shorthand)
-
-    # Make sure gradients go backwards as we expect.
-    rooms = list(tree.successors(root_node))
-    if len(rooms) > 0:
-        tree_ll = tree.get_log_prob()
-        tree_ll.backward()
-        # Collect into a dict so our failure message is more
-        # informative about which parameters don't have grads.
-        parameters_have_grad = {}
-        for name, parameter in grammar.named_parameters():
-            parameters_have_grad[name] = parameter.grad is not None
-        # Not all parameters will have a grad every time (since not
-        # all node types will always be present), but at least
-        # *some* of them should, as a basic sanity check.
-        assert any(parameters_have_grad.values()), parameters_have_grad
 
 if __name__ == "__main__":
     pytest.main()

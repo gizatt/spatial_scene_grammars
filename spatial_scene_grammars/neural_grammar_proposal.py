@@ -1,8 +1,10 @@
 from collections import namedtuple
+from copy import deepcopy
 import networkx as nx
 import numpy as np
 import os
 import time
+from typing import Dict
 
 import torch
 import torch.distributions.constraints as constraints
@@ -23,9 +25,35 @@ from spatial_scene_grammars.scene_grammar import (
     get_tree_root
 )
 from spatial_scene_grammars.torch_utils import (
-    inv_softplus, inv_sigmoid
+    inv_softplus, inv_sigmoid, ConstrainedParameter
 )
 
+# Based on TORCH.NN.UTILS.CONVERT_PARAMETERS
+def dict_to_vector(prototype_dict: Dict[str, torch.Tensor]):
+    vec = []
+    for key, value in prototype_dict.items():
+        vec.append(value.view(-1))
+    return torch.cat(vec)
+
+def vector_to_dict_of_constrained_params(
+            vec: torch.Tensor,
+            prototype_dict: Dict[str, ConstrainedParameter]
+        ) -> Dict[str, ConstrainedParameter]:
+    # Pointer for slicing the vector for each parameter
+    pointer = 0
+    out_dict = {}
+    for key, value in prototype_dict.items():
+        # Get length of underlying value.
+        tensor_val = value()
+        numel = tensor_val.numel()
+        # Make a new ConstrainedParameter as a copy of the prototype.
+        new_cparam = deepcopy(value)
+        # Slice the vector, reshape it, and replace the old data of the parameter
+        new_cparam.set_unconstrained(vec[pointer:pointer + numel].view_as(tensor_val))
+        out_dict[key] = new_cparam
+        # Increment the pointer
+        pointer += numel
+    return out_dict
 
 def estimate_observation_likelihood(candidate_nodes, observed_nodes, gaussian_variance,
                                     detach_first=False, detach_second=False):
@@ -99,8 +127,14 @@ class GrammarEncoder(torch.nn.Module):
         # Makes an RNN that directly regresses grammar parameters of the
         # inference grammar.
         assert isinstance(inference_grammar, SceneGrammarBase)
-        x = torch.nn.utils.parameters_to_vector(inference_grammar.parameters())
+        grammar_params = inference_grammar.get_default_param_dict()
+        # Resolve them to tensors so we can compute size.
+        grammar_params_constrained = {key: value() for key, value in grammar_params.items()}
+        x = dict_to_vector(grammar_params_constrained)
         n_parameters = len(x)
+
+        # Save the canonical grammar parameter dict as a size reference.
+        self.canonical_grammar_param_dict = grammar_params_constrained
 
         # Create the actual RNN.
         self.hidden_size = n_parameters
@@ -120,12 +154,13 @@ class GrammarEncoder(torch.nn.Module):
     def make_embedding_modules(self, inference_grammar, embedding_size):
         # Make embedding module for each node type.
         self.node_embeddings_by_type = torch.nn.ModuleDict()
-        for node_type in self.inference_grammar.get_all_types_in_grammar():
+        for node_type in inference_grammar.get_all_types_in_grammar():
             if node_type not in self.node_embeddings_by_type.keys():
                 embedding = NodeEmbedding(node_type, embedding_size)
                 self.node_embeddings_by_type[node_type.__name__] = embedding 
 
-    def forward(self, observed_nodes):
+    def forward(self, observed_nodes, detach=True):
+        # Detach: Detach node attributes.
         # Initialize RNN
         N_nodes = len(observed_nodes)
         assert self.batch_size == 1
@@ -134,10 +169,9 @@ class GrammarEncoder(torch.nn.Module):
         # and we'd like to be robust to that.
         shuffled_nodes = [observed_nodes[k] for k in torch.randperm(N_nodes)]
         for k, node in enumerate(shuffled_nodes):
-            # The node variables need to be detached, as they might be
-            # derived from node parameters that we don't want to backwards
-            # through.
-            attr = node.get_all_continuous_variables_as_vector().detach()
+            attr = node.get_all_continuous_variables_as_vector()
+            if detach:
+                attr = attr.detach()
             all_x[k, :, :] = self.node_embeddings_by_type[node.__class__.__name__](attr)
         # Pass through RNN.
         if N_nodes > 0:
@@ -151,11 +185,10 @@ class GrammarEncoder(torch.nn.Module):
     def sample_tree_from_grammar_vector(self, x):
         # Set our inference grammar's parameters accordingly.
         assert len(x.shape) == 1 and x.shape[0] == self.hidden_size
-        params = torch.nn.utils.vector_to_parameters(x, self.inference_grammar.parameters())
-
+        params = vector_to_dict_of_constrained_params(x, self.inference_grammar.get_default_param_dict())
         # Get tree, and also its proposal density (including only the
         # non-reparam'd part).
-        proposal_trace = pyro.poutine.trace(self.inference_grammar.forward).get_trace()
+        proposal_trace = pyro.poutine.trace(self.inference_grammar.forward).get_trace(params)
         proposal_trace.compute_log_prob()
 
         total_ll = 0.

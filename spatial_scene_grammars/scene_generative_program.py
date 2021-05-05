@@ -15,8 +15,15 @@ class SceneGenerativeProgram(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self):
-        # Sample scene using current parameter values.
+    def get_default_param_struct(self):
+        # Dictionary of ConstrainedParameter values.
+        raise NotImplementedError()
+
+    def forward(self, params=None):
+        # Sample scene using either current parameter values (if no override
+        # provided, or the specified overriden param values. The param values
+        # should be a dictionary of param name : param value that matches the
+        # module named_parameters() dict output.
         # A pyro.poutine.trace() that wraps this method should
         # grab all internal sample sites, and I think its log_prob_sum
         # should match the output from score().

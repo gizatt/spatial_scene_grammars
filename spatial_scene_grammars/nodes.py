@@ -385,6 +385,8 @@ class NonTerminalNode(Node):
     def get_child_indicator_vector(self, observed_child_types):
         ''' Returns an indicator vector of which children in the
         maximal_child_list would be active for this observed child set. '''
+        for t in observed_child_types:
+            assert issubclass(t, Node), "Make sure you're passing node types and not nodes into this function."
         inds = self.get_child_indices_into_maximal_child_list(observed_child_types)
         ind_vec = torch.zeros(len(self.get_maximal_child_type_list()))
         ind_vec[inds.long()] = 1.

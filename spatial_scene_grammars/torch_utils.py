@@ -37,6 +37,11 @@ class ConstrainedParameter(torch.nn.Module):
         self.unconstrained_value = None
         self.set(init_value)
     def set_unconstrained(self, unconstrained_value):
+        # Have to explicitly nuke the unconstrained value, as it might be
+        # a registered parameter.
+        del self.unconstrained_value
+        self.unconstrained_value = unconstrained_value
+    def set_unconstrained_as_param(self, unconstrained_value):
         if self.unconstrained_value is None:
             self.unconstrained_value = torch.nn.Parameter(unconstrained_value)
         else:
@@ -46,7 +51,7 @@ class ConstrainedParameter(torch.nn.Module):
         with torch.no_grad():
             unconstrained_value = transform_to(self.constraint).inv(constrained_value)
             unconstrained_value = unconstrained_value.contiguous()
-        self.set_unconstrained(unconstrained_value)
+        self.set_unconstrained_as_param(unconstrained_value)
     def get_value(self):
         constrained_value = transform_to(self.constraint)(self.unconstrained_value)
         return constrained_value

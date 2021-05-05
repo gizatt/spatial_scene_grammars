@@ -26,7 +26,7 @@ def test_constrained_param():
         p = ConstrainedParameter(init_value, constraint=constraint)
         val = p()
         assert(torch.allclose(init_value, val))
-        p.set_unconstrained(init_value)
+        p.set_unconstrained_as_param(init_value)
         val = p.get_unconstrained_value()
         assert(torch.allclose(init_value, val))
         p.set(init_value)
