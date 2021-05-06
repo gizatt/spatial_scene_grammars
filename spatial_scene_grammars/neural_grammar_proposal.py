@@ -138,7 +138,7 @@ class GrammarEncoder(torch.nn.Module):
 
         # Create the actual RNN.
         self.hidden_size = n_parameters
-        self.num_layers = 2
+        self.num_layers = 3
         self.batch_size = 1
         self.rnn = torch.nn.GRU(
             input_size=self.embedding_size,
@@ -203,6 +203,13 @@ class GrammarEncoder(torch.nn.Module):
 
         assert torch.isclose(total_ll, proposal_trace.log_prob_sum())
         return proposal_trace.nodes["_RETURN"]["value"], total_ll, total_nonreparam_ll
+
+    def score_tree_with_grammar_vector(self, tree, x):
+        assert len(x.shape) == 1 and x.shape[0] == self.hidden_size
+        params = vector_to_dict_of_constrained_params(x, self.inference_grammar.get_default_param_dict())
+        # Get tree, and also its proposal density (including only the
+        # non-reparam'd part).
+        return self.inference_grammar.score(tree, params=params)
 
     def get_product_weights_and_inclusion_lls(self, meta_tree, x):
         # TODO: Should this be a grammar function?

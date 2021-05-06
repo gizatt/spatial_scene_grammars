@@ -32,7 +32,7 @@ from spatial_scene_grammars.sampling import *
 class HasDerivedXy():
     @classmethod
     def get_derived_variable_info(cls):
-        return {"xy": (2,)}
+        return {"xy": NodeVariableInfo(shape=(2,))}
 
 
 class Box(HasDerivedXy, TerminalNode):
@@ -41,13 +41,14 @@ class Box(HasDerivedXy, TerminalNode):
 
 class StackOfN(HasDerivedXy, AndNode):
     N = None
-    def __init__(self, **kwargs):
-        super().__init__(child_types=[Box]*self.__class__.N, **kwargs)
+    def __init__(self, parameters, **kwargs):
+        super().__init__(child_types=[Box]*self.__class__.N, **kwargs,
+                         parameters=parameters, **kwargs)
     @classmethod
     def get_default_parameters(cls):
         return {
-            "x_mean": NodeParameter(torch.tensor([0.])),
-            "x_variance": NodeParameter(torch.tensor([0.1]), constraint=constraints.positive)
+            "x_mean": ConstrainedParameter(torch.tensor([0.])),
+            "x_variance": ConstrainedParameter(torch.tensor([0.1]), constraint=constraints.positive)
         }
     def get_derived_variable_dists_for_children(self, child_types):
         all_child_dist_dicts = []
@@ -69,13 +70,13 @@ StackOf3 = type("StackOf3", (StackOfN,), {"N": 3})
 
 class GroupOfN(HasDerivedXy, AndNode):
     N = None
-    def __init__(self, **kwargs):
-        super().__init__(child_types=[Box]*self.__class__.N, **kwargs)
+    def __init__(self, parameters, **kwargs):
+        super().__init__(child_types=[Box]*self.__class__.N, parameters=parameters, **kwargs)
     @classmethod
     def get_default_parameters(cls):
         return {
-            "x_mean": NodeParameter(torch.tensor([0.])),
-            "x_variance": NodeParameter(torch.tensor([1.]), constraint=constraints.positive)
+            "x_mean": ConstrainedParameter(torch.tensor([0.])),
+            "x_variance": ConstrainedParameter(torch.tensor([1.]), constraint=constraints.positive)
         }
     def get_derived_variable_dists_for_children(self, child_types):
         all_child_dist_dicts = []
@@ -105,9 +106,9 @@ class Ground(HasDerivedXy, OrNode):
     @classmethod
     def get_default_parameters(cls):
         return {
-            "x_mean": NodeParameter(torch.tensor([0.])),
-            "x_variance": NodeParameter(torch.tensor([1.]), constraint=constraints.positive),
-            "child_weights": NodeParameter(torch.ones(5)/5., constraint=constraints.simplex)
+            "x_mean": ConstrainedParameter(torch.tensor([0.])),
+            "x_variance": ConstrainedParameter(torch.tensor([1.]), constraint=constraints.positive),
+            "child_weights": ConstrainedParameter(torch.ones(5)/5., constraint=constraints.simplex)
         }
     def get_derived_variable_dists_for_children(self, child_types):
         all_child_dist_dicts = []

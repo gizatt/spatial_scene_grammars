@@ -15,7 +15,7 @@ class SceneGenerativeProgram(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-    def get_default_param_struct(self):
+    def get_default_param_dict(self):
         # Dictionary of ConstrainedParameter values.
         raise NotImplementedError()
 

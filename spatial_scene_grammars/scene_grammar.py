@@ -28,7 +28,6 @@ def get_tree_root(tree):
         root_node = tree.predecessors(root_node)[0]
     return root_node
 
-
 class SceneGrammarBase(SceneGenerativeProgram):
     '''
     Basic form of a grammar derived from nodes from nodes.py
