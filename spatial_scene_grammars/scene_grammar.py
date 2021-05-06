@@ -175,7 +175,7 @@ class SceneGrammar(SceneGrammarBase):
         return new_tree.get_log_prob()
 
     @staticmethod
-    def make_meta_scene_tree(root_node_type):
+    def make_super_scene_tree(root_node_type):
         ''' Given a root node, generates a meta-tree of node types (without
         continuous variables) for which any generated tree from this root is
         a subgraph (again not considering continuous variables). '''
@@ -405,6 +405,277 @@ class FullyParameterizedGrammar(SceneGrammarBase):
                 total_ll = total_ll + inclusion_dist.log_prob(inclusion_value)
 
         return total_ll
+
+
+
+class FullyParameterizedSuperTreeGrammar(SceneGrammarBase):
+    '''
+    Manages a grammar that follows the same structure as a normal
+    SceneGrammar, but instead of following the node's supplied
+    generative rules, provides parameterization to control all
+    of the choices that can be made in the grammar rollout. Nodes
+    have different mean field and children probabilities based
+    on their location in the super scene tree of the original grammar.
+
+    Used as a representation for parsing.
+    '''
+
+    def __init__(self, root_node_type, root_node_instantiation_dict, do_sanity_checks=True):
+        ''' Given a root node type and an instantiation dict specifying its
+        derived variable distributions, prepares this grammar for use. '''
+        super().__init__(root_node_type=root_node_type,
+                         root_node_instantiation_dict=root_node_instantiation_dict)
+        self.do_sanity_checks = do_sanity_checks
+
+        self.default_params = {}
+
+        # Build our database of what the decision making (and corresponding parameters)
+        # that is done by each node in a canonical super scene tree.
+        self.canonical_super_scene_tree = SceneGrammar.make_super_scene_tree(root_node_type)
+        # Build a consistent naming scheme for the super scene tree,
+        # and use it to create params for every node type in the tree.
+        for k, node in enumerate(self.canonical_super_scene_tree.nodes()):
+            unique_name = self._get_unique_name(node)
+            self._add_default_params_for_node_type(type(node), unique_name)
+
+    def _get_unique_name(self, super_node):
+        assert super_node in self.canonical_super_scene_tree.nodes
+        return "%s_%d" % (type(super_node).__name__, list(self.canonical_super_scene_tree.nodes).index(super_node))
+
+    def get_default_param_dict(self):
+        return self.default_params
+
+    def _add_default_params_for_node_type(self, node_type, unique_name):
+        # Sets up the default param entries for this node.
+        # If the node is nonterminal, there'll be a param named
+        # "unique_name:child_weight".
+        # For every attribute of the node, it'll have params
+        # named "unique_name:attr_name:[mean, var]".
+
+        # Set up child_weights by looking at the child set of this node.
+        node = node_type.init_with_default_parameters()
+        if isinstance(node, NonTerminalNode):
+            all_child_types = node.get_maximal_child_type_list()
+            if isinstance(node, AndNode):
+                child_weights = ConstrainedParameter(torch.tensor([]))
+            elif isinstance(node, OrNode):
+                child_weights = ConstrainedParameter(node.production_weights.detach(),
+                                                     constraint=constraints.simplex)
+            elif isinstance(node, IndependentSetNode):
+                child_weights = ConstrainedParameter(node.production_probs.detach(),
+                                                     constraint=constraints.unit_interval)
+            elif isinstance(node, GeometricSetNode):
+                p = node.geometric_prob
+                if isinstance(p, torch.Tensor):
+                    p = p.detach()
+                # Start with a prior indicating mirroring the original node's chance
+                # of sampling each number of children.
+                # TODO: Slight error on the probability of picking the final
+                # child, since the probability is actually a bit higher due to the
+                # truncation.
+                n_children_choices = torch.arange(0, len(node.child_types) + 1)
+                geometric_child_choice_probs = torch.exp(dist.Geometric(p).log_prob(n_children_choices))
+                child_weights = ConstrainedParameter(geometric_child_choice_probs,
+                                                     constraint=constraints.simplex)
+            else:
+                raise NotImplementedError("Don't know how to encode Nonterminal type %s" % node.__class__.__name__)
+            full_name = "%s:%s" % (unique_name, "child_weights")
+            self.default_params[full_name] = child_weights
+        else:
+            child_weights = None
+
+        # Create mean field approximations of the continuous variables
+        # of this node type.
+        def create_mean_field_params(dict_of_variable_infos):
+            for key, info in dict_of_variable_infos.items():
+                if info.support is not None:
+                    raise NotImplementedError("Constrained mean-field estimates not implemented for type ", type(info.support))
+                mean = ConstrainedParameter(torch.zeros(info.shape))
+                full_name = "%s:%s:%s" % (unique_name, key, "mean")
+                self.default_params[full_name] = mean
+                var = ConstrainedParameter(torch.ones(info.shape), constraint=constraints.positive)
+                full_name = "%s:%s:%s" % (unique_name, key, "var")
+                self.default_params[full_name] = var
+            
+        derived_attr_infos = node_type.get_derived_variable_info()
+        create_mean_field_params(derived_attr_infos)
+        local_attr_infos = node_type.get_local_variable_info()
+        create_mean_field_params(local_attr_infos)
+
+    def _make_variable_mean_fields(self, node_type, unique_name, params):
+        # For a given node type, creates the derived and local
+        # variable mean fields.
+        # Build distributions for sampling both attr types
+        derived_var_dists = {}
+        for key, info in node_type.get_derived_variable_info().items():
+            mean_name = "%s:%s:%s" % (unique_name, key, "mean")
+            var_name = "%s:%s:%s" % (unique_name, key, "var")
+            derived_var_dists[key] = dist.Normal(
+                params[mean_name](), params[var_name]()
+            )
+        local_var_dists = {}
+        for key, info in node_type.get_local_variable_info().items():
+            mean_name = "%s:%s:%s" % (unique_name, key, "mean")
+            var_name = "%s:%s:%s" % (unique_name, key, "var")
+            local_var_dists[key] = dist.Normal(
+                params[mean_name](), params[var_name]()
+            )
+        return derived_var_dists, local_var_dists
+
+    def _instantiate_node_from_mean_field(self, node, unique_name, params):
+        derived_var_dists, local_var_dists = self._make_variable_mean_fields(type(node), unique_name, params)
+        node.instantiate(derived_variable_distributions=derived_var_dists,
+                         local_variable_distributions_override=local_var_dists)
+
+    def _make_inclusion_dist(self, parent_node, unique_name, params):
+        # For a given node type, creates its child inclusion dist
+        # from our parameters.
+        node_type = type(parent_node)
+        assert isinstance(parent_node, NonTerminalNode)
+        # Get *constrained* values of the child weights to be used
+        # as child-choosing distribution parameters.
+        full_name = "%s:%s" % (unique_name, "child_weights")
+        child_weights = params[full_name]()
+        child_candidates = parent_node.get_maximal_child_type_list()
+        # Craft the overriding child inclusion dist by reinterpreting the
+        # constrained child weights appropriately for each node type.
+        if isinstance(parent_node, AndNode):
+            # The complete list of successors is correct.
+            inclusion_dist = dist.Bernoulli(torch.ones(len(child_candidates))).to_event(1)
+        elif isinstance(parent_node, OrNode):
+            # Choose one from the list of successors.
+            inclusion_dist = dist.OneHotCategorical(child_weights)
+        elif isinstance(parent_node, IndependentSetNode):
+            # Independent choose whether to include each.
+            inclusion_dist = dist.Bernoulli(child_weights).to_event(1)
+        elif isinstance(parent_node, GeometricSetNode):
+            # Choose how many children to have and create a vector of
+            # 1's up to that many children.
+            inclusion_dist = LeftSidedRepeatingOnesDist(child_weights)
+        else:
+            raise NotImplementedError("Don't know how to decode Nonterminal type %s" % meta_node.__class__.__name__)
+        return inclusion_dist
+        
+    def _sample_children_from_parent_node(self, parent_node, unique_name, params):
+        # Creates an overriding child-selecting distribution for
+        # the parent node and samples a set of child types using that
+        # overriding distribution.
+        inclusion_dist = self._make_inclusion_dist(parent_node, unique_name, params)
+        return parent_node.sample_children(child_inclusion_dist_override=inclusion_dist)
+
+    def _generate_from_node_recursive(self, scene_tree, parent_node,
+                                      parent_super_node, parent_unique_name, params):
+        # Assume parent_node is a fully instantiated node.
+        # If it's nonterminal, choose and instantiate its
+        # children, and call this on each of them.
+        if isinstance(parent_node, NonTerminalNode):
+            # Choose what gets generated.
+            child_types = self._sample_children_from_parent_node(
+                parent_node, parent_unique_name, params)
+            # Get corresponding children from meta tree node corresponding to the
+            # parent node and resolve them against the children chosen for the parent node.
+            # Assumes ordering of successors of canonical super scene tree is the
+            # same as the ordering of the maximal child list -- asserts make sure this
+            # is true.
+            child_inds = parent_node.get_child_indices_into_maximal_child_list(child_types)
+            super_children_candidates = list(self.canonical_super_scene_tree.successors(parent_super_node))
+            if self.do_sanity_checks:
+                maximal_child_list = parent_node.get_maximal_child_type_list()
+                for k, child in enumerate(super_children_candidates):
+                    assert isinstance(child, maximal_child_list[k])
+            super_children = [super_children_candidates[i] for i in child_inds]
+
+            # Instantiate the node using our mean field params.
+            for child_type, child_super_node in zip(child_types, super_children):
+                # Default params will have no influence on node variables,
+                # but this allows us to easily spawn the node.
+                child_unique_name = self._get_unique_name(child_super_node)
+                child_node = child_type.init_with_default_parameters()
+                self._instantiate_node_from_mean_field(child_node, child_unique_name, params)
+                scene_tree.add_node(child_node)
+                scene_tree.add_edge(parent_node, child_node)
+                scene_tree = self._generate_from_node_recursive(
+                    scene_tree, child_node, child_super_node,
+                    child_unique_name, params
+                )
+        return scene_tree
+
+    def forward(self, params=None):
+        # Samples a tree, ensuring our stored parameters get substituted
+        # into every node that is generated.
+        if params is None:
+            params = self.get_default_param_dict()
+
+        # Expand a tree top-down in the standard fashion, but maintain
+        # correspondence with meta-tree nodes simultaneously so we can
+        # retrieve the appropriate parameters at any moment relatively
+        # efficiently.
+        scene_tree = SceneTree()
+        corresp_super_node = get_tree_root(self.canonical_super_scene_tree)
+        root_node = self.root_node_type.init_with_default_parameters()
+        unique_name = self._get_unique_name(corresp_super_node)
+        self._instantiate_node_from_mean_field(root_node, unique_name, params)
+        scene_tree.add_node(root_node)
+        return self._generate_from_node_recursive(
+            scene_tree, root_node, corresp_super_node,
+            unique_name, params)
+
+    def score(self, scene_tree, params=None, detach=False):
+        ''' Scores given tree under this grammar using the grammar's currently
+        stored parameter values, but the scene tree node's stored attributes.'''
+        if params is None:
+            params = self.get_default_param_dict()
+
+        # Traverse the scene tree and super-tree in lockstep so we can
+        # quickly get the right parameters for each node.
+        total_ll = 0.
+        root_node = get_tree_root(scene_tree)
+        root_super_node = get_tree_root(self.canonical_super_scene_tree)
+        expansion_queue = [(root_node, root_super_node)]
+        while len(expansion_queue) > 0:
+            node, super_node = expansion_queue.pop(0)
+            unique_name = self._get_unique_name(super_node)
+
+            # Score node attributes vs our mean fields.
+            derived_var_dists, local_var_dists = self._make_variable_mean_fields(type(node), unique_name, params)
+            def calc_score(value_dict, dist_dict):
+                # Detach the values
+                if detach:
+                    detached_value_dict = {key: value.detach() for key, value in value_dict.items()}
+                    return node.get_variable_ll_given_dicts(detached_value_dict, dist_dict)
+                else:
+                    return node.get_variable_ll_given_dicts(value_dict, dist_dict)
+            total_ll = total_ll + calc_score(
+                node.get_derived_variable_values(),
+                derived_var_dists
+            )
+            total_ll = total_ll + calc_score(
+                node.get_local_variable_values(),
+                local_var_dists
+            )
+
+            # Score node children, and get them into the expansion queue along with
+            # their corresponding members of the super tree.
+            if isinstance(node, NonTerminalNode):
+                children = list(scene_tree.successors(node))
+                super_children_candidates = list(self.canonical_super_scene_tree.successors(super_node))
+                inclusion_dist = self._make_inclusion_dist(node, unique_name, params)
+                inclusion_value = node.get_child_indicator_vector([type(c) for c in children])
+                total_ll = total_ll + inclusion_dist.log_prob(inclusion_value)
+
+                # This code assumes the super scene tree children list is the same order as the
+                # maximal child type list. This sanity check trys to make sure that that's
+                # true.
+                if self.do_sanity_checks:
+                    maximal_child_list = node.get_maximal_child_type_list()
+                    for k, child in enumerate(super_children_candidates):
+                        assert isinstance(child, maximal_child_list[k])
+                super_children = [super_children_candidates[i] for i, v in enumerate(inclusion_value) if v]
+                for child, super_child in zip(children, super_children):
+                    expansion_queue.append((child, super_child))
+
+        return total_ll
+
 
 
 class SceneTree(nx.DiGraph):

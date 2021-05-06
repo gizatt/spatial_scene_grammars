@@ -22,6 +22,7 @@ pyro.enable_validation(True)
 
 root_node_type = Building
 inst_dict = {"xy": dist.Normal(torch.zeros(2), torch.ones(2)*0.001)}
+grammar_types = [FullyParameterizedGrammar, SceneGrammar, FullyParameterizedSuperTreeGrammar]
 
 def assert_identical_dicts_of_tensors(d1, d2):
     for key, value in d1.items():
@@ -59,7 +60,6 @@ def test_grammar_params(set_seed):
     for k in ["Building:room_spacing", "Building:child_probs"]:
         assert k in grammar.default_params.keys()
 
-grammar_types = [FullyParameterizedGrammar, SceneGrammar]
 @pytest.mark.parametrize('grammar_type', grammar_types)
 def test_grammar_param_override(set_seed, grammar_type):
     grammar = grammar_type(root_node_type, inst_dict)
@@ -82,7 +82,6 @@ def test_grammar_param_override(set_seed, grammar_type):
     # This should work but I can't guarantee what the output is.
     diff_ll = grammar.score(new_tree, params=None)
 
-grammar_types = [FullyParameterizedGrammar, SceneGrammar]
 @pytest.mark.parametrize('grammar_type', grammar_types)
 def test_forward_sampling(set_seed, grammar_type):
     # Sanity checks forward sampling and scoring functions.
@@ -142,7 +141,7 @@ def test_node_instantiate(set_seed):
     assert np.allclose(building_ll, expected_ll)
 
 def test_meta_scene_tree(set_seed):
-    meta_tree = SceneGrammar.make_meta_scene_tree(root_node_type)
+    meta_tree = SceneGrammar.make_super_scene_tree(root_node_type)
 
 def test_grammar_parameter_update(set_seed):
     grammar = SceneGrammar(root_node_type, inst_dict)

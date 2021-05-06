@@ -22,6 +22,7 @@ pyro.enable_validation(True)
 
 root_node_type = Building
 inst_dict = {"xy": dist.Delta(torch.zeros(2))}
+grammar_types = [FullyParameterizedGrammar, SceneGrammar, FullyParameterizedSuperTreeGrammar]
 
 @pytest.fixture(params=range(10))
 def set_seed(request):
@@ -45,7 +46,6 @@ def test_node_embedding():
     out = test_embedding(test_building.get_all_continuous_variables_as_vector())
     assert torch.all(torch.isfinite(out))
 
-grammar_types = [FullyParameterizedGrammar, SceneGrammar]
 @pytest.mark.parametrize('grammar_type', grammar_types)
 def test_grammar_encoder(set_seed, grammar_type):
     grammar = grammar_type(root_node_type, inst_dict)
