@@ -10,7 +10,7 @@ from pyro.contrib.autoname import scope
 import torch
 from torch.distributions import constraints
 
-from .distributions import VectorCappedGeometricDist
+from .distributions import VectorCappedGeometricDist, LeftSidedRepeatingOnesDist
 from .torch_utils import ConstrainedParameter
 
 import pydrake
@@ -489,10 +489,11 @@ class GeometricSetNode(NonTerminalNode):
     ''' Convenience specialization: has a single child type that can occur,
     and chooses to repeat it according to a geometric distribution, capped at
     a total number of instantiations.'''
-    def __init__(self, child_type, geometric_prob, max_repeats, **kwargs):
+    def __init__(self, child_type, geometric_prob, max_repeats, min_repeats=0, **kwargs):
         assert max_repeats > 0
         assert child_type is not None
         self.child_types = [child_type] * max_repeats
+        self.min_repeats = min_repeats
         self.max_repeats = max_repeats
         self.geometric_prob = geometric_prob
         if geometric_prob == 0.:
@@ -515,6 +516,31 @@ class GeometricSetNode(NonTerminalNode):
             assert observed_child_type == self.child_types[0]
         num_active = len(observed_child_types)
         assert num_active <= self.max_repeats
+        return torch.tensor(range(num_active))
+
+
+class RepeatingObjectSetNode(NonTerminalNode):
+    ''' Convenience specialization: has a single child type that can occur,
+    and chooses to repeat it according to a specified histogram distribution.'''
+    def __init__(self, child_type, repeat_probs, **kwargs):
+        assert child_type is not None
+        max_repeats = len(repeat_probs) - 1
+        self.child_types = [child_type] * max_repeats
+        self.repeat_probs = repeat_probs
+        self.production_dist = LeftSidedRepeatingOnesDist(repeat_probs)
+        super().__init__(**kwargs)
+
+    def _sample_children_impl(self):
+        return self.production_dist
+
+    def get_maximal_child_type_list(self):
+        return self.child_types
+
+    def get_child_indices_into_maximal_child_list(self, observed_child_types):
+        for observed_child_type in observed_child_types:
+            # All our child types should be the same.
+            assert observed_child_type == self.child_types[0]
+        num_active = len(observed_child_types)
         return torch.tensor(range(num_active))
 
 '''

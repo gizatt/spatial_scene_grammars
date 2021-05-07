@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from collections import namedtuple
 from copy import deepcopy
 import networkx as nx
@@ -17,6 +18,7 @@ from spatial_scene_grammars.nodes import (
     OrNode,
     GeometricSetNode,
     IndependentSetNode,
+    RepeatingObjectSetNode,
     AndNode
 )
 from spatial_scene_grammars.scene_grammar import (
@@ -116,14 +118,28 @@ class GrammarEncoder(torch.nn.Module):
     (In other words, this is an inverse procedural model using the
     specified grammar as the model and the observed node set as the
     target output.) '''
-    def __init__(self, inference_grammar, embedding_size):
+
+    @dataclass
+    class Config():
+        rnn_type = "GRU"
+        
+        # GRU
+        gru_num_layers = 3
+
+    def __init__(self, inference_grammar, embedding_size, config=None):
         super().__init__()
+        if config is None:
+            config = GrammarEncoder.Config()
+
         self.inference_grammar = inference_grammar
         self.embedding_size = embedding_size
-        self.make_rnn(inference_grammar, embedding_size)
+        self.make_rnn(inference_grammar, embedding_size, config=config)
         self.make_embedding_modules(inference_grammar, embedding_size)
 
-    def make_rnn(self, inference_grammar, embedding_size):
+    def make_rnn(self, inference_grammar, embedding_size, config):
+        assert isinstance(config, self.Config)
+        self.rnn_config = config
+
         # Makes an RNN that directly regresses grammar parameters of the
         # inference grammar.
         assert isinstance(inference_grammar, SceneGrammarBase)
@@ -135,22 +151,25 @@ class GrammarEncoder(torch.nn.Module):
 
         # Save the canonical grammar parameter dict as a size reference.
         self.canonical_grammar_param_dict = grammar_params_constrained
-
-        # Create the actual RNN.
-        self.hidden_size = n_parameters
-        self.num_layers = 3
-        self.batch_size = 1
-        self.rnn = torch.nn.GRU(
-            input_size=self.embedding_size,
-            hidden_size=self.hidden_size,
-            num_layers=self.num_layers
-        )
-        # And an FC layer on the end to allow arbitrary regression.
-        self.final_fc = torch.nn.Linear(self.hidden_size, self.hidden_size)
-        self.hidden_init = torch.nn.Parameter(
-            torch.normal(mean=0., std=1., size=(self.num_layers, self.batch_size, self.hidden_size))
-        )
         
+        # Create the actual RNN.
+        if config.rnn_type == "GRU":
+            self.hidden_size = n_parameters
+            self.num_layers = config.gru_num_layers
+            self.batch_size = 1
+            self.rnn = torch.nn.GRU(
+                input_size=self.embedding_size,
+                hidden_size=self.hidden_size,
+                num_layers=self.num_layers
+            )
+            # And an FC layer on the end to allow arbitrary regression.
+            self.final_fc = torch.nn.Linear(self.hidden_size, self.hidden_size)
+            self.hidden_init = torch.nn.Parameter(
+                torch.normal(mean=0., std=1., size=(self.num_layers, self.batch_size, self.hidden_size))
+            )
+        else:
+            raise ValueError("Invalid rnn type: %s" % config.rnn_type)
+
     def make_embedding_modules(self, inference_grammar, embedding_size):
         # Make embedding module for each node type.
         self.node_embeddings_by_type = torch.nn.ModuleDict()
@@ -158,6 +177,17 @@ class GrammarEncoder(torch.nn.Module):
             if node_type not in self.node_embeddings_by_type.keys():
                 embedding = NodeEmbedding(node_type, embedding_size)
                 self.node_embeddings_by_type[node_type.__name__] = embedding 
+
+    def _forward_gru(self, all_x):
+        # Pass through RNN.
+        N_nodes = all_x.shape[0]
+        if N_nodes > 0:
+            output, _ = self.rnn(all_x, self.hidden_init)
+        else:
+            output = self.hidden_init
+        output = self.final_fc(output)
+        # Return the final hidden state, removing the batch dim.
+        return output[-1, 0, :]
 
     def forward(self, observed_nodes, detach=True):
         # Detach: Detach node attributes.
@@ -173,14 +203,10 @@ class GrammarEncoder(torch.nn.Module):
             if detach:
                 attr = attr.detach()
             all_x[k, :, :] = self.node_embeddings_by_type[node.__class__.__name__](attr)
-        # Pass through RNN.
-        if N_nodes > 0:
-            output, _ = self.rnn(all_x, self.hidden_init)
+        if self.rnn_config.rnn_type == "GRU":
+            return self._forward_gru(all_x)
         else:
-            output = self.hidden_init
-        output = self.final_fc(output)
-        # Return the final hidden state, removing the batch dim.
-        return output[-1, 0, :]
+            raise ValueError("Invalid rnn type: ", self.rnn_config.rnn_type)
 
     def sample_tree_from_grammar_vector(self, x):
         # Set our inference grammar's parameters accordingly.
@@ -237,7 +263,7 @@ class GrammarEncoder(torch.nn.Module):
                 elif isinstance(meta_node, IndependentSetNode):
                     product_weights = torch.sigmoid(raw_product_weights)
                     inclusion_lls = torch.log(product_weights)
-                elif isinstance(meta_node, GeometricSetNode):
+                elif isinstance(meta_node, (GeometricSetNode, RepeatingObjectSetNode)):
                     # Choose count
                     product_weights = torch.nn.functional.softmax(raw_product_weights, dim=0)
                     inclusion_lls = torch.log(torch.cumsum(product_weights))

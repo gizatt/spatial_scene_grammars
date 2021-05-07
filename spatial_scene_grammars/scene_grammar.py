@@ -13,7 +13,8 @@ import torch.distributions.constraints as constraints
 from .torch_utils import ConstrainedParameter
 from .nodes import (
     NonTerminalNode, TerminalNode, Node,
-    AndNode, OrNode, GeometricSetNode, IndependentSetNode
+    AndNode, OrNode, GeometricSetNode, IndependentSetNode,
+    RepeatingObjectSetNode
 )
 from .rules import ProductionRule
 from .scene_generative_program import SceneGenerativeProgram
@@ -324,7 +325,7 @@ class FullyParameterizedGrammar(SceneGrammarBase):
         elif isinstance(parent_node, IndependentSetNode):
             # Independent choose whether to include each.
             inclusion_dist = dist.Bernoulli(child_weights).to_event(1)
-        elif isinstance(parent_node, GeometricSetNode):
+        elif isinstance(parent_node, (GeometricSetNode, RepeatingObjectSetNode)):
             # Choose how many children to have and create a vector of
             # 1's up to that many children.
             inclusion_dist = LeftSidedRepeatingOnesDist(child_weights)
@@ -476,6 +477,9 @@ class FullyParameterizedSuperTreeGrammar(SceneGrammarBase):
                 geometric_child_choice_probs = torch.exp(dist.Geometric(p).log_prob(n_children_choices))
                 child_weights = ConstrainedParameter(geometric_child_choice_probs,
                                                      constraint=constraints.simplex)
+            elif isinstance(node, RepeatingObjectSetNode):
+                repeat_probs = node.repeat_probs.detach()
+                child_weights = ConstrainedParameter(repeat_probs, constraint=constraints.simplex)
             else:
                 raise NotImplementedError("Don't know how to encode Nonterminal type %s" % node.__class__.__name__)
             full_name = "%s:%s" % (unique_name, "child_weights")
@@ -547,12 +551,12 @@ class FullyParameterizedSuperTreeGrammar(SceneGrammarBase):
         elif isinstance(parent_node, IndependentSetNode):
             # Independent choose whether to include each.
             inclusion_dist = dist.Bernoulli(child_weights).to_event(1)
-        elif isinstance(parent_node, GeometricSetNode):
+        elif isinstance(parent_node, (GeometricSetNode, RepeatingObjectSetNode)):
             # Choose how many children to have and create a vector of
             # 1's up to that many children.
             inclusion_dist = LeftSidedRepeatingOnesDist(child_weights)
         else:
-            raise NotImplementedError("Don't know how to decode Nonterminal type %s" % meta_node.__class__.__name__)
+            raise NotImplementedError("Don't know how to decode Nonterminal type %s" % node_type.__name__)
         return inclusion_dist
         
     def _sample_children_from_parent_node(self, parent_node, unique_name, params):

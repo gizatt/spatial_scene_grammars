@@ -41,7 +41,6 @@ class LeftSidedRepeatingOnesDist(TorchDistribution):
     def sample(self, sample_shape=torch.Size()):
         ks = self._categorical.sample(sample_shape).int()
         out = torch.zeros(sample_shape + self.event_shape)
-        print(ks)
         out[..., :ks] = 1.
         return out
 
