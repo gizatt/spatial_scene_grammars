@@ -623,7 +623,7 @@ class FullyParameterizedSuperTreeGrammar(SceneGrammarBase):
             scene_tree, root_node, corresp_super_node,
             unique_name, params)
 
-    def score(self, scene_tree, params=None, detach=False):
+    def score(self, scene_tree, params=None, detach=False, include_discrete=True, include_continuous=True):
         ''' Scores given tree under this grammar using the grammar's currently
         stored parameter values, but the scene tree node's stored attributes.'''
         if params is None:
@@ -640,31 +640,33 @@ class FullyParameterizedSuperTreeGrammar(SceneGrammarBase):
             unique_name = self._get_unique_name(super_node)
 
             # Score node attributes vs our mean fields.
-            derived_var_dists, local_var_dists = self._make_variable_mean_fields(type(node), unique_name, params)
-            def calc_score(value_dict, dist_dict):
-                # Detach the values
-                if detach:
-                    detached_value_dict = {key: value.detach() for key, value in value_dict.items()}
-                    return node.get_variable_ll_given_dicts(detached_value_dict, dist_dict)
-                else:
-                    return node.get_variable_ll_given_dicts(value_dict, dist_dict)
-            total_ll = total_ll + calc_score(
-                node.get_derived_variable_values(),
-                derived_var_dists
-            )
-            total_ll = total_ll + calc_score(
-                node.get_local_variable_values(),
-                local_var_dists
-            )
+            if include_continuous:
+                derived_var_dists, local_var_dists = self._make_variable_mean_fields(type(node), unique_name, params)
+                def calc_score(value_dict, dist_dict):
+                    # Detach the values
+                    if detach:
+                        detached_value_dict = {key: value.detach() for key, value in value_dict.items()}
+                        return node.get_variable_ll_given_dicts(detached_value_dict, dist_dict)
+                    else:
+                        return node.get_variable_ll_given_dicts(value_dict, dist_dict)
+                total_ll = total_ll + calc_score(
+                    node.get_derived_variable_values(),
+                    derived_var_dists
+                )
+                total_ll = total_ll + calc_score(
+                    node.get_local_variable_values(),
+                    local_var_dists
+                )
 
             # Score node children, and get them into the expansion queue along with
             # their corresponding members of the super tree.
             if isinstance(node, NonTerminalNode):
                 children = list(scene_tree.successors(node))
                 super_children_candidates = list(self.canonical_super_scene_tree.successors(super_node))
-                inclusion_dist = self._make_inclusion_dist(node, unique_name, params)
                 inclusion_value = node.get_child_indicator_vector([type(c) for c in children])
-                total_ll = total_ll + inclusion_dist.log_prob(inclusion_value)
+                if include_discrete:
+                    inclusion_dist = self._make_inclusion_dist(node, unique_name, params)
+                    total_ll = total_ll + inclusion_dist.log_prob(inclusion_value)
 
                 # This code assumes the super scene tree children list is the same order as the
                 # maximal child type list. This sanity check trys to make sure that that's

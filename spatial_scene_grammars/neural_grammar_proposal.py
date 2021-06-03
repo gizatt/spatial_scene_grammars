@@ -124,10 +124,10 @@ class GrammarEncoder(torch.nn.Module):
     @dataclass
     class Config():
         # Classic stack of GRUs
-        rnn_type: str = "GRU"
+        #rnn_type: str = "GRU"
 
         # Fully-connected GCN
-        #rnn_type: str = "GCN"
+        rnn_type: str = "GCN"
 
         # GRU
         gru_num_layers: int = 3
@@ -180,15 +180,19 @@ class GrammarEncoder(torch.nn.Module):
             in_channels = self.embedding_size
             out_channels = self.n_parameters
             self.gcn = Sequential('x, edge_index', [
-                (GCNConv(in_channels, 64), 'x, edge_index -> x'),
+                (GCNConv(in_channels, 256), 'x, edge_index -> x'),
                 torch.nn.LeakyReLU(inplace=True),
-                (GCNConv(64, 256), 'x, edge_index -> x'),
+                (GCNConv(256, 512), 'x, edge_index -> x'),
                 torch.nn.LeakyReLU(inplace=True),
-                (GCNConv(256, 256), 'x, edge_index -> x'),
+                (GCNConv(512, 512), 'x, edge_index -> x'),
                 torch.nn.LeakyReLU(inplace=True),
-                (GCNConv(256, 64), 'x, edge_index -> x'),
+                (GCNConv(512, 512), 'x, edge_index -> x'),
                 torch.nn.LeakyReLU(inplace=True),
-                torch.nn.Linear(64, out_channels),
+                (GCNConv(512, 512), 'x, edge_index -> x'),
+                torch.nn.LeakyReLU(inplace=True),
+                (GCNConv(512, 256), 'x, edge_index -> x'),
+                torch.nn.LeakyReLU(inplace=True),
+                torch.nn.Linear(256, out_channels),
             ])
             self.empty_output = torch.nn.Parameter(
                 torch.normal(mean=0., std=1., size=(self.n_parameters,))
@@ -274,12 +278,16 @@ class GrammarEncoder(torch.nn.Module):
         assert torch.isclose(total_ll, proposal_trace.log_prob_sum())
         return proposal_trace.nodes["_RETURN"]["value"], total_ll, total_nonreparam_ll
 
-    def score_tree_with_grammar_vector(self, tree, x, detach=False):
+    def score_tree_with_grammar_vector(self, tree, x, detach=False, include_discrete=True, include_continuous=True):
         assert len(x.shape) == 1 and x.shape[0] == self.n_parameters
         params = vector_to_dict_of_constrained_params(x, self.inference_grammar.get_default_param_dict())
         # Get tree, and also its proposal density (including only the
         # non-reparam'd part).
-        return self.inference_grammar.score(tree, params=params, detach=detach)
+        return self.inference_grammar.score(
+            tree, params=params, detach=detach,
+            include_discrete=include_discrete,
+            include_continuous=include_continuous
+        )
 
     def get_product_weights_and_inclusion_lls(self, meta_tree, x):
         # TODO: Should this be a grammar function?
