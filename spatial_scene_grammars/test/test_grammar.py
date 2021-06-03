@@ -60,6 +60,42 @@ def test_grammar_params(set_seed):
     for k in ["Building:room_spacing", "Building:child_probs"]:
         assert k in grammar.default_params.keys()
 
+def test_node_sample_overrides():
+    # Forced choice of children
+    for k in range(10):
+        test_node = Building.init_with_default_parameters()
+        override_weights = torch.tensor([1., 0., 0., 0.])
+        override_child_dist = dist.Bernoulli(override_weights).to_event(1)
+        forced_children = test_node.sample_children(
+            child_inclusion_dist_override=override_child_dist
+        )
+        assert len(forced_children) == 1 and forced_children[0] == NorthRoom
+        assert torch.isclose(test_node.get_children_ll(), torch.zeros(1))
+
+        forced_child_types = [NorthRoom]
+        forced_children = test_node.sample_children(
+            observed_child_types=forced_child_types,
+            child_inclusion_dist_override=override_child_dist
+        )
+        assert len(forced_children) == 1 and forced_children[0] == NorthRoom
+        assert torch.isclose(test_node.get_children_ll(), torch.zeros(1))
+
+    # Forced local attributes
+    for k in range(10):
+        test_node = ColoredObject.init_with_default_parameters()
+        target_xy = torch.rand((2,))
+        derived_xy = {"xy": dist.Delta(target_xy)}
+        target_color = torch.rand((3,))
+        override_color = {"color": dist.Delta(target_color)}
+        test_node.instantiate(
+            derived_variable_distributions=derived_xy,
+            observed_derived_variables=None,
+            observed_local_variables=None,
+            local_variable_distributions_override=override_color
+        )
+        assert torch.allclose(target_color, test_node.color)
+
+
 @pytest.mark.parametrize('grammar_type', grammar_types)
 def test_grammar_param_override(set_seed, grammar_type):
     grammar = grammar_type(root_node_type, inst_dict)

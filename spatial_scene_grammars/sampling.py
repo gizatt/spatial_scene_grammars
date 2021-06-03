@@ -49,8 +49,7 @@ def eval_tree_likelihood_under_constraints(scene_tree, constraints, clamped_erro
 
 
 def rejection_sample_under_constraints_with_trace(
-        root_node_type, root_node_instantiation_dict,
-        constraints, max_num_attempts):
+        scene_grammar, constraints, max_num_attempts):
     # Try to rejection sample a reasonable configuration.
     # (Keep track of the "current best" in case we never accept a
     # configuration so we have *something* to return.)
@@ -59,7 +58,7 @@ def rejection_sample_under_constraints_with_trace(
     current_best_violation = torch.tensor(np.inf)
     for k in range(max_num_attempts):
         trace = pyro.poutine.trace(
-            SceneGrammar(root_node_type, root_node_instantiation_dict).forward
+                scene_grammar.forward
             ).get_trace()
         scene_tree = trace.nodes["_RETURN"]["value"]
         total_violation = eval_total_constraint_set_violation(scene_tree, constraints)
@@ -72,11 +71,10 @@ def rejection_sample_under_constraints_with_trace(
     return current_best_scene_tree, current_best_trace, False
 
 
-def _sample_backend_rejection(
-        root_node_type, root_node_instantiation_dict,
-        constraints, max_num_attempts=100):
+def _sample_backend_rejection(scene_grammar, constraints, max_num_attempts=100):
     scene_tree, _, success = rejection_sample_under_constraints_with_trace(
-        root_node_type, root_node_instantiation_dict, constraints, max_num_attempts)
+        scene_grammar, constraints, max_num_attempts
+    )
     return [scene_tree], success
 
 
@@ -93,9 +91,10 @@ def split_constraints(constraints):
     return topology_constraints, continuous_constraints
 
 
-def do_fixed_structure_mcmc(root_node_type, root_node_instantiation_dict, feasible_trace,
-                           constraints, callback, num_samples, verbose=False,
-                           kernel_constructor=RandomWalkKernel, **kwargs):
+def do_fixed_structure_mcmc(scene_grammar, feasible_trace,
+                            constraints, callback, num_samples, verbose=False,
+                            kernel_constructor=RandomWalkKernel, **kwargs):
+    raise NotImplementedError("Probably broken by API change")
     # Kernel type should be one of ["RandomWalkKernel", "HMC", "NUTS"].
     # kwargs is passed to the mcmc kernel constructor.
 
@@ -138,7 +137,7 @@ def do_fixed_structure_mcmc(root_node_type, root_node_instantiation_dict, feasib
     return mcmc, scene_tree
 
 def _sample_backend_rejection_and_hmc(
-        root_node_type, root_node_instantiation_dict,
+        scene_grammar,
         constraints, max_num_attempts=100, callback=None, num_samples=25):
     # Rejection sample to get a feasible configuration w.r.t. topology
     # constraints, and then perform HMC for the continuous constraints.
@@ -152,15 +151,17 @@ def _sample_backend_rejection_and_hmc(
     # check the topology-related constraints.
     topology_constraints, continuous_constraints = split_constraints(constraints)
     scene_tree, orig_trace, topology_feasible = rejection_sample_under_constraints_with_trace(
-        root_node_type, root_node_instantiation_dict,
-        topology_constraints, max_num_attempts=max_num_attempts)
+        scene_grammar, topology_constraints, max_num_attempts=max_num_attempts
+    )
     if not topology_feasible:
         print("Couldn't achieve even just the topology constraints on their own via rejection sampling.")
         return scene_tree, False
 
+    raise NotImplementedError("Probably broken by API change")
+
     # Now do HMC on the continuous variables that are involved
     # in the constraints.
-    mcmc, fixed_tree = do_fixed_structure_mcmc(root_node_type, root_node_instantiation_dict, orig_trace, constraints,
+    mcmc, fixed_tree = do_fixed_structure_mcmc(scene_grammar, orig_trace, constraints,
         callback=callback, num_samples=num_samples,
         kernel_constructor=pyro.infer.mcmc.HMC,
         num_steps=1, step_size=0.1, target_accept_prob=0.5, adapt_step_size=True,
@@ -189,7 +190,7 @@ def _sample_backend_rejection_and_hmc(
     return out_trees, True
 
 def _sample_backend_metroplis_procedural_modeling(
-        root_node_type, root_node_instantiation_dict,
+        scene_grammar,
         constraints, callback=None, max_num_attempts=100,
         num_samples=100, diffusion_rate=0.5, estimated_branching_factor=2):
     ''' Implements RJMCMC as described in Metroplis Procedural Modeling:
@@ -205,19 +206,20 @@ def _sample_backend_metroplis_procedural_modeling(
 
     topology_constraints, continuous_constraints = split_constraints(constraints)
     current_scene_tree, current_trace, topology_feasible = rejection_sample_under_constraints_with_trace(
-        root_node_type, root_node_instantiation_dict,
-        topology_constraints, max_num_attempts=max_num_attempts)
+        scene_grammar, topology_constraints, max_num_attempts=max_num_attempts)
     if not topology_feasible:
         print("Couldn't achieve even just the topology constraints on their own via rejection sampling.")
         return current_scene_tree, False
 
     samples = [deepcopy(current_scene_tree)]
 
+    raise NotImplementedError("API change")
+
     # Now do the primary MCMC steps as requested.
     for step_k in range(num_samples):
         if pyro.sample("step_%d_type" % step_k, dist.Bernoulli(diffusion_rate)):
             # Do diffusion step with constraints in mind
-            mcmc, fixed_tree = do_fixed_structure_mcmc(root_node_type, root_node_instantiation_dict, current_trace,
+            mcmc, fixed_tree = do_fixed_structure_mcmc(scene_grammar, current_trace,
                 constraints, callback=None, num_samples=1,
                 kernel_constructor=RandomWalkKernel,
                 variance=0.1)
@@ -353,9 +355,8 @@ def _sample_backend_metroplis_procedural_modeling(
     return samples, True
             
 
-def sample_tree_from_root_type_with_constraints(
-        root_node_type,
-        root_node_instantiation_dict,
+def sample_tree_from_grammar_with_constraints(
+        scene_grammar,
         constraints=[],
         backend="rejection",
         **backend_kwargs):
@@ -381,14 +382,13 @@ def sample_tree_from_root_type_with_constraints(
         the joint distribution induced by the scene grammar
         and the supplied factor set.
     '''
-    assert issubclass(root_node_type, Node)
-    assert isinstance(root_node_instantiation_dict, dict)
+    assert isinstance(scene_grammar, SceneGrammar)
     assert isinstance(constraints, list)
 
     # Short-circuit if there are no factors -- forward sampling
     # is enough.
     if len(constraints) == 0:
-        return [SceneGrammar(root_node_type, root_node_instantiation_dict)()], True
+        return [scene_grammar()], True
 
     if backend == "rejection":
         backend_handler = _sample_backend_rejection
@@ -399,5 +399,4 @@ def sample_tree_from_root_type_with_constraints(
     else:
         raise ValueError("Backend type %s" % backend)
 
-    return backend_handler(root_node_type, root_node_instantiation_dict,
-                           constraints, **backend_kwargs)
+    return backend_handler(scene_grammar, constraints, **backend_kwargs)

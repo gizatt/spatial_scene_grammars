@@ -23,8 +23,9 @@ pyro.enable_validation(True)
 root_node_type = Building
 inst_dict = {"xy": dist.Delta(torch.zeros(2))}
 grammar_types = [FullyParameterizedGrammar, SceneGrammar, FullyParameterizedSuperTreeGrammar]
+configs = [GrammarEncoder.Config(rnn_type="GCN"), GrammarEncoder.Config(rnn_type="GRU")]
 
-@pytest.fixture(params=range(10))
+@pytest.fixture(params=range(3))
 def set_seed(request):
     pyro.clear_param_store()
     torch.manual_seed(request.param)
@@ -47,13 +48,14 @@ def test_node_embedding():
     assert torch.all(torch.isfinite(out))
 
 @pytest.mark.parametrize('grammar_type', grammar_types)
-def test_grammar_encoder(set_seed, grammar_type):
+@pytest.mark.parametrize('config', configs)
+def test_grammar_encoder(set_seed, grammar_type, config):
     grammar = grammar_type(root_node_type, inst_dict)
     generated_tree = grammar()
     observed_nodes = [n for n in generated_tree.nodes() if isinstance(n, TerminalNode)]
     
     # Can we encode and decode?
-    encoder = GrammarEncoder(grammar, embedding_size=64)
+    encoder = GrammarEncoder(grammar, embedding_size=64, config=config)
     x = encoder(observed_nodes)
     assert torch.all(torch.isfinite(x))
     sampled_tree, ll, reparam_ll = encoder.sample_tree_from_grammar_vector(x)

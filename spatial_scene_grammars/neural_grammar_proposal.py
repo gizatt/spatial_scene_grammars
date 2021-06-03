@@ -9,6 +9,8 @@ from typing import Dict
 
 import torch
 import torch.distributions.constraints as constraints
+import torch_geometric
+from torch_geometric.nn import Sequential, GCNConv
 import pyro
 import pyro.distributions as dist
 from pyro.contrib.autoname import scope
@@ -88,24 +90,24 @@ class NodeEmbedding(torch.nn.Module):
     ''' Takes a node class (instantiated, but it doesn't matter with what)
         and prepares an embedding module for it that will transform the
         set of local variables of the node into a fixed size output. '''
-    def __init__(self, node_type, output_size, hidden_size=128):
+    def __init__(self, node_type, output_size, hidden_size=256):
         super().__init__()
         node_prototype = node_type.init_with_default_parameters()
         self.input_size = node_prototype.get_num_continuous_variables()
         self.output_size = output_size
         if self.input_size > 0:
-            self.fc1 = torch.nn.Linear(self.input_size, hidden_size)
-            self.fc2 = torch.nn.Linear(hidden_size, self.output_size)
+            self.embedding = torch.nn.Sequential(
+                torch.nn.Linear(self.input_size, hidden_size),
+                torch.nn.LeakyReLU(),
+                torch.nn.Linear(hidden_size, self.output_size)
+            )
         else:
             self.output_vec = torch.nn.Parameter(
                 torch.normal(mean=0., std=1., size=self.output_size)
             )
     def forward(self, x):
         if self.input_size > 0:
-            x = self.fc1(x)
-            x = x.relu()
-            x = self.fc2(x)
-            return x
+            return self.embedding(x)
         else:
             return self.output_vec
 
@@ -121,10 +123,17 @@ class GrammarEncoder(torch.nn.Module):
 
     @dataclass
     class Config():
-        rnn_type = "GRU"
-        
+        # Classic stack of GRUs
+        rnn_type: str = "GRU"
+
+        # Fully-connected GCN
+        #rnn_type: str = "GCN"
+
         # GRU
-        gru_num_layers = 3
+        gru_num_layers: int = 3
+        
+        # GCN
+
 
     def __init__(self, inference_grammar, embedding_size, config=None):
         super().__init__()
@@ -147,16 +156,16 @@ class GrammarEncoder(torch.nn.Module):
         # Resolve them to tensors so we can compute size.
         grammar_params_constrained = {key: value() for key, value in grammar_params.items()}
         x = dict_to_vector(grammar_params_constrained)
-        n_parameters = len(x)
+        self.n_parameters = len(x)
+        self.batch_size = 1
 
         # Save the canonical grammar parameter dict as a size reference.
         self.canonical_grammar_param_dict = grammar_params_constrained
         
         # Create the actual RNN.
         if config.rnn_type == "GRU":
-            self.hidden_size = n_parameters
+            self.hidden_size = self.n_parameters
             self.num_layers = config.gru_num_layers
-            self.batch_size = 1
             self.rnn = torch.nn.GRU(
                 input_size=self.embedding_size,
                 hidden_size=self.hidden_size,
@@ -167,6 +176,24 @@ class GrammarEncoder(torch.nn.Module):
             self.hidden_init = torch.nn.Parameter(
                 torch.normal(mean=0., std=1., size=(self.num_layers, self.batch_size, self.hidden_size))
             )
+        elif config.rnn_type == "GCN":
+            in_channels = self.embedding_size
+            out_channels = self.n_parameters
+            self.gcn = Sequential('x, edge_index', [
+                (GCNConv(in_channels, 64), 'x, edge_index -> x'),
+                torch.nn.LeakyReLU(inplace=True),
+                (GCNConv(64, 256), 'x, edge_index -> x'),
+                torch.nn.LeakyReLU(inplace=True),
+                (GCNConv(256, 256), 'x, edge_index -> x'),
+                torch.nn.LeakyReLU(inplace=True),
+                (GCNConv(256, 64), 'x, edge_index -> x'),
+                torch.nn.LeakyReLU(inplace=True),
+                torch.nn.Linear(64, out_channels),
+            ])
+            self.empty_output = torch.nn.Parameter(
+                torch.normal(mean=0., std=1., size=(self.n_parameters,))
+            )
+
         else:
             raise ValueError("Invalid rnn type: %s" % config.rnn_type)
 
@@ -189,6 +216,21 @@ class GrammarEncoder(torch.nn.Module):
         # Return the final hidden state, removing the batch dim.
         return output[-1, 0, :]
 
+    def _forward_gcn(self, all_x):
+        # Pass through RNN.
+        N_nodes = all_x.shape[0]
+        if N_nodes > 0:
+            # Build edge index map: all to all
+            fc_graph = nx.complete_graph(N_nodes)
+            edge_index = torch_geometric.utils.from_networkx(fc_graph).edge_index
+            output_per_node = self.gcn(all_x[:, 0, :], edge_index)
+            # Sum across nodes to produce final output.
+            output = output_per_node.sum(dim=0)
+        else:
+            output = self.empty_output
+        # Return the final hidden state, removing the batch dim.
+        return output
+
     def forward(self, observed_nodes, detach=True):
         # Detach: Detach node attributes.
         # Initialize RNN
@@ -205,12 +247,14 @@ class GrammarEncoder(torch.nn.Module):
             all_x[k, :, :] = self.node_embeddings_by_type[node.__class__.__name__](attr)
         if self.rnn_config.rnn_type == "GRU":
             return self._forward_gru(all_x)
+        elif self.rnn_config.rnn_type == "GCN":
+            return self._forward_gcn(all_x)
         else:
             raise ValueError("Invalid rnn type: ", self.rnn_config.rnn_type)
 
     def sample_tree_from_grammar_vector(self, x):
         # Set our inference grammar's parameters accordingly.
-        assert len(x.shape) == 1 and x.shape[0] == self.hidden_size
+        assert len(x.shape) == 1 and x.shape[0] == self.n_parameters
         params = vector_to_dict_of_constrained_params(x, self.inference_grammar.get_default_param_dict())
         # Get tree, and also its proposal density (including only the
         # non-reparam'd part).
@@ -230,12 +274,12 @@ class GrammarEncoder(torch.nn.Module):
         assert torch.isclose(total_ll, proposal_trace.log_prob_sum())
         return proposal_trace.nodes["_RETURN"]["value"], total_ll, total_nonreparam_ll
 
-    def score_tree_with_grammar_vector(self, tree, x):
-        assert len(x.shape) == 1 and x.shape[0] == self.hidden_size
+    def score_tree_with_grammar_vector(self, tree, x, detach=False):
+        assert len(x.shape) == 1 and x.shape[0] == self.n_parameters
         params = vector_to_dict_of_constrained_params(x, self.inference_grammar.get_default_param_dict())
         # Get tree, and also its proposal density (including only the
         # non-reparam'd part).
-        return self.inference_grammar.score(tree, params=params)
+        return self.inference_grammar.score(tree, params=params, detach=detach)
 
     def get_product_weights_and_inclusion_lls(self, meta_tree, x):
         # TODO: Should this be a grammar function?

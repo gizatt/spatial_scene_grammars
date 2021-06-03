@@ -335,7 +335,7 @@ class NonTerminalNode(Node):
         ''' Samples a list of child types for this node. '''
         # Get distribution over children.
         child_type_list = self.get_maximal_child_type_list()
-        if child_inclusion_dist_override:
+        if child_inclusion_dist_override is not None:
             child_inclusion_dist = child_inclusion_dist_override
         else:
             child_inclusion_dist = self._sample_children_impl()

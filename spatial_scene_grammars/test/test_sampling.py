@@ -31,17 +31,15 @@ def set_seed(request):
 
 def test_rejection(set_seed):
     grammar = SceneGrammar(root_node_type, inst_dict)
-    trees, success = sample_tree_from_root_type_with_constraints(
-        root_node_type,
-        inst_dict,
+    trees, success = sample_tree_from_grammar_with_constraints(
+        grammar,
         constraints=[],
         backend="rejection"
     )
     assert success
 
-    trees, success = sample_tree_from_root_type_with_constraints(
-        root_node_type,
-        inst_dict,
+    trees, success = sample_tree_from_grammar_with_constraints(
+        grammar,
         constraints=[object_count_constraint],
         backend="rejection",
         max_num_attempts=1000
