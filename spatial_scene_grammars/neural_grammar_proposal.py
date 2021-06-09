@@ -126,11 +126,16 @@ class GrammarEncoder(torch.nn.Module):
         # Classic stack of GRUs
         #rnn_type: str = "GRU"
 
-        # Fully-connected GCN
-        rnn_type: str = "GCN"
+        # If true, randomize order of inputs to GRU.
+        # Otherwise, order alphabetically by node class
+        # and then by XY.
+        rnn_randomize: bool = False
 
         # GRU
         gru_num_layers: int = 3
+
+        # Fully-connected GCN
+        rnn_type: str = "GCN"
         
         # GCN
 
@@ -243,8 +248,13 @@ class GrammarEncoder(torch.nn.Module):
         all_x = torch.empty(N_nodes, self.batch_size, self.embedding_size)
         # Randomize observed node order, since it's a unordered set
         # and we'd like to be robust to that.
-        shuffled_nodes = [observed_nodes[k] for k in torch.randperm(N_nodes)]
-        for k, node in enumerate(shuffled_nodes):
+        if self.rnn_config.rnn_randomize:
+            ordered_nodes = [observed_nodes[k] for k in torch.randperm(N_nodes)]
+        else:
+            def convert_node_to_string(node):
+                return node.__class__.__name__ + str(node.get_all_continuous_variables_as_vector())
+            ordered_nodes = sorted(observed_nodes, key=convert_node_to_string)
+        for k, node in enumerate(ordered_nodes):
             attr = node.get_all_continuous_variables_as_vector()
             if detach:
                 attr = attr.detach()
