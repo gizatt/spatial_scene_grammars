@@ -662,6 +662,9 @@ class FullyParameterizedSuperTreeGrammar(SceneGrammarBase):
             # their corresponding members of the super tree.
             if isinstance(node, NonTerminalNode):
                 children = list(scene_tree.successors(node))
+                # Reorder children deterministically by class name and attributes.
+                children = sorted(children, key=lambda n: n.convert_to_full_string())
+
                 super_children_candidates = list(self.canonical_super_scene_tree.successors(super_node))
                 inclusion_value = node.get_child_indicator_vector([type(c) for c in children])
                 if include_discrete:

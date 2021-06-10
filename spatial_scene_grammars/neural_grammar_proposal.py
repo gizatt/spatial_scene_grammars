@@ -251,9 +251,8 @@ class GrammarEncoder(torch.nn.Module):
         if self.rnn_config.rnn_randomize:
             ordered_nodes = [observed_nodes[k] for k in torch.randperm(N_nodes)]
         else:
-            def convert_node_to_string(node):
-                return node.__class__.__name__ + str(node.get_all_continuous_variables_as_vector())
-            ordered_nodes = sorted(observed_nodes, key=convert_node_to_string)
+            ordered_nodes = sorted(observed_nodes, key=lambda n: n.convert_to_full_string())
+
         for k, node in enumerate(ordered_nodes):
             attr = node.get_all_continuous_variables_as_vector()
             if detach:

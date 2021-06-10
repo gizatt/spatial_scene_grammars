@@ -311,6 +311,8 @@ class Node():
         assert self.instantiated
         return self._flatten_tensor_dict(self.get_all_continuous_variable_values())
 
+    def convert_to_full_string(self):
+        return self.__class__.__name__ + str(self.get_all_continuous_variables_as_vector())
 
 class TerminalNode(Node):
     ''' The leafs of a generated scene tree will be terminal nodes. '''
