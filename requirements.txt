@@ -4,6 +4,7 @@ lxml
 matplotlib
 networkx
 codecov
+pygraphviz
 pytest-cov
 pytest-subtests
 pyro-ppl==1.5.1
