@@ -221,7 +221,7 @@ class GrammarEncoder(torch.nn.Module):
             output, _ = self.rnn(all_x, self.hidden_init)
         else:
             output = self.hidden_init
-        output = self.final_fc(output)
+        output = self.final_fc(output).cpu()
         # Return the final hidden state, removing the batch dim.
         return output[-1, 0, :]
 
@@ -240,12 +240,15 @@ class GrammarEncoder(torch.nn.Module):
         # Return the final hidden state, removing the batch dim.
         return output
 
-    def forward(self, observed_nodes, detach=True):
+    def forward(self, observed_nodes, detach=True, cuda=False):
         # Detach: Detach node attributes.
         # Initialize RNN
         N_nodes = len(observed_nodes)
         assert self.batch_size == 1
         all_x = torch.empty(N_nodes, self.batch_size, self.embedding_size)
+        if cuda:
+            all_x = all_x.cuda()
+
         # Randomize observed node order, since it's a unordered set
         # and we'd like to be robust to that.
         if self.rnn_config.rnn_randomize:
@@ -257,6 +260,8 @@ class GrammarEncoder(torch.nn.Module):
             attr = node.get_all_continuous_variables_as_vector()
             if detach:
                 attr = attr.detach()
+            if cuda:
+                attr = attr.cuda()
             all_x[k, :, :] = self.node_embeddings_by_type[node.__class__.__name__](attr)
         if self.rnn_config.rnn_type == "GRU":
             return self._forward_gru(all_x)
