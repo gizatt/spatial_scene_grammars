@@ -95,6 +95,25 @@ def test_node_sample_overrides():
         )
         assert torch.allclose(target_color, test_node.color)
 
+def test_node_vectorize_devectorize(set_seed):
+    grammar = SceneGrammar(root_node_type, inst_dict)
+    tree = grammar.forward()
+    for node in tree:
+        vec = node.get_all_continuous_variables_as_vector()
+
+        node_reproduced = type(node).init_with_default_parameters()
+        derived, local = node_reproduced.get_continuous_variables_from_vector(vec)
+        derived_variable_dists = {key: dist.Delta(val) for key,  val in derived.items()} 
+        local_variable_dists = {key: dist.Delta(val) for key,  val in local.items()}
+        node_reproduced.instantiate(
+            derived_variable_distributions=derived_variable_dists,
+            local_variable_distributions_override=local_variable_dists
+        )
+
+        assert_identical_dicts_of_tensors(
+            node.get_all_continuous_variable_values(),
+            node_reproduced.get_all_continuous_variable_values()
+        )
 
 @pytest.mark.parametrize('grammar_type', grammar_types)
 def test_grammar_param_override(set_seed, grammar_type):

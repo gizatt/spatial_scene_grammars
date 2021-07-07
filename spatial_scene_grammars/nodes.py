@@ -299,6 +299,22 @@ class Node():
         else:
             return torch.empty((0,))
 
+    @staticmethod
+    def _unflatten_tensor_dict(tensor, info_dict):
+        # Walk through shapes_dict, reassembling elements from the tensor
+        # into matching shapes. Throws an error of the tensor's total
+        # size isn't right.
+        assert len(tensor.shape) == 1
+        ind = 0
+        out = {}
+        for key, info in info_dict.items():
+            size = np.prod(info.shape)
+            out[key] = tensor[ind:(ind+size)].view(info.shape)
+            ind += size
+            assert ind <= tensor.shape[0]
+        assert ind == tensor.shape[0]
+        return out
+
     def get_derived_variables_as_vector(self):
         assert self.instantiated
         return self._flatten_tensor_dict(self.derived_variable_values)
@@ -310,6 +326,18 @@ class Node():
     def get_all_continuous_variables_as_vector(self):
         assert self.instantiated
         return self._flatten_tensor_dict(self.get_all_continuous_variable_values())
+
+    @classmethod
+    def get_continuous_variables_from_vector(self, tensor):
+        assert len(tensor.shape) == 1
+        derived_info = self.get_derived_variable_info()
+        n_derived = sum([np.prod(info.shape) for info in derived_info.values()])
+        local_info = self.get_local_variable_info()
+        n_local = sum([np.prod(info.shape) for info in local_info.values()])
+        assert tensor.shape[0] >= (n_derived + n_local)
+        derived = self._unflatten_tensor_dict(tensor[:n_derived], derived_info)
+        local = self._unflatten_tensor_dict(tensor[n_derived:(n_derived+n_local)], local_info)
+        return derived, local
 
     def convert_to_full_string(self):
         return self.__class__.__name__ + str(self.get_all_continuous_variables_as_vector())
