@@ -10,12 +10,19 @@ alt="Preview of some generated rooms" border="10" />
 <img src="spatial_scene_grammars_examples/kitchen/scene_with_google_models.png" 
 alt="Preview of some generated rooms" border="10" />
 
-Environment generation tool using attributed stochastic scene grammars.
-
 # Overview
 
+**Goal:** provide a language for writing parameterized procedural models of environments based on scene grammars that have first-class support for:
+- Forward sampling to generate lots of new scenes, where the output of the model might be an object set, or it might be an observed camera image.
+- Scene parsing: given an observed environment, find program traces of the procedural model that reproduce it.
+- Posterior inference of model parameters given datasets of observed environments (where observations might be object sets or even observed camera images).
+
+<!--
 See [`examples/kitchen`](spatial_scene_grammars_examples/kitchen/README.md) for a demo of programmatically specifying a grammar
 and using it to generate scenes.
+-->
+
+Below are some old-ish notes on the precise spec of a spatial scene grammar; they may not be up to date any more.
 
 ## Grammar Details: Nodes and Rules
 
