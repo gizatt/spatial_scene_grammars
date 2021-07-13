@@ -1,6 +1,10 @@
 Spatial Scene Grammars
 -------------
 
+**FYI: WIP / research codebase -- currently pretty broken due to some low-level interface changes, but pushing back to functionality.**
+
+
+
 <img src="spatial_scene_grammars_examples/kitchen/demo_rooms.gif" 
 alt="Preview of some generated rooms" border="10" />
 <img src="spatial_scene_grammars_examples/kitchen/scene_with_google_models.png" 
