@@ -224,7 +224,7 @@ def draw_boxes(scene_tree, fig=None, ax=None, block=False, xlim=[-5., 5.]):
         colors.append(colors_by_type[node.__class__.__name__])
         pos[node] = node.xy.detach().numpy()
 
-    nx.draw_networkx(scene_tree, pos=pos, node_color=colors, with_labels=False, node_size=3.)
+    nx.draw_networkx(scene_tree, ax=ax, pos=pos, node_color=colors, with_labels=False, node_size=3.)
     ax.set_xlim(xlim[0], xlim[1])
     ax.set_ylim(ground_level-1, ground_level + 5)
     ax.axis("off")
