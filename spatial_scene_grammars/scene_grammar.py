@@ -44,6 +44,9 @@ class SceneTree(nx.DiGraph):
                 raise ValueError(">10k iters when finding root. Not a tree?")
         return root
 
+    def find_nodes_by_type(self, node_type):
+        return [n for n in self.nodes if isinstance(n, node_type)]
+
 class SpatialSceneGrammar():
     '''
     Manages a scene grammar that produces scene trees by composition
