@@ -11,6 +11,7 @@ torch.set_default_tensor_type(torch.DoubleTensor)
 @pytest.fixture(params=range(10))
 def set_seed(request):
     torch.manual_seed(request.param)
+    np.random.seed(request.param)
 
 def make_dummy_node():
     return Node(
@@ -90,7 +91,7 @@ def test_UniformBoundedRevoluteJointRule(set_seed):
     ll = rule.score_child(parent, child)
 
 @pytest.mark.parametrize("angle", torch.arange(start=-np.pi+1E-3, end=np.pi-1E-3, step=np.pi/8.))
-def test_AngleAxisInversion(angle):
+def test_AngleAxisInversion(set_seed, angle):
     # Test angle-axis inversion
     random_axis = np.random.normal(0., 1., 3)
     random_axis = torch.tensor(random_axis / np.linalg.norm(random_axis))
@@ -108,7 +109,7 @@ def test_AngleAxisInversion(angle):
     recovered_angle, recovered_axis = rule._recover_relative_angle_axis(parent, child)
     assert torch.allclose(recovered_angle, angle)
     if torch.abs(angle) > 0:
-        assert torch.allclose(recovered_axis, random_axis)
+        assert torch.allclose(recovered_axis, random_axis, atol=1E-4, rtol=1E-4)
 
 def test_ProductionRule(set_seed):
     class DummyType(Node):

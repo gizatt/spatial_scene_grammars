@@ -203,14 +203,14 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         axis_angle = quaternion_to_axis_angle(matrix_to_quaternion(relative_R))
         angle = torch.norm(axis_angle, p=2)
         axis = axis_angle / angle
-        if torch.abs(angle) > 0 and not torch.allclose(axis,  self.axis):
-            if torch.allclose(-axis, self.axis):
+        if torch.abs(angle) > 0 and not torch.allclose(axis,  self.axis, atol=1E-4, rtol=1E-4):
+            if torch.allclose(-axis, self.axis, atol=1E-4, rtol=1E-4):
                 # Flip axis and angle to make them match
                 axis = -axis
                 angle = -angle
             else:
                 # No saving this; axis doesn't match.
-                raise ValueError("Child illegal rotated from parent.")
+                raise ValueError("Child illegalal rotated from parent: %s vs %s" % (axis, self.axis))
         return angle, axis
         
     def score_child(self, parent, child):
