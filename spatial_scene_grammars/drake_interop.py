@@ -32,7 +32,12 @@ from pydrake.all import (
     Value
 )
 import pydrake.geometry as pydrake_geom
-from .visualization import rgb_2_hex
+
+def torch_tf_to_drake_tf(tf):
+    return RigidTransform(tf.cpu().detach().numpy())
+
+def drake_tf_to_torch_tf(tf):
+    return torch.tensor(tf.GetAsMatrix4())
 
 
 default_spatial_inertia = SpatialInertia(
@@ -42,12 +47,11 @@ default_spatial_inertia = SpatialInertia(
 default_friction = CoulombFriction(0.9, 0.8)
 class PhysicsGeometryInfo():
     '''
-    Container for physics and geometry info, providing
-    Drake / simulator interoperation. Used by nodes that supply Drake
-    geometry information.
+    Container for physics and geometry info, providing simulator and
+    visualization interoperation.
     Args:
-        - fixed: Whether this geometry is floating in the final simulation
-            (as oppposed to welded to the world).
+        - fixed: Whether this geometry is welded to the world (otherwise,
+            it will be mobilized by a 6DOF floating base).
         - spatial_inertia: Spatial inertia of the body. If None,
             will adopt a default mass of 1.0kg and 0.01x0.01x0.01 diagonal
             rotational inertia.
@@ -61,7 +65,9 @@ class PhysicsGeometryInfo():
             stuff that does not interact with anything outside of
             the cabinet.
 
-    Enables calls to register geometry of the following types:
+    To construct a PhysicsGeometricInfo object, initialize the object
+    with the desired arguments above, and then use registration calls
+    to populate the model geometry of the following types:
         - Model files (urdf/sdf), paired with a transform from the object
           local origin, the name of the root body (which gets put at that
           transform -- required if there's more than one body in the URDF),
@@ -109,9 +115,9 @@ class PhysicsGeometryInfo():
 
 
 def sanity_check_node_tf_and_physics_geom_info(node):
-    assert isinstance(node.tf, torch.Tensor)
-    assert node.tf.shape == (4, 4)
-    assert isinstance(node.physics_geometry_info, PhysicsGeometryInfo)
+    assert isinstance(node.tf, torch.Tensor), type(node.tf)
+    assert node.tf.shape == (4, 4), node.tf.shape
+    assert isinstance(node.physics_geometry_info, PhysicsGeometryInfo), type(node.physics_geometry_info)
 
 
 class DecayingForceToDesiredConfigSystem(LeafSystem):
@@ -175,44 +181,6 @@ class DecayingForceToDesiredConfigSystem(LeafSystem):
         y_data.set_value(forces)
 
 
-def torch_tf_to_drake_tf(tf):
-    return RigidTransform(tf.cpu().detach().numpy())
-
-
-def drake_tf_to_torch_tf(tf):
-    return torch.tensor(tf.GetAsMatrix4())
-
-
-def draw_scene_tree_meshcat(scene_tree, zmq_url=None, alpha=0.25, draw_clearance_geom=False):
-    vis = meshcat.Visualizer(zmq_url=zmq_url or "tcp://127.0.0.1:6000")
-    
-    if draw_clearance_geom:
-        builder, mbp, scene_graph = compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree)
-    else:
-        builder, mbp, scene_graph, _, _, = compile_scene_tree_to_mbp_and_sg(scene_tree)
-    mbp.Finalize()
-
-    if draw_clearance_geom:
-        prefix = "clearance_geom"
-    else:
-        prefix = "scene_tree"
-
-    vis[prefix].delete()
-    vis = ConnectMeshcatVisualizer(builder, scene_graph,
-        zmq_url="default", prefix=prefix)
-    diagram = builder.Build()
-    context = diagram.CreateDefaultContext()
-    vis.load(vis.GetMyContextFromRoot(context))
-    diagram.Publish(context)
-    # Necessary to manually remove this meshcat visualizer now that we're
-    # done with it, as a lot of Drake systems (that are involved with the
-    # diagram builder) don't get properly garbage collected. See
-    # Drake issue #14387.
-    # Meshcat collects sockets, so deleting this avoids a file descriptor
-    # leak.
-    del vis.vis
-
-
 def resolve_catkin_package_path(package_map, input_str):
     if "://" in input_str:
         elements = input_str.split("://")
@@ -225,6 +193,7 @@ def resolve_catkin_package_path(package_map, input_str):
         )
     else:
         return input_str
+
 
 def compile_scene_tree_clearance_geometry_to_mbp_and_sg(scene_tree, timestep=0.001, alpha=0.25):
     builder = DiagramBuilder()

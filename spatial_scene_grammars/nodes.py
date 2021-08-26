@@ -178,7 +178,9 @@ class OrNode(Node):
 class GeometricSetNode(Node):
     ''' Given a *single production rule*, repeatedly enacts it until
     a coin flip succeeds or the maximum number of children has been added.
-    Hence, it can produce [1, ..., max_children] children. '''
+    Hence, it can produce [1, ..., max_children] children.
+
+        p here is the probability of *stopping* at any given trial.'''
     def __init__(self, rule, p, max_children, **kwargs):
         assert isinstance(rule, ProductionRule)
         self.rule = rule
