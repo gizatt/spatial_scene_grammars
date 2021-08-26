@@ -5,9 +5,9 @@ import torch.distributions.constraints as constraints
 from torch.nn.parameter import Parameter
 
 from spatial_scene_grammars.torch_utils import ConstrainedParameter
-from spatial_scene_grammars.scene_grammar import *
+from spatial_scene_grammars.grammar import *
 from spatial_scene_grammars.nodes import *
-from spatial_scene_grammars.constraints import *
+from spatial_scene_grammars.rules import *
 
 torch.set_default_tensor_type(torch.DoubleTensor)
 pyro.enable_validation(True)

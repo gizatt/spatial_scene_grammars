@@ -11,4 +11,5 @@ pyro-ppl==1.5.1
 torchviz
 torch==1.7.1
 torch_geometric==1.7.0
+pytorch3d==0.3
 meshcat

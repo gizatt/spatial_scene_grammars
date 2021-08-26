@@ -1,142 +1,222 @@
-import torch
+from copy import deepcopy
+from collections import namedtuple
+import numpy as np
 import pyro
+import pyro.distributions as dist
 from pyro.contrib.autoname import scope
+import torch
+from torch.distributions import constraints
 
-from .nodes import Node
+from pytorch3d.transforms.rotation_conversions import (
+    quaternion_to_matrix, matrix_to_quaternion,
+    axis_angle_to_matrix, quaternion_to_axis_angle
+)
 
-class ProductionRule(object):
-    ''' Abstract interface for a production rule, which controls
-    the generation of a (fixed) set of product nodes given a parent node.
+from .distributions import VectorCappedGeometricDist, LeftSidedRepeatingOnesDist
+from .torch_utils import ConstrainedParameter
 
-    These explicitly represent the "continuous" part of a
-    factorization of the grammar spec into discrete and continuous
-    parts.
+import pydrake
+from pydrake.all import (
+    CoulombFriction,
+    SpatialInertia,
+    UnitInertia
+)
 
-    To correctly create a ProductionRule subclass:
-    1) Make sure your subclass has a child_types member that lists the precise
-    set of child node types in the order they'll come out of sample_products.
-    2) Implement _sample_products. (Not sample_products!)
+
+class ProductionRule():
+    '''
+        Rule by which a child node's pose is derived
+        from its parent.
+
+        Produced by mixing together two sub-rules that
+            control the xyz and rotation relationships.
+
+        Groups together a few interfaces that share the
+        same undlerying math:
+            - Sample the child given the parent.
+            - Compute the log-prob of the child given the parent.
+            - Add mathematical programming constraints reflecting
+              the child being feasible w.r.t. the parent.
+            - Add mathematical programming costs reflecting the
+              score of the child relative to the parent.        
     '''
 
-    @classmethod
-    def get_child_types(cls):
-        if not hasattr(cls, "child_types"):
-            raise ValueError("Your Rule subclass %s should explicitly list child_types"\
-                             " in a static member variable." % cls.__name__)
-        return cls.child_types
+    def __init__(self, child_type, xyz_rule, rotation_rule):
+        assert isinstance(xyz_rule, XyzProductionRule)
+        assert isinstance(rotation_rule, RotationProductionRule)
+        self.child_type = child_type
+        self.xyz_rule = xyz_rule
+        self.rotation_rule = rotation_rule
 
-    def sample_products(self, parent, child_names):
-        ''' 
-            Wraps _sample_products in a trace, keeping track of
-            the identity of the variables that are sampled by the node
-            production.
-        args:
-            parent: the NonTerminalNode using this rule
-            child_names: A list of names to pass through to children.
-        returns: a list of instantiated nodes
-        '''
-        self.trace = pyro.poutine.trace(self._sample_products).get_trace(parent, child_names)
-        if self.verify:
-            # Make sure that all sampled variables are continuous.
-            for key, value in self.trace.nodes.items():
-                if key not in ("_RETURN", "_INPUT"):
-                    if value["type"] == "sample":
-                        support = value["fn"].support
-                        # TODO: Expand to exhaustive list of
-                        # all continuous distribution constraint / support
-                        # types. I didn't see any obvious inheritence hierarchy
-                        # I can take advantage of to make this easier...
-                        assert isinstance(
-                            support,
-                            (torch.distributions.constraints._Real,
-                             torch.distributions.constraints._Interval)
-                        ), "Sample sites in sample_products should only sample continuous " \
-                           "values: this one has support " + str(support)
-        return self.trace.nodes["_RETURN"]["value"]
+    def sample_child(self, parent):
+        xyz = self.xyz_rule.sample_xyz(parent)
+        rotmat = self.rotation_rule.sample_rotation(parent)
+        tf = torch.empty(4, 4)
+        tf[:3, :3] = rotmat[:, :]
+        tf[:3, 3] = xyz[:]
+        tf[3, :] = torch.tensor([0., 0., 0., 1.])
+        return self.child_type(tf=tf)
 
-    def _sample_products(self, parent):
-        ''' Produces a set of child nodes.
-        args:
-            parent: the NonTerminalNode using this rule.
-        returns: a list of instantiated nodes
-        '''
-        raise NotImplementedError()
-
-    def get_local_variable_names(self):
-        assert hasattr(self, "trace"), "sample_products not called yet for rule " + str(self)
-        return [key for key in list(self.trace.nodes.keys()) if key not in ["_RETURN", "_INPUT"]]
-
-
-class EmptyProductionRule(ProductionRule):
-    child_types = []
-    def _sample_products(self, parent):
-        assert(len(child_names) == 0)
-        return []
-
-
-def make_trivial_production_rule(child_type, kwargs):
-    raise NotImplementedError("Involves type() or something")
-
-
-class RandomRelativePoseProductionRule(ProductionRule):
-    ''' Helper ProductionRule type representing random placement,
-    described by a distribution on relative pose between two nodes. '''
-    def __init__(self, child_type, relative_tf_sampler,  child_postfix="", **kwargs):
-        ''' Args:
-                child_type: Child node type. Should be a subclass of SpatialNode.
-                relative_tf_sampler: callable that samples a 4x4 tf.
-                kwargs: Additional arguments passed to the child.
-        '''
-        assert issubclass(child_type, SpatialNode)
-        self.relative_tf_sampler = relative_tf_sampler
-        self.child_postfix = child_postfix
-        self.kwargs = kwargs
-        super().__init__(child_types=[child_type])
-
-    def _sample_products(self, parent, child_names):
-        assert(isinstance(parent, SpatialNode))
-        assert(len(child_names) == 1)
-        new_tf = torch.mm(parent.tf, self.relative_tf_sampler())
-        return [self.child_types[0](
-            name=child_names[0] + self.child_postfix,
-            tf=new_tf,
-            **self.kwargs)]
-
-class DeterministicRelativePoseProductionRule(RandomRelativePoseProductionRule):
-    ''' Helper ProductionRule type representing
-    deterministic relative offsets between two nodes that have poses.
-
-    In practice, shells out to RandomRelativePoseProductionRule, but supplies
-    a deterministic sampler. '''
-    def __init__(self, child_type, relative_tf, **kwargs):
-        ''' Args:
-                child_type: Callable that takes `name` and `tf` args,
-                    and produces a Node with SpatialNode.
-                relative_tf: 4x4 torch tf matrix.
-        '''
-        RandomRelativePoseProductionRule.__init__(
-            self,
-            child_type,
-            lambda: relative_tf,
-            **kwargs
+    def score_child(self, parent, child):
+        return (
+            self.xyz_rule.score_child(parent, child) +
+            self.rotation_rule.score_child(parent, child)
         )
 
-class ComposedProductionRule(ProductionRule):
-    ''' Given a set of production rules, this rule groups and enacts all of them. '''
-    def __init__(self, production_rules):
-        self.production_rules = production_rules
-        child_types = []
-        for rule in self.production_rules:
-            child_types += rule.get_child_types()
-        super().__init__(child_types=child_types)
+    def add_mip_constraints_for_child(self, prog, parent, child):
+        self.xyz_rule.add_mip_constraints_for_child(parent, child)
+        self.rotation_rule.add_mip_constraints_for_child(parent, child)
 
-    def _sample_products(self, parent, child_names):
-        assert len(child_names) == len(self.child_types)
-        k = 0
-        children = []
-        for rule_k, rule in enumerate(self.production_rules):
-            k_next = k + len(rule.get_child_types())
-            with scope(prefix="subprod_%d" % rule_k):
-                children += rule._sample_products(parent, child_names[k:k_next])
-            k = k_next
-        return children
+    def add_mip_cost_for_child(self, prog, parent, child):
+        self.xyz_rule.add_mip_cost_for_child(parent, child)
+        self.rotation_rule.add_mip_cost_for_child(parent, child)
+
+
+## XYZ Production rules
+class XyzProductionRule():
+    '''
+        Instructions for how to produce a child's position
+        from the parent.
+    '''
+    def __init__(self):
+        pass
+    def sample_xyz(self, parent):
+        raise NotImplementedError()
+    def score_child(self, parent, child):
+        raise NotImplementedError()
+    def add_mip_constraints_for_child(self, prog, parent, child):
+        raise NotImplementedError()
+    def add_mip_cost_for_child(self, prog, parent, child):
+        raise NotImplementedError()
+
+
+class WorldBBoxRule(XyzProductionRule):
+    ''' Child xyz is uniformly chosen in [lb, ub] in world frame,
+        without relationship to the parent. '''
+    def __init__(self, lb, ub):
+        assert isinstance(lb, torch.Tensor) and lb.shape == (3,)
+        assert isinstance(ub, torch.Tensor) and ub.shape == (3,)
+        self.lb = lb
+        self.ub = ub
+        self.xyz_dist = dist.Uniform(lb, ub)
+        super().__init__()
+
+    def sample_xyz(self, parent):
+        return self.xyz_dist.rsample()
+
+    def score_child(self, parent, child):
+        return self.xyz_dist.log_prob(child.translation).sum()
+
+
+class AxisAlignedBBoxRule(XyzProductionRule):
+    ''' Child xyz is parent xyz + a uniform offset in [lb, ub]
+        in world frame. '''
+    def __init__(self, lb, ub):
+        assert isinstance(lb, torch.Tensor) and lb.shape == (3,)
+        assert isinstance(ub, torch.Tensor) and ub.shape == (3,)
+        self.lb = lb
+        self.ub = ub
+        self.xyz_offset_dist = dist.Uniform(lb, ub)
+        super().__init__()
+
+    def sample_xyz(self, parent):
+        return parent.translation + self.xyz_offset_dist.rsample()
+
+    def score_child(self, parent, child):
+        xyz_offset = child.translation - parent.translation
+        return self.xyz_offset_dist.log_prob(xyz_offset).sum()
+
+
+## Rotation production rules
+class RotationProductionRule():
+    '''
+        Instructions for how to produce a child's position
+        from the parent.
+    '''
+    def __init__(self):
+        pass
+    def sample_rotation(self, parent):
+        raise NotImplementedError()
+    def score_child(self, parent, child):
+        raise NotImplementedError()
+    def add_mip_constraints_for_child(self, prog, parent, child):
+        raise NotImplementedError()
+    def add_mip_cost_for_child(self, prog, parent, child):
+        raise NotImplementedError()
+
+
+class UnconstrainedRotationRule(RotationProductionRule):
+    '''
+        Child rotation is randomly chosen from all possible
+        rotations with no relationship to parent.
+    '''
+    def __init__(self):
+        super().__init__()
+
+    def sample_rotation(self, parent):
+        # Sample random unit quaternion and convert to rotation.
+        random_quat = torch.zeros(4)
+        sample_dist = dist.Normal(torch.zeros(4), torch.ones(4))
+        while torch.norm(random_quat, 2) < 1E-3:
+            # Repeat until we get a nonzero quaternion (to catch
+            # the off chance we sample all zeros).
+            random_quat = sample_dist.rsample()
+        random_quat = random_quat / torch.norm(random_quat, p=2)
+        R = quaternion_to_matrix(random_quat.unsqueeze(0))[0, ...]
+        return R
+
+    def score_child(self, parent, child):
+        # Score is uniform over SO(3). I'm picking a random
+        # quaternion from (half)* surface of the 4D hypersphere
+        # and converting to a rotation matrix; so density is
+        # 1 / (half area of 4D unit hypersphere).
+        # Area of 4D unit hypersphere is (2 * pi^2 * R^3)
+        # -> 1 / pi^2
+        print("TODO: CHECK ME FOR CORRECTNESS")
+        return np.log(1. / np.pi**2)
+
+
+class UniformBoundedRevoluteJointRule(RotationProductionRule):
+    '''
+        Child rotation is randomly chosen uniformly from a bounded
+        range of angles around a revolute joint axis about the parent.
+    '''
+    def __init__(self, axis, lb, ub):
+        assert isinstance(axis, torch.Tensor) and axis.shape == (3,)
+        assert isinstance(lb, float) and isinstance(ub, float) and lb <= ub
+        self.axis = axis
+        self.lb = lb
+        self.ub = ub
+        self._angle_dist = dist.Uniform(lb, ub)
+
+    def sample_rotation(self, parent):
+        angle = self._angle_dist.rsample()
+        angle_axis = self.axis * angle
+        R_offset = axis_angle_to_matrix(angle_axis.unsqueeze(0))[0, ...]
+        R = torch.matmul(parent.rotation, R_offset)
+        return R
+
+    def _recover_relative_angle_axis(self, parent, child):
+        # Recover angle-axis
+        relative_R = torch.matmul(torch.transpose(parent.rotation, 0, 1), child.rotation)
+
+        axis_angle = quaternion_to_axis_angle(matrix_to_quaternion(relative_R))
+        angle = torch.norm(axis_angle, p=2)
+        axis = axis_angle / angle
+        if torch.abs(angle) > 0 and not torch.allclose(axis,  self.axis):
+            if torch.allclose(-axis, self.axis):
+                # Flip axis and angle to make them match
+                axis = -axis
+                angle = -angle
+            else:
+                # No saving this; axis doesn't match.
+                raise ValueError("Child illegal rotated from parent.")
+        return angle, axis
+        
+    def score_child(self, parent, child):
+        print("TEST ME")
+        if (self.ub - self.lb) >= 2. * np.pi:
+            # Uniform rotation in 1D base case
+            return np.log(1. / (2. * np.pi))
+        angle, axis = self._recover_relative_angle_axis(parent, child)
+        return self._angle_dist.log_prob(angle)
