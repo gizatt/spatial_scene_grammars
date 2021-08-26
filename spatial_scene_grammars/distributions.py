@@ -1,8 +1,10 @@
 import numpy as np
 import torch
+from numbers import Number
 from torch.distributions import constraints
 from torch.distributions.geometric import Geometric
 from torch.distributions.categorical import Categorical
+from torch.distributions.utils import broadcast_all
 import pyro
 from pyro.distributions.torch_distribution import TorchDistribution
 
@@ -20,7 +22,46 @@ class LeftSidedConstraint(constraints.Constraint):
         is_boolean = (value == 0) | (value == 1)
         neighbor_diff = value[..., -1:] - value[..., :-1]
         return is_boolean.all(-1) & (neighbor_diff <= 0) .all(-1)
-        
+
+
+class UniformWithEqualityHandling(torch.distributions.Uniform):
+    ''' Uniform distribution, but if any of the lower bounds equal
+    the upper bounds, those elements are replaced with Delta distributions. '''
+
+    def __init__(self, low, high, validate_args=None):
+        self.low, self.high = broadcast_all(low, high)
+
+        if isinstance(low, Number) and isinstance(high, Number):
+            batch_shape = torch.Size()
+            self.delta_mask = torch.isclose(torch.tensor(high) - torch.tensor(low), torch.tensor(0.))
+        else:
+            batch_shape = self.low.size()
+            self.delta_mask = torch.isclose(high - low, high*0.)
+        super(torch.distributions.Uniform, self).__init__(batch_shape, validate_args=validate_args)
+    
+    def log_prob(self, value):
+        if self._validate_args:
+            self._validate_sample(value)
+        lb = self.low.le(value).type_as(self.low)
+        ub = self.high.gt(value).type_as(self.low)
+        uniform_ll = torch.log(lb.mul(ub)) - torch.log(self.high - self.low)
+        # Replace with torch.log(1) = 0 everywhere that 
+        uniform_ll[self.delta_mask] = 0.
+        return uniform_ll
+
+    def cdf(self, value):
+        if self._validate_args:
+            self._validate_sample(value)
+        result = (value - self.low) / (self.high - self.low)
+        result[self.delta_mask] = (value >= self.low)[self.delta_mask]*1.
+        return result.clamp(min=0, max=1)
+    
+    def entropy(self):
+        diff = self.high - self.low
+        diff[self.delta_mask] = 1.
+        # Entropy of delta = 1. * log(1.) = 0.
+        return torch.log(diff)
+
 
 class LeftSidedRepeatingOnesDist(TorchDistribution):
     ''' Distribution with support over a binary vector x [1, ... 1, 0, ... 0],

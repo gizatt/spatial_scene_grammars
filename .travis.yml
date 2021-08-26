@@ -23,7 +23,7 @@ install:
 
 script:
   - source ./setup.sh
-  - pytest --pyargs spatial_scene_grammars --cov=./
+  - pytest --pyargs spatial_scene_grammars --cov=./ --continue-on-collection-errors
   
 after_success:
   - codecov

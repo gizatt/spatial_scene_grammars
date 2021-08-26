@@ -12,7 +12,7 @@ from pytorch3d.transforms.rotation_conversions import (
     axis_angle_to_matrix, quaternion_to_axis_angle
 )
 
-from .distributions import VectorCappedGeometricDist, LeftSidedRepeatingOnesDist
+from .distributions import UniformWithEqualityHandling
 from .torch_utils import ConstrainedParameter
 
 import pydrake
@@ -92,13 +92,13 @@ class XyzProductionRule():
 
 class WorldBBoxRule(XyzProductionRule):
     ''' Child xyz is uniformly chosen in [lb, ub] in world frame,
-        without relationship to the parent. '''
+        without relationship to the parent.'''
     def __init__(self, lb, ub):
         assert isinstance(lb, torch.Tensor) and lb.shape == (3,)
         assert isinstance(ub, torch.Tensor) and ub.shape == (3,)
         self.lb = lb
         self.ub = ub
-        self.xyz_dist = dist.Uniform(lb, ub)
+        self.xyz_dist = UniformWithEqualityHandling(lb, ub)
         super().__init__()
 
     def sample_xyz(self, parent):
@@ -110,13 +110,17 @@ class WorldBBoxRule(XyzProductionRule):
 
 class AxisAlignedBBoxRule(XyzProductionRule):
     ''' Child xyz is parent xyz + a uniform offset in [lb, ub]
-        in world frame. '''
+        in world frame.
+
+        TODO(gizatt) Add support for lb = ub; this requires
+        special wrapping around Uniform to handle the equality
+        cases as Delta distributions. '''
     def __init__(self, lb, ub):
         assert isinstance(lb, torch.Tensor) and lb.shape == (3,)
         assert isinstance(ub, torch.Tensor) and ub.shape == (3,)
         self.lb = lb
         self.ub = ub
-        self.xyz_offset_dist = dist.Uniform(lb, ub)
+        self.xyz_offset_dist = UniformWithEqualityHandling(lb, ub)
         super().__init__()
 
     def sample_xyz(self, parent):
@@ -187,7 +191,7 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         self.axis = axis
         self.lb = lb
         self.ub = ub
-        self._angle_dist = dist.Uniform(lb, ub)
+        self._angle_dist = UniformWithEqualityHandling(lb, ub)
 
     def sample_rotation(self, parent):
         angle = self._angle_dist.rsample()
