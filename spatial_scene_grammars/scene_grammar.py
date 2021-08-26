@@ -11,14 +11,10 @@ import torch
 import torch.distributions.constraints as constraints
 
 from .torch_utils import ConstrainedParameter
-from .nodes import (
-    NonTerminalNode, TerminalNode, Node,
-    AndNode, OrNode, GeometricSetNode, IndependentSetNode,
-    RepeatingObjectSetNode
+from .nodes import (Node, TerminalNode,
+    AndNode, OrNode, GeometricSetNode
 )
 from .rules import ProductionRule
-from .scene_generative_program import SceneGenerativeProgram
-from .distributions import LeftSidedRepeatingOnesDist
 
 
 def get_tree_root(tree):
@@ -29,6 +25,24 @@ def get_tree_root(tree):
         root_node = tree.predecessors(root_node)[0]
     return root_node
 
+
+class SceneTree(nx.DiGraph):
+
+    def get_observed_nodes(self):
+        # Pulls out only nodes in the tree that are
+        # "observable."
+        return [n for n in self if n.observed is True]
+
+    def get_root(self):
+        # Assumes tree structure; might infinite loop otherwise.
+        k = 0
+        root = list(self.nodes)[0]
+        while len(list(self.predecessors(root))) > 0:
+            root = list(self.predecessors(root))[0]
+            k += 1
+            if (k > 10000):
+                raise ValueError(">10k iters when finding root. Not a tree?")
+        return root
 
 class SpatialSceneGrammar():
     '''
@@ -42,14 +56,18 @@ class SpatialSceneGrammar():
         self.root_node_tf = root_node_tf
         self.do_sanity_checks = do_sanity_checks
 
-    def forward(self, params=None):
-        # Samples a tree, ensuring our stored parameters get substituted
-        # into every node that is generated.
-        if params is None:
-            params = self.get_default_param_dict()
+    def sample_tree(self):
+        tree = SceneTree()
 
-        scene_tree = SceneTree()
-        root_node = self._spawn_node_with_our_params(self.root_node_type, params)
-        root_node.instantiate(self.root_node_instantiation_dict)
-        scene_tree.add_node(root_node)
-        return self._generate_from_node_recursive(scene_tree, root_node, params)
+        root = self.root_node_type(tf=self.root_node_tf)
+        tree.add_node(root)
+        node_queue = [root]
+        while len(node_queue) > 0:
+            parent = node_queue.pop(0)
+            # Ask node to sample its children.
+            children = parent.sample_children()
+            for child in children:
+                tree.add_node(child)
+                tree.add_edge(parent, child)
+                node_queue.append(child)
+        return tree
