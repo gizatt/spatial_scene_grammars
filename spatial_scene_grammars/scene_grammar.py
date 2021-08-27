@@ -74,3 +74,33 @@ class SpatialSceneGrammar():
                 tree.add_edge(parent, child)
                 node_queue.append(child)
         return tree
+
+    def make_super_tree(self, max_recursion_depth=15):
+        # Forms a graph of nodes for which any actual sampled tree would be a subgraph.
+        # (TF's are all set to 0.)
+        tree = SceneTree()
+
+        root = self.root_node_type(tf = torch.eye(4))
+        # Label recursion depth in on nodes of super tree.
+        root._recursion_depth = 0
+        tree.add_node(root)
+        node_queue = [root]
+        while len(node_queue) > 0:
+            parent = node_queue.pop(0)
+            if isinstance(parent, (AndNode, OrNode)):
+                maximal_children = [r.child_type for r in parent.rules]
+            elif isinstance(parent, GeometricSetNode):
+                maximal_children = [parent.rule.child_type for k in range(parent.max_children)]
+            elif isinstance(parent, TerminalNode):
+                maximal_children = []
+            else:
+                raise ValueError(type(parent))
+
+            for child_type in maximal_children:
+                child = child_type(tf = torch.eye(4))
+                child._recursion_depth = parent._recursion_depth + 1
+                if child._recursion_depth <= max_recursion_depth:
+                    tree.add_node(child)
+                    tree.add_edge(parent, child)
+                    node_queue.append(child)
+        return tree

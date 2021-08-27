@@ -41,3 +41,27 @@ def test_grammar(set_seed):
         assert all([isinstance(c, (NodeD, NodeE, NodeF)) for c in obs])
 
     assert len(tree.find_nodes_by_type(NodeA)) == 1
+
+def test_supertree():
+    grammar = SpatialSceneGrammar(
+        root_node_type = NodeA,
+        root_node_tf = torch.eye(4)
+    )
+    # excessive recursion depth for this grammar
+    super_tree = grammar.make_super_tree(max_recursion_depth=20)
+    # Some basic, necessary-but-not-sufficient checks that the
+    # tree isn't obviously wrong.
+    assert isinstance(super_tree.get_root(), NodeA)
+    C = super_tree.find_nodes_by_type(NodeC)[0]
+    assert len(super_tree.find_nodes_by_type(NodeF)) == C.max_children
+    Bs = super_tree.find_nodes_by_type(NodeB)
+    assert len(Bs) == 1
+    B = Bs[0]
+    assert len(list(super_tree.successors(B))) == 2 # Takes both options
+
+    # Test that recursion depth takes effect by making it too small
+    super_tree = grammar.make_super_tree(max_recursion_depth=1)
+    assert len(super_tree.find_nodes_by_type(NodeA)) == 1
+    assert len(super_tree.find_nodes_by_type(NodeC)) == 1
+    assert len(super_tree.find_nodes_by_type(NodeF)) == 0
+    
