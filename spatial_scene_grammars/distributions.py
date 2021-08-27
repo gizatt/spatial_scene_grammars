@@ -28,8 +28,14 @@ class UniformWithEqualityHandling(torch.distributions.Uniform):
     ''' Uniform distribution, but if any of the lower bounds equal
     the upper bounds, those elements are replaced with Delta distributions. '''
 
-    def __init__(self, low, high, validate_args=None):
+    def __init__(self, low, high, validate_args=None, eps=1E-6):
         self.low, self.high = broadcast_all(low, high)
+
+        # Tolerance in bounds-checking. Very low because
+        # I use SNOPT in this repo, which has 1E-6 default
+        # tolerance and struggles to do better. TODO(gizatt) Need
+        # a study of where I'm losing tolerance so I can tighten this.
+        self.eps = eps
 
         if isinstance(low, Number) and isinstance(high, Number):
             batch_shape = torch.Size()
@@ -48,14 +54,14 @@ class UniformWithEqualityHandling(torch.distributions.Uniform):
         # Handle uniform part
         in_bounds = torch.logical_and(
             value >= self.low,
-            value <= self.high
+            value <= self.high,
         )
         on_bounds = torch.logical_or(
-            torch.isclose(value, self.low),
-            torch.isclose(value, self.high)
+            torch.isclose(value, self.low, atol=self.eps, rtol=self.eps),
+            torch.isclose(value, self.high, atol=self.eps, rtol=self.eps)
         )
         ll = torch.log(torch.zeros_like(value))
-        in_bounds_uniform = torch.logical_and(in_bounds, ~self.delta_mask)
+        in_bounds_uniform = torch.logical_and(torch.logical_or(in_bounds, on_bounds), ~self.delta_mask)
         ll[in_bounds_uniform] = self.uniform_in_bounds_ll[in_bounds_uniform]
         ll[torch.logical_and(on_bounds, self.delta_mask)] = 0.
         return ll

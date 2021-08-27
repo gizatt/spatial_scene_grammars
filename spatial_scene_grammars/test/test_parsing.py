@@ -7,6 +7,8 @@ from spatial_scene_grammars.parsing import *
 
 from .grammar import *
 
+from pydrake.all import SnoptSolver
+
 torch.set_default_tensor_type(torch.DoubleTensor)
 
 @pytest.fixture(params=range(3))
@@ -39,6 +41,8 @@ def assert_explains_observeds(observed_tree, optimized_tree):
 # Try to parse a trivial subset of our grammar with a
 # simple solver. (The solver is very slow with additional
 # complexity.)
+@pytest.mark.skipif(not SnoptSolver().available(),
+                    reason='This test relies on Gurobi and SNOPT.')
 def test_parsing_simple(set_seed):
     grammar = SpatialSceneGrammar(
         root_node_type = NodeC,
@@ -72,7 +76,8 @@ def test_parsing_simple(set_seed):
 ## Try to parse samples from our very simple (but
 # still nontrivial, due to rotations and hidden
 # nodes) grammar.
-@pytest.mark.skipif(os.environ.get('GUROBI_PATH') is None, reason='This test relies on Gurobi.')
+@pytest.mark.skipif(os.environ.get('GUROBI_PATH') is None or not SnoptSolver().available(),
+                    reason='This test relies on Gurobi and SNOPT.')
 def test_parsing_complex(set_seed):
     grammar = SpatialSceneGrammar(
         root_node_type = NodeA,

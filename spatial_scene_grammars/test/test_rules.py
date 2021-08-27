@@ -6,12 +6,18 @@ from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
 from torch.distributions import constraints
 
+from pydrake.all import (
+    UniformlyRandomRotationMatrix,
+    RandomGenerator
+)
+
 torch.set_default_tensor_type(torch.DoubleTensor)
 
 @pytest.fixture(params=range(10))
 def set_seed(request):
     torch.manual_seed(request.param)
     np.random.seed(request.param)
+    return RandomGenerator(request.param)
 
 def make_dummy_node():
     return Node(
@@ -97,6 +103,7 @@ def test_AngleAxisInversion(set_seed, angle):
     random_axis = torch.tensor(random_axis / np.linalg.norm(random_axis))
     rule = UniformBoundedRevoluteJointRule(axis=random_axis, lb=-np.pi+1E-3, ub=np.pi-1E-3)
     parent = make_dummy_node()
+    parent.rotation = torch.tensor(UniformlyRandomRotationMatrix(set_seed).matrix())
 
     # Make child with known offset
     # TODO could grab this from inside the rule evaluation

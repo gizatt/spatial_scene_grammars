@@ -147,9 +147,10 @@ def encode_UniformBoundedRevoluteJointRule(rule, prog, parent, child):
     # "center" us in the bound region, and the symmetric bound size alpha.
     # -alpha <= theta - (a+b)/2 <= alpha
     # where alpha = (b-a) / 2
+    print("NOT SURE IS CORRECT YET")
     alpha = (max_angle - min_angle) / 2.
     offset_angle = (max_angle + min_angle) / 2.
-    R_offset = RotationMatrix(AngleAxis(offset_angle, axis)).matrix()
+    R_offset = RotationMatrix(AngleAxis(-offset_angle, axis)).matrix()
     # |R_WC*R_CJc*v - R_WP * R_PJp * R(k,(a+b)/2)*v | <= 2*sin (α / 2) in
     # global ik code; for us, I'm assuming the joint frames are aligned with
     # the body frames, so R_CJc and R_PJp are identitiy.
@@ -478,6 +479,7 @@ def adjust_mle_scene_tree(scene_tree, verbose=False):
     3) Uses the scene tree's current (possibly infeasible) configuration
         as the initial guess.
     '''
+    eps = 1E-6
     start_time = time.time()
     prog = MathematicalProgram()
 
@@ -494,10 +496,12 @@ def adjust_mle_scene_tree(scene_tree, verbose=False):
         # If it's an observed node or the root node, constrain the pose
         # to not change, and that's it.
         if node.observed or node is root_node:
+            # TODO(gizatt) Rip this apart and figure out why I need such loose feasibility
+            # tolerances.
             R_target = node.rotation.cpu().detach().numpy()
-            prog.AddBoundingBoxConstraint(R_target.flatten(), R_target.flatten(), node.R_optim.flatten())
+            prog.AddBoundingBoxConstraint(R_target.flatten()-eps, R_target.flatten()+eps, node.R_optim.flatten())
             t_target = node.translation.cpu().detach().numpy()
-            prog.AddBoundingBoxConstraint(t_target, t_target, node.t_optim)
+            prog.AddBoundingBoxConstraint(t_target-eps, t_target+eps, node.t_optim)
         else:
             # Otherwise, constraint the pose to be a legal and good pose.
             # R.' R = I
@@ -505,7 +509,8 @@ def adjust_mle_scene_tree(scene_tree, verbose=False):
             I = np.eye(3)
             for i in range(3):
                 for j in range(3):
-                    prog.AddConstraint(RtR[i, j] == I[i, j])
+                    prog.AddConstraint(RtR[i, j] >= I[i, j] - eps)
+                    prog.AddConstraint(RtR[i, j] <= I[i, j] + eps)
             # det(R) = +1; using cross product form and expressing it loosely, just to
             # keep SNOPT from falsely returning a flip-and-rotation as a legitimate
             # solution. Idea here is that the first two columns of the rotation
@@ -552,11 +557,19 @@ def adjust_mle_scene_tree(scene_tree, verbose=False):
     ## Solve
     setup_time = time.time()
     solver = SnoptSolver()
-    result = solver.Solve(prog)
+    options = SolverOptions()
+    logfile = "/tmp/snopt.log"
+    os.system("rm %s" % logfile)
+    options.SetOption(solver.id(), "Print file", logfile)
+    options.SetOption(solver.id(), "Major feasibility tolerance", eps)
+    result = solver.Solve(prog, None, options)
     solve_time = time.time()
-    
+
     if verbose:
         print("Success?: ", result.is_success())
+        print("Logfile: ")
+        with open(logfile) as f:
+            print(f.read())
         print("Solve time: ", solve_time-setup_time)
         print("Total time: ", solve_time - start_time)
 

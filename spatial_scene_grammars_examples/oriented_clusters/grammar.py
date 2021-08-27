@@ -50,7 +50,7 @@ class BoxPreYRotation(AndNode):
 
 class OrientedCluster(GeometricSetNode):
     BoxPreYRotationRule = ProductionRule(
-        child_type=BoxPreYRotation,
+        child_type=LongBox,
         xyz_rule=AxisAlignedBBoxRule(
             lb=-torch.ones(3)*0.1,
             ub=torch.ones(3)*0.1

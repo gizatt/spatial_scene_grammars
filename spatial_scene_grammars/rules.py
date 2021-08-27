@@ -187,7 +187,7 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         R = torch.matmul(parent.rotation, R_offset)
         return R
 
-    def _recover_relative_angle_axis(self, parent, child, allowed_axis_diff=1. * np.pi/180.):
+    def _recover_relative_angle_axis(self, parent, child, allowed_axis_diff=5. * np.pi/180.):
         # Recover angle-axis relationship between a parent and child.
         # Thrrows if we can't find a rotation axis between the two within
         # requested diff of our expected axis.
@@ -205,11 +205,12 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         axis_misalignment = torch.acos((axis * self.axis).sum()).item()
         if axis_misalignment >= allowed_axis_diff:
             # No saving this; axis doesn't match.
-            raise ValueError("Child illegal rotated from parent: %s vs %s, error of %f deg" % (axis, self.axis, axis_misalignment * 180./np.pi))
+            raise ValueError("Parent %s, Child %s: " % (parent, child),
+                             "Child illegal rotated from parent: %s vs %s, error of %f deg" % (axis, self.axis, axis_misalignment * 180./np.pi))
 
         return angle, axis
         
-    def score_child(self, parent, child, allowed_axis_diff=1. * np.pi/180.):
+    def score_child(self, parent, child, allowed_axis_diff=5. * np.pi/180.):
         if (self.ub - self.lb) >= 2. * np.pi:
             # Uniform rotation in 1D base case
             return np.log(1. / (2. * np.pi))
