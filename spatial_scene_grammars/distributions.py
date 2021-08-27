@@ -37,19 +37,31 @@ class UniformWithEqualityHandling(torch.distributions.Uniform):
         else:
             batch_shape = self.low.size()
             self.delta_mask = torch.isclose(high - low, high*0.)
+
+        self.uniform_in_bounds_ll = -torch.log(self.high - self.low)
         super(torch.distributions.Uniform, self).__init__(batch_shape, validate_args=validate_args)
     
     def log_prob(self, value):
         if self._validate_args:
             self._validate_sample(value)
-        lb = self.low.le(value).type_as(self.low)
-        ub = self.high.gt(value).type_as(self.low)
-        uniform_ll = torch.log(lb.mul(ub)) - torch.log(self.high - self.low)
-        # Replace with torch.log(1) = 0 everywhere that 
-        uniform_ll[self.delta_mask] = 0.
-        return uniform_ll
+        
+        # Handle uniform part
+        in_bounds = torch.logical_and(
+            value >= self.low,
+            value <= self.high
+        )
+        on_bounds = torch.logical_or(
+            torch.isclose(value, self.low),
+            torch.isclose(value, self.high)
+        )
+        ll = torch.log(torch.zeros_like(value))
+        in_bounds_uniform = torch.logical_and(in_bounds, ~self.delta_mask)
+        ll[in_bounds_uniform] = self.uniform_in_bounds_ll[in_bounds_uniform]
+        ll[torch.logical_and(on_bounds, self.delta_mask)] = 0.
+        return ll
 
     def cdf(self, value):
+        print("WARN: NOT VALIDATED")
         if self._validate_args:
             self._validate_sample(value)
         result = (value - self.low) / (self.high - self.low)
@@ -57,6 +69,7 @@ class UniformWithEqualityHandling(torch.distributions.Uniform):
         return result.clamp(min=0, max=1)
     
     def entropy(self):
+        print("WARN: NOT VALIDATED")
         diff = self.high - self.low
         diff[self.delta_mask] = 1.
         # Entropy of delta = 1. * log(1.) = 0.
