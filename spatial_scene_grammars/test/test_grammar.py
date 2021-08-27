@@ -29,6 +29,8 @@ def test_grammar(set_seed):
     )
     tree = grammar.sample_tree()
 
+    assert(torch.isfinite(tree.score()))
+
     assert isinstance(tree, SceneTree)
 
     root = tree.get_root()

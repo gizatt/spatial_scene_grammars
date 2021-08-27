@@ -13,6 +13,11 @@ from pytorch3d.transforms.rotation_conversions import (
 
 torch.set_default_tensor_type(torch.DoubleTensor)
 
+@pytest.fixture(params=range(10))
+def set_seed(request):
+    torch.manual_seed(request.param)
+
+
 class DummyType(Node):
     def __init__(self, tf):
         super().__init__(observed=False, physics_geometry_info=None, tf=tf)
@@ -66,9 +71,12 @@ def test_AndNode():
     children = node.sample_children()
     assert len(children) == 3
     assert all([isinstance(c, DummyType) for c in children])
+    expected_prob = torch.zeros(1)
+    score = node.score_child_set(children)
+    assert torch.isclose(score, expected_prob), "%s vs %s" % (expected_prob, score)
 
 ## OrNode
-def test_OrNode():
+def test_OrNode(set_seed):
     node = OrNode(
         rules=[dummyRule, dummyRule, dummyRule],
         rule_probs=torch.tensor([0.75, 0.2, 0.05]),
@@ -79,9 +87,13 @@ def test_OrNode():
     children = node.sample_children()
     assert len(children) == 1
     assert all([isinstance(c, DummyType) for c in children])
+    expected_prob = torch.log(node.rule_probs[children[0].rule_k])
+    score = node.score_child_set(children)
+    assert torch.isclose(score, expected_prob), "%s vs %s" % (expected_prob, score)
+
 
 ## GeometricSetNode
-def test_GeometricSetNode():
+def test_GeometricSetNode(set_seed):
     node = GeometricSetNode(
         rule=dummyRule,
         p=0.2,
@@ -93,3 +105,6 @@ def test_GeometricSetNode():
     children = node.sample_children()
     assert len(children) <= 5 and len(children) >= 1
     assert all([isinstance(c, DummyType) for c in children])
+    expected_prob = torch.log(torch.tensor((1. - node.p) ** (len(children) - 1) * node.p))
+    score = node.score_child_set(children)
+    assert torch.isclose(score, expected_prob), "%s vs %s" % (expected_prob, score)

@@ -37,6 +37,7 @@ from pydrake.all import (
     RollPitchYaw,
     RotationMatrix,
     GurobiSolver,
+    SnoptSolver,
     OsqpSolver,
     Solve,
     SolverOptions,
@@ -133,6 +134,7 @@ def encode_UniformBoundedRevoluteJointRule(rule, prog, parent, child):
     # (2): Eq(10) in the global IK paper. Following implementation in
     # https://github.com/RobotLocomotion/drake/blob/master/multibody/inverse_kinematics/global_inverse_kinematics.cc
     # First generate a vector normal to the rotation axis via cross products.
+
     v_c = np.cross(axis, np.array([0., 0., 1.]))
     if np.linalg.norm(v_c) <= np.sqrt(2)/2:
         # Axis is too close to +z; try a different axis.
@@ -167,8 +169,9 @@ rotation_rule_to_encode_map = {
 
 
 # Return type of infer_mle_tree_with_mip
-TreeInferenceResults = namedtuple("TreeInferenceResults", ["optim_result", "super_tree", "observed_nodes"])
-def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, solver="gurobi", verbose=False):
+TreeInferenceResults = namedtuple("TreeInferenceResults", ["solver", "optim_result", "super_tree", "observed_nodes"])
+def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, solver="gurobi", verbose=False,
+                            num_intervals_per_half_axis=2):
     ''' Given a grammar and an observed node set, find the MLE tree induced
     by that grammar (up to a maximum recursion depth) that reproduces the
     observed node set, or report that it's infeasible. '''
@@ -196,7 +199,7 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
     # Every node gets an optimized pose.
     mip_rot_gen = MixedIntegerRotationConstraintGenerator(
         approach = MixedIntegerRotationConstraintGenerator.Approach.kBilinearMcCormick,
-        num_intervals_per_half_axis=2,
+        num_intervals_per_half_axis=num_intervals_per_half_axis,
         interval_binning = IntervalBinning.kLogarithmic
     )
     for node_k, node in enumerate(super_tree.nodes):
@@ -230,10 +233,10 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
     ## For each node in the super tree, add relationships between the parent
     ## and that node.
     for parent_node in super_tree:
-        children = list(super_tree.successors(parent_node))
+        children = super_tree.get_children(parent_node)
         ## Get child rule list.
         if isinstance(parent_node, GeometricSetNode):
-            rules = [parent_node.rule]
+            rules = [parent_node.rule for k in range(len(children))]
         elif isinstance(parent_node, (AndNode, OrNode)):
             rules = parent_node.rules
         elif isinstance(parent_node, TerminalNode):
@@ -362,7 +365,7 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
     # Finally, build the objective.
     for parent_node in super_tree:
         # For the discrete states, do maximum likelihood.
-        children = list(super_tree.successors(parent_node))
+        children = super_tree.get_children(parent_node)
         if isinstance(parent_node, (AndNode, TerminalNode)):
             pass
         elif isinstance(parent_node, OrNode):
@@ -417,6 +420,150 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
     if verbose:
             print("Solve time: ", solve_time-setup_time)
             print("Total time: ", solve_time - start_time)
-            
 
-    return TreeInferenceResults(result, super_tree, observed_nodes)
+    return TreeInferenceResults(solver, result, super_tree, observed_nodes)
+
+def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=False):
+    ''' From the specified inference results, extract the scene tree. '''
+    # Grab that supertree from optimization
+    
+    #TODO packing of TreeInferenceResults should handle this complexity
+    if isinstance(inference_results.solver,  MixedIntegerBranchAndBound):
+        optim_result, success = (
+            inference_results.solver,
+            inference_results.optim_result
+        )
+    elif isinstance(inference_results.solver, GurobiSolver):
+        optim_result, success = (
+            inference_results.optim_result,
+            inference_results.optim_result.is_success()
+        )
+    else:
+        raise ValueError(inference_results.solver)
+    super_tree = inference_results.super_tree
+    observed_nodes = inference_results.observed_nodes
+
+    # Sanity-check observed nodes are explained properly.
+    for observed_node in observed_nodes:
+        if not np.isclose(np.sum(optim_result.GetSolution(observed_node.source_actives)), 1.):
+            if assert_on_failure:
+                raise ValueError("observed node %s not explained by MLE sol." % str(observed_node))
+            else:
+                print("WARN: observed node %s not explained by MLE sol." % str(observed_node))
+
+    optimized_tree = SceneTree()
+    for node in super_tree:
+        if optim_result.GetSolution(node.active) > 0.5:
+            optimized_tree.add_node(node)
+            # May have to post-process R to closest good R?
+            node.tf = drake_tf_to_torch_tf(RigidTransform(
+                p=optim_result.GetSolution(node.t_optim),
+                R=RotationMatrix(optim_result.GetSolution(node.R_optim))
+            ))
+            parents = list(super_tree.predecessors(node))
+            assert len(parents) <= 1
+            if len(parents) == 1:
+                parent = parents[0]
+                assert parent.active
+                optimized_tree.add_edge(parent, node)
+    return optimized_tree
+
+
+TreeRefinementResults = namedtuple("TreeRefinementResults", ["optim_result", "refined_tree", "unrefined_tree"])
+def adjust_mle_scene_tree(scene_tree, verbose=False):
+    ''' Given a scene tree, set up a nonlinear optimization:
+    1) Keeps the tree structure the same, but tweaks non-observed,
+        non-root node poses.
+    2) Optimizes for feasibility (of relative node poses) and maximum tree score.
+    3) Uses the scene tree's current (possibly infeasible) configuration
+        as the initial guess.
+    '''
+    start_time = time.time()
+    prog = MathematicalProgram()
+
+    # Add pose decision variables with constraints.
+    root_node = scene_tree.get_root()
+    for k, node in enumerate(scene_tree.nodes):
+        # Declare decision variables for pose and seed them from
+        # the input tree's poses.
+        node.R_optim = prog.NewContinuousVariables(3, 3, "R_%d" % k)
+        prog.SetInitialGuess(node.R_optim, node.rotation.detach().cpu().numpy())
+        node.t_optim = prog.NewContinuousVariables(3, "t_%d" % k)
+        prog.SetInitialGuess(node.t_optim, node.translation.detach().cpu().numpy())
+
+        # If it's an observed node or the root node, constrain the pose
+        # to not change, and that's it.
+        if node.observed or node is root_node:
+            R_target = node.rotation.cpu().detach().numpy()
+            prog.AddBoundingBoxConstraint(R_target.flatten(), R_target.flatten(), node.R_optim.flatten())
+            t_target = node.translation.cpu().detach().numpy()
+            prog.AddBoundingBoxConstraint(t_target, t_target, node.t_optim)
+        else:
+            # Otherwise, constraint the pose to be a legal and good pose.
+            # R.' R = I
+            RtR = node.R_optim.T.dot(node.R_optim)
+            I = np.eye(3)
+            for i in range(3):
+                for j in range(3):
+                    prog.AddConstraint(RtR[i, j] == I[i, j])
+            # det(R) = +1; using cross product form and expressing it loosely, just to
+            # keep SNOPT from falsely returning a flip-and-rotation as a legitimate
+            # solution. Idea here is that the first two columns of the rotation
+            # are the X and Y axes of the new coordinate; the Z axis of that right-handed
+            # coordinate system should be the same direction as the last column.
+            z_dir = np.cross(node.R_optim[:, 0], node.R_optim[:, 1])
+            prog.AddConstraint(np.dot(z_dir, node.R_optim[:, 2]) >= 0)
+            # Strong bounding box on rotation matrix elements.
+            #prog.AddBoundingBoxConstraint(-np.ones(9), np.ones(9), node.R_optim.flatten())
+            # Translation
+            # Add really loose bbox constraint, to keep SNOPT from running away.
+            # TODO(gizatt) Update these to use scene tree production bounds, if I
+            # ever get around to adding that.
+            prog.AddBoundingBoxConstraint(-np.ones(3)*10, np.ones(3)*10, node.t_optim)
+
+        
+    # Constraint parent/child relationships.
+    for parent_node in scene_tree.nodes:
+        children = scene_tree.get_children(parent_node)
+        # Get child rule list.
+        if isinstance(parent_node, GeometricSetNode):
+            rules = [parent_node.rule for k in range(len(children))]
+        elif isinstance(parent_node, AndNode):
+            rules = parent_node.rules
+        elif isinstance(parent_node, OrNode):
+            assert len(children) == 1
+            rules = [parent_node.rules[children[0].rule_k]]
+        elif isinstance(parent_node, TerminalNode):
+            rules = []
+        else:
+            raise ValueError("Unexpected node type: ", type(parent_node))
+
+        ## Child location constraints relative to parent.
+        for rule, child_node in zip(rules, children):
+            xyz_rule, rotation_rule = rule.xyz_rule, rule.rotation_rule
+
+            # Look up how to encode these rule types, and dispatch.
+            assert type(xyz_rule) in xyz_rule_to_encode_map.keys(), type(xyz_rule)
+            xyz_rule_to_encode_map[type(xyz_rule)](xyz_rule, prog, parent_node, child_node)
+            assert type(rotation_rule) in rotation_rule_to_encode_map.keys(), type(rotation_rule)
+            rotation_was_fully_constrained = \
+                rotation_rule_to_encode_map[type(rotation_rule)](rotation_rule, prog, parent_node, child_node)
+
+    ## Solve
+    setup_time = time.time()
+    solver = SnoptSolver()
+    result = solver.Solve(prog)
+    solve_time = time.time()
+    
+    if verbose:
+        print("Success?: ", result.is_success())
+        print("Solve time: ", solve_time-setup_time)
+        print("Total time: ", solve_time - start_time)
+
+    out_tree = deepcopy(scene_tree)
+    if result.is_success():
+        # Copy results into scene tree node positions
+        for out_node, orig_node in zip(out_tree, scene_tree):
+            out_node.translation = torch.tensor(result.GetSolution(orig_node.t_optim))
+            out_node.rotation = torch.tensor(result.GetSolution(orig_node.R_optim))
+    return TreeRefinementResults(result, out_tree, scene_tree)

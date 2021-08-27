@@ -60,6 +60,8 @@ class Node():
         
         # Non-public attributes
         self._do_sanity_checks = do_sanity_checks
+        self._rule_k = None # Bookkeeping; which rule does this correspond to in a parent?
+
         # Use the parameter setter to copy attrs over to self with
         # optional sanity checking and additional attribute setup.
         self._parameters = parameters
@@ -126,17 +128,28 @@ class Node():
     def rotation(self, R):
         assert isinstance(R, torch.Tensor) and R.shape == (3, 3)
         self.tf[:3, :3] = R[:3, :3]
-    
+
+    @property
+    def rule_k(self):
+        return self._rule_k
+    @rule_k.setter
+    def rule_k(self, rule_k):
+        self._rule_k = rule_k
 
     def sample_children(self):
         raise NotImplementedError("Implement sample_children in subclass.")
-
+    def score_child_set(self, children):
+        raise NotImplementedError("Implemented score_child_set in subclass.")
 
 class TerminalNode(Node):
     ''' The leafs of a generated scene tree will be terminal nodes. '''
     def sample_children(self):
         return []
-
+    def score_child_set(self, children):
+        if len(children) > 0:
+            return torch.tensor(-np.inf)
+        else:
+            return torch.zeros(1)
 
 class AndNode(Node):
     ''' Given a list of production rule, enacts all of them, all the time.'''
@@ -148,9 +161,21 @@ class AndNode(Node):
 
     def sample_children(self):
         children = []
-        for rule in self.rules:
-            children.append(rule.sample_child(self))
+        for k, rule in enumerate(self.rules):
+            child = rule.sample_child(self)
+            child.rule_k = k
+            children.append(child)
         return children
+
+    def score_child_set(self, children):
+        if len(children) != len(self.rules):
+            return torch.tensor(-np.inf)
+        if set([child.rule_k for child in children]) != set(range(len(self.rules))):
+            return torch.tensor(-np.inf)
+        for child in children:
+            if self.rules[child.rule_k].child_type != type(child):
+                return torch.tensor(-np.inf)
+        return torch.tensor(0.)
 
 
 class OrNode(Node):
@@ -171,8 +196,18 @@ class OrNode(Node):
     def sample_children(self):
         # Pick which child will be produced.
         child_ind = self._rule_dist.sample()
-        children = [self.rules[child_ind].sample_child(self)]
+        child = self.rules[child_ind].sample_child(self)
+        child.rule_k = child_ind.item()
+        children = [child]
         return children
+
+    def score_child_set(self, children):
+        if len(children) != 1:
+            return torch.tensor(-np.inf)
+        child = children[0]
+        if self.rules[child.rule_k].child_type != type(child):
+            return torch.tensor(-np.inf)
+        return self._rule_dist.log_prob(torch.tensor(child.rule_k))
 
 
 class GeometricSetNode(Node):
@@ -193,5 +228,19 @@ class GeometricSetNode(Node):
         children = []
         n = min(int(self.geom_dist.sample()) + 1, self.max_children)
         for k in range(n):
-            children.append(self.rule.sample_child(self))
+            child = self.rule.sample_child(self)
+            child.rule_k = k
+            children.append(child)
         return children
+
+    def score_child_set(self, children):
+        if len(children) == 0 or len(children) > self.max_children:
+            return torch.tensor(-np.inf)
+        if set([child.rule_k for child in children]) != set(range(len(children))):
+            print("Set mismatch: ", [child.rule_k for child in children])
+            return torch.tensor(-np.inf)
+        for child in children:
+            if type(child) != self.rule.child_type:
+                return torch.tensor(-np.inf)
+        # TODO(gizatt) Max_children effect?
+        return self.geom_dist.log_prob(torch.tensor(len(children) - 1))

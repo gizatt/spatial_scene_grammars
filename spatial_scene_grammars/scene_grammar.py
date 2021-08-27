@@ -27,6 +27,14 @@ def get_tree_root(tree):
 
 
 class SceneTree(nx.DiGraph):
+    # Minor additional bookkeeping on top of a digraph:
+    # - Keeps track of node - parent rule correspondence
+    # - Accessors for observed nodes, nodes by type, + tree root
+    # - Score calculation
+
+    def get_children(self, parent):
+        assert parent in self.nodes
+        return sorted(list(self.successors(parent)), key=lambda x: x.rule_k)
 
     def get_observed_nodes(self):
         # Pulls out only nodes in the tree that are
@@ -46,6 +54,33 @@ class SceneTree(nx.DiGraph):
 
     def find_nodes_by_type(self, node_type):
         return [n for n in self.nodes if isinstance(n, node_type)]
+
+    def score(self, include_discrete=True, include_continuous=True, verbose=False):
+        # Compute total score of parents and children.
+        total_score = torch.tensor(0.)
+        for node in self.nodes:
+            children = list(self.successors(node))
+            if include_discrete:
+                contrib = node.score_child_set(children)
+                total_score = total_score + contrib
+                if verbose:
+                    print(node, ": ", contrib.item())
+            if include_continuous:
+                for child in children:
+                    assert child.rule_k is not None
+                    assert child.rule_k >= 0
+                    if isinstance(node, (AndNode, OrNode)):
+                        rule = node.rules[child.rule_k]
+                    elif isinstance(node, GeometricSetNode):
+                        rule = node.rule
+                    else:
+                        raise ValueError("Unknown node type has children.")
+                    contrib = rule.score_child(node, child, verbose=verbose)
+                    total_score = total_score + contrib
+                    if verbose:
+                        print(node, " -> ", child, ": ", contrib.item())
+        return total_score
+
 
 class SpatialSceneGrammar():
     '''
@@ -96,8 +131,9 @@ class SpatialSceneGrammar():
             else:
                 raise ValueError(type(parent))
 
-            for child_type in maximal_children:
+            for k, child_type in enumerate(maximal_children):
                 child = child_type(tf = torch.eye(4))
+                child.rule_k = k
                 child._recursion_depth = parent._recursion_depth + 1
                 if child._recursion_depth <= max_recursion_depth:
                     tree.add_node(child)

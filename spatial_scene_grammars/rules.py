@@ -57,11 +57,13 @@ class ProductionRule():
         tf[3, :] = torch.tensor([0., 0., 0., 1.])
         return self.child_type(tf=tf)
 
-    def score_child(self, parent, child):
-        return (
-            self.xyz_rule.score_child(parent, child) +
-            self.rotation_rule.score_child(parent, child)
-        )
+    def score_child(self, parent, child, verbose=False):
+        xyz_part = self.xyz_rule.score_child(parent, child)
+        rot_part = self.rotation_rule.score_child(parent, child)
+        if verbose:
+            print("XYZ: ", xyz_part.item())
+            print("Rot: ", rot_part.item())
+        return xyz_part + rot_part
 
 
 ## XYZ Production rules
@@ -160,7 +162,7 @@ class UnconstrainedRotationRule(RotationProductionRule):
         # 1 / (half area of 4D unit hypersphere).
         # Area of 4D unit hypersphere is (2 * pi^2 * R^3)
         # -> 1 / pi^2
-        print("TODO: CHECK ME FOR CORRECTNESS")
+        # TODO(gizatt) Double-check for correctness of this number.
         return np.log(1. / np.pi**2)
 
 
@@ -173,6 +175,7 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         assert isinstance(axis, torch.Tensor) and axis.shape == (3,)
         assert isinstance(lb, float) and isinstance(ub, float) and lb <= ub
         self.axis = axis
+        self.axis = self.axis / torch.norm(self.axis)
         self.lb = lb
         self.ub = ub
         self._angle_dist = UniformWithEqualityHandling(lb, ub)
@@ -184,27 +187,31 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         R = torch.matmul(parent.rotation, R_offset)
         return R
 
-    def _recover_relative_angle_axis(self, parent, child):
-        # Recover angle-axis
+    def _recover_relative_angle_axis(self, parent, child, allowed_axis_diff=1. * np.pi/180.):
+        # Recover angle-axis relationship between a parent and child.
+        # Thrrows if we can't find a rotation axis between the two within
+        # requested diff of our expected axis.
         relative_R = torch.matmul(torch.transpose(parent.rotation, 0, 1), child.rotation)
 
         axis_angle = quaternion_to_axis_angle(matrix_to_quaternion(relative_R))
         angle = torch.norm(axis_angle, p=2)
         axis = axis_angle / angle
-        if torch.abs(angle) > 0 and not torch.allclose(axis,  self.axis, atol=1E-4, rtol=1E-4):
-            if torch.allclose(-axis, self.axis, atol=1E-4, rtol=1E-4):
-                # Flip axis and angle to make them match
-                axis = -axis
-                angle = -angle
-            else:
-                # No saving this; axis doesn't match.
-                raise ValueError("Child illegalal rotated from parent: %s vs %s" % (axis, self.axis))
+        axis_misalignment = torch.acos(torch.clip((axis * self.axis).sum(), -1., 1.))
+        if torch.abs(angle) > 0 and axis_misalignment >= np.pi/2.:
+            # Flipping axis will give us a close axis.
+            axis = -axis
+            angle = -angle
+
+        axis_misalignment = torch.acos((axis * self.axis).sum()).item()
+        if axis_misalignment >= allowed_axis_diff:
+            # No saving this; axis doesn't match.
+            raise ValueError("Child illegal rotated from parent: %s vs %s, error of %f deg" % (axis, self.axis, axis_misalignment * 180./np.pi))
+
         return angle, axis
         
-    def score_child(self, parent, child):
-        print("TEST ME")
+    def score_child(self, parent, child, allowed_axis_diff=1. * np.pi/180.):
         if (self.ub - self.lb) >= 2. * np.pi:
             # Uniform rotation in 1D base case
             return np.log(1. / (2. * np.pi))
-        angle, axis = self._recover_relative_angle_axis(parent, child)
+        angle, axis = self._recover_relative_angle_axis(parent, child, allowed_axis_diff=allowed_axis_diff)
         return self._angle_dist.log_prob(angle)
