@@ -16,6 +16,7 @@ def set_seed(request):
 # Try to parse a trivial subset of our grammar with a
 # simple solver. (The solver is very slow with additional
 # complexity.)
+@pytest.mark.skipif(os.environ.get('TRAVIS') == 'true', reason='Relies on bindings not in Drake master yet.')
 def test_parsing_simple(set_seed):
     grammar = SpatialSceneGrammar(
         root_node_type = NodeC,
