@@ -63,14 +63,6 @@ class ProductionRule():
             self.rotation_rule.score_child(parent, child)
         )
 
-    def add_mip_constraints_for_child(self, prog, parent, child):
-        self.xyz_rule.add_mip_constraints_for_child(parent, child)
-        self.rotation_rule.add_mip_constraints_for_child(parent, child)
-
-    def add_mip_cost_for_child(self, prog, parent, child):
-        self.xyz_rule.add_mip_cost_for_child(parent, child)
-        self.rotation_rule.add_mip_cost_for_child(parent, child)
-
 
 ## XYZ Production rules
 class XyzProductionRule():
@@ -83,10 +75,6 @@ class XyzProductionRule():
     def sample_xyz(self, parent):
         raise NotImplementedError()
     def score_child(self, parent, child):
-        raise NotImplementedError()
-    def add_mip_constraints_for_child(self, prog, parent, child):
-        raise NotImplementedError()
-    def add_mip_cost_for_child(self, prog, parent, child):
         raise NotImplementedError()
 
 
@@ -142,10 +130,6 @@ class RotationProductionRule():
     def sample_rotation(self, parent):
         raise NotImplementedError()
     def score_child(self, parent, child):
-        raise NotImplementedError()
-    def add_mip_constraints_for_child(self, prog, parent, child):
-        raise NotImplementedError()
-    def add_mip_cost_for_child(self, prog, parent, child):
         raise NotImplementedError()
 
 
