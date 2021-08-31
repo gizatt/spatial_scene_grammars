@@ -32,6 +32,18 @@ class SceneTree(nx.DiGraph):
     # - Accessors for observed nodes, nodes by type, + tree root
     # - Score calculation
 
+    def __init__(self, **kwargs):
+        self._trace = None
+        super().__init__(self, **kwargs)
+
+    @property
+    def trace(self):
+        assert self._trace is not None, "Trace not recorded for this tree."
+        return self._trace
+    @trace.setter
+    def trace(self, trace):
+        self._trace = trace
+
     def get_children(self, parent):
         assert parent in self.nodes
         return sorted(list(self.successors(parent)), key=lambda x: x.rule_k)
@@ -116,17 +128,20 @@ class SpatialSceneGrammar():
     def sample_tree(self):
         tree = SceneTree()
 
-        root = self.root_node_type(tf=self.root_node_tf)
-        tree.add_node(root)
-        node_queue = [root]
-        while len(node_queue) > 0:
-            parent = node_queue.pop(0)
-            # Ask node to sample its children.
-            children = parent.sample_children()
-            for child in children:
-                tree.add_node(child)
-                tree.add_edge(parent, child)
-                node_queue.append(child)
+        def do_sampling():
+            root = self.root_node_type(tf=self.root_node_tf)
+            tree.add_node(root)
+            node_queue = [root]
+            while len(node_queue) > 0:
+                parent = node_queue.pop(0)
+                # Ask node to sample its children.
+                children = parent.sample_children()
+                for child in children:
+                    tree.add_node(child)
+                    tree.add_edge(parent, child)
+                    node_queue.append(child)
+
+        tree.trace = pyro.poutine.trace(do_sampling).get_trace()
         return tree
 
     def make_super_tree(self, max_recursion_depth=15):
