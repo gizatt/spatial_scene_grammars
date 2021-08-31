@@ -46,6 +46,14 @@ class SceneTree(nx.DiGraph):
     def trace(self, trace):
         self._trace = trace
 
+    def get_parent(self, child):
+        parents = list(self.predecessors(child))
+        if len(parents) == 0:
+            return None
+        else:
+            assert len(parents) == 1
+            return parents[0]
+
     def get_children(self, parent):
         assert parent in self.nodes
         return sorted(list(self.successors(parent)), key=lambda x: x.rule_k)
