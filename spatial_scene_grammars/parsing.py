@@ -529,19 +529,7 @@ def adjust_mle_scene_tree(scene_tree, verbose=False):
         
     # Constraint parent/child relationships.
     for parent_node in scene_tree.nodes:
-        children = scene_tree.get_children(parent_node)
-        # Get child rule list.
-        if isinstance(parent_node, GeometricSetNode):
-            rules = [parent_node.rule for k in range(len(children))]
-        elif isinstance(parent_node, AndNode):
-            rules = parent_node.rules
-        elif isinstance(parent_node, OrNode):
-            assert len(children) == 1
-            rules = [parent_node.rules[children[0].rule_k]]
-        elif isinstance(parent_node, TerminalNode):
-            rules = []
-        else:
-            raise ValueError("Unexpected node type: ", type(parent_node))
+        children, rules = scene_tree.get_children_and_rules(parent_node)
 
         ## Child location constraints relative to parent.
         for rule, child_node in zip(rules, children):

@@ -36,6 +36,25 @@ class SceneTree(nx.DiGraph):
         assert parent in self.nodes
         return sorted(list(self.successors(parent)), key=lambda x: x.rule_k)
 
+    def get_children_and_rules(self, parent):
+        ''' Return the child nodes and their corresponding
+        rules (selected from the parent node rule list according
+        to the parent type and child rule_k index) as matching lists. '''
+        children = self.get_children(parent)
+        # Get child rule list.
+        if isinstance(parent, GeometricSetNode):
+            rules = [parent.rule for k in range(len(children))]
+        elif isinstance(parent, AndNode):
+            rules = parent.rules
+        elif isinstance(parent, OrNode):
+            assert len(children) == 1
+            rules = [parent.rules[children[0].rule_k]]
+        elif isinstance(parent, TerminalNode):
+            rules = []
+        else:
+            raise ValueError("Unexpected node type: ", type(parent))
+        return children, rules
+
     def get_observed_nodes(self):
         # Pulls out only nodes in the tree that are
         # "observable."
