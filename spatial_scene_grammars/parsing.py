@@ -148,7 +148,6 @@ def encode_UniformBoundedRevoluteJointRule(rule, prog, parent, child):
     # "center" us in the bound region, and the symmetric bound size alpha.
     # -alpha <= theta - (a+b)/2 <= alpha
     # where alpha = (b-a) / 2
-    print("NOT SURE IS CORRECT YET")
     alpha = (max_angle - min_angle) / 2.
     offset_angle = (max_angle + min_angle) / 2.
     R_offset = RotationMatrix(AngleAxis(-offset_angle, axis)).matrix()
