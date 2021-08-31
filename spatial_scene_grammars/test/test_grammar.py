@@ -1,6 +1,7 @@
 import pytest
 
 import torch
+import pyro.poutine
 
 from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
@@ -43,6 +44,18 @@ def test_grammar(set_seed):
         assert all([isinstance(c, (NodeD, NodeE, NodeF)) for c in obs])
 
     assert len(tree.find_nodes_by_type(NodeA)) == 1
+
+def test_tree_score(set_seed):
+    grammar = SpatialSceneGrammar(
+        root_node_type = NodeA,
+        root_node_tf = torch.eye(4)
+    )
+
+    trace = pyro.poutine.trace(grammar.sample_tree).get_trace()
+    tree = trace.nodes["_RETURN"]["value"]
+    expected_score = trace.log_prob_sum()
+    score = tree.score()
+    assert torch.isclose(expected_score, score), "%f vs %f" % (score, expected_score)
 
 def test_supertree():
     grammar = SpatialSceneGrammar(
