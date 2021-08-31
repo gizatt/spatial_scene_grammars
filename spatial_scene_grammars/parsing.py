@@ -24,6 +24,7 @@ import numpy as np
 import sys
 from copy import deepcopy
 from collections import namedtuple
+from functools import partial
 
 import pydrake
 from pydrake.all import (
@@ -471,12 +472,14 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
 
 
 TreeRefinementResults = namedtuple("TreeRefinementResults", ["optim_result", "refined_tree", "unrefined_tree"])
-def adjust_mle_scene_tree(scene_tree, verbose=False):
+def optimize_scene_tree_with_nlp(scene_tree, objective="mle", verbose=False):
     ''' Given a scene tree, set up a nonlinear optimization:
     1) Keeps the tree structure the same, but tweaks non-observed,
         non-root node poses.
-    2) Optimizes for feasibility (of relative node poses) and maximum tree score.
-    3) Uses the scene tree's current (possibly infeasible) configuration
+    2) Optimizes for feasibility (of relative node poses).
+    3) Allows choice of objective: maximum tree score ("mle"), or closeness to
+        current tree configuration ("projection")
+    4) Uses the scene tree's current (possibly infeasible) configuration
         as the initial guess.
     '''
     eps = 1E-6
@@ -541,6 +544,33 @@ def adjust_mle_scene_tree(scene_tree, verbose=False):
             assert type(rotation_rule) in rotation_rule_to_encode_map.keys(), type(rotation_rule)
             rotation_was_fully_constrained = \
                 rotation_rule_to_encode_map[type(rotation_rule)](rotation_rule, prog, parent_node, child_node)
+
+    if objective == "mle":
+        # Add costs for MLE tree estimate
+        pass
+    elif objective == "projection":
+        # Try to get optimized tree as close as possible to current config
+        for node in scene_tree.nodes:
+            if not node.observed and node is not root_node:
+                prog.AddQuadraticErrorCost(np.eye(3), node.translation.cpu().detach().numpy(), node.t_optim)
+                # TODO(gizatt) Would just quadratic error between desired + actual R
+                # work just as well but be computationally easier?
+
+                # We don't always have perfect rotations, so instead of using
+                # arccos((tr(R_diff) - 1) / 2) (the angular distance),
+                # I'll use the distance chord distance of a few vectors rotated
+                # by the rotation difference, which goes to zero if the
+                # rotations are the same. I use multiple vectors so the rotation
+                # axis is the same as a vector, we still get signal.
+                R_des=node.rotation.cpu().detach().numpy()
+                R_diff = R_des.T.dot(node.rotation.cpu().detach().numpy())
+                for k in range(3):
+                    vec = np.zeros(3)
+                    vec[k] = 1.
+                    vec_rot = R_diff.dot(vec)
+                    prog.AddCost((vec_rot - vec).T.dot(vec_rot - vec))
+    else:
+        raise ValueError("Unknown objective spec \"%s\"" % objective)
 
     ## Solve
     setup_time = time.time()

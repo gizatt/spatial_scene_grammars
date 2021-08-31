@@ -64,7 +64,7 @@ def test_parsing_simple(set_seed):
     assert_explains_observeds(tree, mip_optimized_tree), "MIP parsing failed."
     
     start_time = time.time()
-    refinement_results = adjust_mle_scene_tree(mip_optimized_tree, verbose=True)
+    refinement_results = optimize_scene_tree_with_nlp(mip_optimized_tree, verbose=True)
     elapsed = time.time() - start_time
     print("Refinement took %f secs." % elapsed)
     assert refinement_results.optim_result.is_success()
@@ -98,7 +98,16 @@ def test_parsing_complex(set_seed):
     assert_explains_observeds(tree, mip_optimized_tree)
 
     start_time = time.time()
-    refinement_results = adjust_mle_scene_tree(mip_optimized_tree, verbose=True)
+    refinement_results = optimize_scene_tree_with_nlp(mip_optimized_tree, objective="mle", verbose=True)
+    elapsed = time.time() - start_time
+    print("Refinement took %f secs." % elapsed)
+    assert refinement_results.optim_result.is_success(), "Refinement failed."
+    refined_tree = refinement_results.refined_tree
+    assert_explains_observeds(tree, refined_tree)
+    assert_feasible(refined_tree)
+
+    # Check out of get-tree-as-close-to-this-one works too
+    projection_Results = optimize_scene_tree_with_nlp(mip_optimized_tree, objective="projection", verbose=True)
     elapsed = time.time() - start_time
     print("Refinement took %f secs." % elapsed)
     assert refinement_results.optim_result.is_success(), "Refinement failed."
