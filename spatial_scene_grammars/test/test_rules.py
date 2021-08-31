@@ -1,6 +1,7 @@
 import pytest
 
 import torch
+import pyro.poutine
 
 from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
@@ -26,6 +27,7 @@ def make_dummy_node():
         physics_geometry_info=None,
         do_sanity_checks=True
     )
+
 
 ## WorldBBoxRule
 def test_WorldBBoxRule(set_seed):
@@ -118,19 +120,34 @@ def test_AngleAxisInversion(set_seed, angle):
     if torch.abs(angle) > 0:
         assert torch.allclose(recovered_axis, random_axis, atol=1E-4, rtol=1E-4)
 
-def test_ProductionRule(set_seed):
+@pytest.mark.parametrize("xyz_rule", [
+    WorldBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)*3.),
+    AxisAlignedBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)*5.)
+])
+@pytest.mark.parametrize("rotation_rule", [
+    UnconstrainedRotationRule(),
+    UniformBoundedRevoluteJointRule(axis=torch.tensor([0., 1., 0.]), lb=-np.pi/2., ub=np.pi/2.)
+])
+def test_ProductionRule(set_seed, xyz_rule, rotation_rule):
     class DummyType(Node):
         def __init__(self, tf):
             super().__init__(observed=False, physics_geometry_info=None, tf=tf)
 
     rule = ProductionRule(
         child_type=DummyType,
-        xyz_rule=WorldBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)),
-        rotation_rule=UnconstrainedRotationRule()
+        xyz_rule=xyz_rule,
+        rotation_rule=rotation_rule
     )
     parent = make_dummy_node()
     child = rule.sample_child(parent)
     rule.score_child(parent, child)
+
+    trace = pyro.poutine.trace(rule.sample_child).get_trace(parent)
+    expected = trace.log_prob_sum()
+    child = trace.nodes["_RETURN"]["value"]
+    score = rule.score_child(parent, child, verbose=True).sum()
+    assert torch.isclose(score, expected), "%f vs %f for rule types %s, %s" % (
+        score, expected, xyz_rule, rotation_rule)
 
 
 if __name__ == "__main__":

@@ -24,12 +24,16 @@ class LeftSidedConstraint(constraints.Constraint):
         return is_boolean.all(-1) & (neighbor_diff <= 0) .all(-1)
 
 
-class UniformWithEqualityHandling(torch.distributions.Uniform):
+class UniformWithEqualityHandling(pyro.distributions.Uniform):
     ''' Uniform distribution, but if any of the lower bounds equal
     the upper bounds, those elements are replaced with Delta distributions. '''
 
     def __init__(self, low, high, validate_args=None, eps=1E-6):
         self.low, self.high = broadcast_all(low, high)
+
+        # Should have been set by pyro Uniform __init__
+        self._unbroadcasted_low = low
+        self._unbroadcasted_high = high
 
         # Tolerance in bounds-checking. Very low because
         # I use SNOPT in this repo, which has 1E-6 default
@@ -45,6 +49,9 @@ class UniformWithEqualityHandling(torch.distributions.Uniform):
             self.delta_mask = torch.isclose(high - low, high*0.)
 
         self.uniform_in_bounds_ll = -torch.log(self.high - self.low)
+        # Have to be very selective with superclass constructors since we'll cause an
+        # error in torch.distribution.Uniform.__init__
+        # TorchDistributionMixin has no constructor, so we're OK not calling it
         super(torch.distributions.Uniform, self).__init__(batch_shape, validate_args=validate_args)
     
     def log_prob(self, value):

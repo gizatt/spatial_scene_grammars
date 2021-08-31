@@ -92,7 +92,7 @@ class WorldBBoxRule(XyzProductionRule):
         super().__init__()
 
     def sample_xyz(self, parent):
-        return self.xyz_dist.rsample()
+        return pyro.sample("WorldBBoxRule_xyz", self.xyz_dist)
 
     def score_child(self, parent, child):
         return self.xyz_dist.log_prob(child.translation).sum()
@@ -114,7 +114,8 @@ class AxisAlignedBBoxRule(XyzProductionRule):
         super().__init__()
 
     def sample_xyz(self, parent):
-        return parent.translation + self.xyz_offset_dist.rsample()
+        offset = pyro.sample("AxisAlignedBBoxRule_xyz", self.xyz_offset_dist)
+        return parent.translation + offset
 
     def score_child(self, parent, child):
         xyz_offset = child.translation - parent.translation
@@ -144,14 +145,29 @@ class UnconstrainedRotationRule(RotationProductionRule):
         super().__init__()
 
     def sample_rotation(self, parent):
-        # Sample random unit quaternion and convert to rotation.
-        random_quat = torch.zeros(4)
-        sample_dist = dist.Normal(torch.zeros(4), torch.ones(4))
-        while torch.norm(random_quat, 2) < 1E-3:
-            # Repeat until we get a nonzero quaternion (to catch
-            # the off chance we sample all zeros).
-            random_quat = sample_dist.rsample()
-        random_quat = random_quat / torch.norm(random_quat, p=2)
+        # Sample random unit quaternion via
+        # http://planning.cs.uiuc.edu/node198.html (referencing
+        # Honkai's implementation in Drake), and convert to rotation
+        # matrix.
+        # TODO(gizatt) I've chosen the uniform bounds so that
+        # the density of the uniform at any sample point matches the
+        # expected density for sampling from SO(3); then I rescale
+        # back down to unit-interval. Can I justify this by
+        # demonstrating that this scaling makes log abs det Jacobian 1,
+        # so I'm effectively counteracting the rescaling this whole
+        # transformation is applying?
+        # Expected density = 1 / pi^2
+        # Actual density 1/(max)^3
+        # -> Ub should be = pi^(2/3)
+        ub = torch.ones(3) * np.pi**(2./3.)
+        u = pyro.sample("UnconstrainedRotationRule_u", dist.Uniform(torch.zeros(3), ub))/ub
+        random_quat = torch.tensor([
+            torch.sqrt(1. - u[0]) * torch.sin(2. * np.pi * u[1]),
+            torch.sqrt(1. - u[0]) * torch.cos(2. * np.pi * u[1]),
+            torch.sqrt(u[0]) * torch.sin(2. * np.pi * u[2]),
+            torch.sqrt(u[0]) * torch.cos(2. * np.pi * u[2])
+        ])
+        assert torch.isclose(random_quat.square().sum(), torch.ones(1))
         R = quaternion_to_matrix(random_quat.unsqueeze(0))[0, ...]
         return R
 
@@ -162,7 +178,8 @@ class UnconstrainedRotationRule(RotationProductionRule):
         # 1 / (half area of 4D unit hypersphere).
         # Area of 4D unit hypersphere is (2 * pi^2 * R^3)
         # -> 1 / pi^2
-        # TODO(gizatt) Double-check for correctness of this number.
+        # Agrees with https://marc-b-reynolds.github.io/quaternions/2017/11/10/AveRandomRot.html
+        # TODO(gizatt) But probably doesn't agree with forward sample?
         return np.log(1. / np.pi**2)
 
 
@@ -181,7 +198,7 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         self._angle_dist = UniformWithEqualityHandling(lb, ub)
 
     def sample_rotation(self, parent):
-        angle = self._angle_dist.rsample()
+        angle = pyro.sample("UniformBoundedRevoluteJointRule_theta", self._angle_dist)
         angle_axis = self.axis * angle
         R_offset = axis_angle_to_matrix(angle_axis.unsqueeze(0))[0, ...]
         R = torch.matmul(parent.rotation, R_offset)
