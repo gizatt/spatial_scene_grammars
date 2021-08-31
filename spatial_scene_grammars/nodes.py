@@ -162,7 +162,8 @@ class AndNode(Node):
     def sample_children(self):
         children = []
         for k, rule in enumerate(self.rules):
-            child = rule.sample_child(self)
+            with scope(prefix="%d" % k):
+                child = rule.sample_child(self)
             child.rule_k = k
             children.append(child)
         return children
@@ -195,7 +196,7 @@ class OrNode(Node):
     
     def sample_children(self):
         # Pick which child will be produced.
-        child_ind = self._rule_dist.sample()
+        child_ind = pyro.sample("OrNode_child", self._rule_dist)
         child = self.rules[child_ind].sample_child(self)
         child.rule_k = child_ind.item()
         children = [child]
@@ -221,14 +222,28 @@ class GeometricSetNode(Node):
         self.rule = rule
         self.p  = p
         self.max_children = max_children
-        self.geom_dist = dist.Geometric(probs=p)
+        # Compile a Categorical dist that's equivalent to sampling
+        # from a geometric distribution clamped at some max #.
+        # TODO(gizatt): I'm *not* adding the extra term on the final
+        # weight reflecting the total probability of a geometric dist
+        # giving more than N children -- I don't have to for this to be
+        # a legitimate distribution. But "geometric" in the name is a little
+        # misleading, since this'll have slightly lower mean.
+        self.rule_probs = torch.tensor([
+            (1. - self.p) ** (k - 1) * self.p
+            for k in range(self.max_children)
+        ])
+        print(self.rule_probs)
+        self.geom_surrogate_dist = dist.Categorical(self.rule_probs)
         super().__init__(**kwargs)
     
     def sample_children(self):
         children = []
-        n = min(int(self.geom_dist.sample()) + 1, self.max_children)
+        n = pyro.sample("GeometricSetNode_n", self.geom_surrogate_dist) + 1
+        assert n >= 1 and n <= self.max_children
         for k in range(n):
-            child = self.rule.sample_child(self)
+            with scope(prefix="%d" % k):
+                child = self.rule.sample_child(self)
             child.rule_k = k
             children.append(child)
         return children
@@ -242,5 +257,4 @@ class GeometricSetNode(Node):
         for child in children:
             if type(child) != self.rule.child_type:
                 return torch.tensor(-np.inf)
-        # TODO(gizatt) Max_children effect?
-        return self.geom_dist.log_prob(torch.tensor(len(children) - 1))
+        return self.geom_surrogate_dist.log_prob(torch.tensor(len(children) - 1))

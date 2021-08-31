@@ -68,12 +68,15 @@ def test_AndNode():
         observed=False,
         physics_geometry_info=None
     )
-    children = node.sample_children()
+    trace = pyro.poutine.trace(node.sample_children).get_trace()
+    children = trace.nodes["_RETURN"]["value"]
     assert len(children) == 3
     assert all([isinstance(c, DummyType) for c in children])
-    expected_prob = torch.zeros(1)
     score = node.score_child_set(children)
-    assert torch.isclose(score, expected_prob), "%s vs %s" % (expected_prob, score)
+    expected_prob_hand = torch.zeros(1)
+    # No sample nodes to get log prob from in this trace since AndNode
+    # doesn't sample anything.
+    assert torch.isclose(score, expected_prob_hand), "%s vs %s" % (expected_prob_hand, score)
 
 ## OrNode
 def test_OrNode(set_seed):
@@ -84,12 +87,16 @@ def test_OrNode(set_seed):
         observed=False,
         physics_geometry_info=None
     )
-    children = node.sample_children()
+    trace = pyro.poutine.trace(node.sample_children).get_trace()
+    children = trace.nodes["_RETURN"]["value"]
+    trace_node = trace.nodes["OrNode_child"]
+    expected_prob = trace_node["fn"].log_prob(trace_node["value"])
     assert len(children) == 1
     assert all([isinstance(c, DummyType) for c in children])
-    expected_prob = torch.log(node.rule_probs[children[0].rule_k])
+    expected_prob_hand = torch.log(node.rule_probs[children[0].rule_k])
     score = node.score_child_set(children)
     assert torch.isclose(score, expected_prob), "%s vs %s" % (expected_prob, score)
+    assert torch.isclose(score, expected_prob_hand), "%s vs %s" % (expected_prob_hand, score)
 
 
 ## GeometricSetNode
@@ -102,9 +109,11 @@ def test_GeometricSetNode(set_seed):
         observed=False,
         physics_geometry_info=None
     )
-    children = node.sample_children()
+    trace = pyro.poutine.trace(node.sample_children).get_trace()
+    children = trace.nodes["_RETURN"]["value"]
+    trace_node = trace.nodes["GeometricSetNode_n"]
+    expected_prob = trace_node["fn"].log_prob(trace_node["value"])
     assert len(children) <= 5 and len(children) >= 1
     assert all([isinstance(c, DummyType) for c in children])
-    expected_prob = torch.log(torch.tensor((1. - node.p) ** (len(children) - 1) * node.p))
     score = node.score_child_set(children)
     assert torch.isclose(score, expected_prob), "%s vs %s" % (expected_prob, score)
