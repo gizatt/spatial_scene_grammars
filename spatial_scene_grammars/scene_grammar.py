@@ -31,6 +31,8 @@ class SceneTree(nx.DiGraph):
     # - Keeps track of node - parent rule correspondence
     # - Accessors for observed nodes, nodes by type, + tree root
     # - Score calculation
+    # - Optionally can store the Pyro trace of generation of this
+    #   tree, for internal use in sampling routines.
 
     def __init__(self, **kwargs):
         self._trace = None
@@ -132,10 +134,13 @@ class SpatialSceneGrammar():
             root = self.root_node_type(tf=self.root_node_tf)
             tree.add_node(root)
             node_queue = [root]
+            k = 0
             while len(node_queue) > 0:
                 parent = node_queue.pop(0)
                 # Ask node to sample its children.
-                children = parent.sample_children()
+                with scope(prefix="%d" % k):
+                    children = parent.sample_children()
+                k += 1
                 for child in children:
                     tree.add_node(child)
                     tree.add_edge(parent, child)

@@ -34,7 +34,6 @@ class NodeNameManager():
 node_name_store = NodeNameManager()
 
 
-
 class Node():
     '''
     Every node (symbol) in the grammar derives from this base.
@@ -160,14 +159,13 @@ class AndNode(Node):
         super().__init__(**kwargs)
 
     def sample_children(self):
-        with scope(prefix="%s" % self.name):
-            children = []
-            for k, rule in enumerate(self.rules):
-                with scope(prefix="%d" % k):
-                    child = rule.sample_child(self)
-                child.rule_k = k
-                children.append(child)
-            return children
+        children = []
+        for k, rule in enumerate(self.rules):
+            with scope(prefix="%d" % k):
+                child = rule.sample_child(self)
+            child.rule_k = k
+            children.append(child)
+        return children
 
     def score_child_set(self, children):
         if len(children) != len(self.rules):
@@ -196,13 +194,12 @@ class OrNode(Node):
         super().__init__(**kwargs)
     
     def sample_children(self):
-        with scope(prefix="%s" % self.name):
-            # Pick which child will be produced.
-            child_ind = pyro.sample("OrNode_child", self._rule_dist)
-            child = self.rules[child_ind].sample_child(self)
-            child.rule_k = child_ind.item()
-            children = [child]
-            return children
+        # Pick which child will be produced.
+        child_ind = pyro.sample("OrNode_child", self._rule_dist)
+        child = self.rules[child_ind].sample_child(self)
+        child.rule_k = child_ind.item()
+        children = [child]
+        return children
 
     def score_child_set(self, children):
         if len(children) != 1:
@@ -235,21 +232,19 @@ class GeometricSetNode(Node):
             (1. - self.p) ** (k - 1) * self.p
             for k in range(self.max_children)
         ])
-        print(self.rule_probs)
         self.geom_surrogate_dist = dist.Categorical(self.rule_probs)
         super().__init__(**kwargs)
     
     def sample_children(self):
-        with scope(prefix="%s" % self.name):
-            children = []
-            n = pyro.sample("GeometricSetNode_n", self.geom_surrogate_dist) + 1
-            assert n >= 1 and n <= self.max_children
-            for k in range(n):
-                with scope(prefix="%d" % k):
-                    child = self.rule.sample_child(self)
-                child.rule_k = k
-                children.append(child)
-            return children
+        children = []
+        n = pyro.sample("GeometricSetNode_n", self.geom_surrogate_dist) + 1
+        assert n >= 1 and n <= self.max_children
+        for k in range(n):
+            with scope(prefix="%d" % k):
+                child = self.rule.sample_child(self)
+            child.rule_k = k
+            children.append(child)
+        return children
 
     def score_child_set(self, children):
         if len(children) == 0 or len(children) > self.max_children:

@@ -89,7 +89,7 @@ def test_OrNode(set_seed):
     )
     trace = pyro.poutine.trace(node.sample_children).get_trace()
     children = trace.nodes["_RETURN"]["value"]
-    trace_node = trace.nodes["%s/OrNode_child" % node.name]
+    trace_node = trace.nodes["OrNode_child"]
     expected_prob = trace_node["fn"].log_prob(trace_node["value"])
     assert len(children) == 1
     assert all([isinstance(c, DummyType) for c in children])
@@ -111,7 +111,7 @@ def test_GeometricSetNode(set_seed):
     )
     trace = pyro.poutine.trace(node.sample_children).get_trace()
     children = trace.nodes["_RETURN"]["value"]
-    trace_node = trace.nodes["%s/GeometricSetNode_n" % node.name]
+    trace_node = trace.nodes["GeometricSetNode_n"]
     expected_prob = trace_node["fn"].log_prob(trace_node["value"])
     assert len(children) <= 5 and len(children) >= 1
     assert all([isinstance(c, DummyType) for c in children])
