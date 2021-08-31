@@ -1,12 +1,20 @@
+from copy import deepcopy
+
 import torch
 import pyro
 import pyro.distributions as dist
 import pyro.poutine as poutine
 from pyro.infer import MCMC, NUTS, HMC
 from pyro.contrib.autoname import scope
-from .random_walk_kernel import RandomWalkKernel
 
-def do_fixed_structure_mcmc(grammar, scene_tree, observation_variance=0.01, num_samples=500, verbose=False):
+from .random_walk_kernel import RandomWalkKernel
+from .rules import *
+
+from pytorch3d.transforms.rotation_conversions import (
+    euler_angles_to_matrix, axis_angle_to_matrix
+)
+
+def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500, verbose=False):
     ''' Given a scene tree, resample its continuous variables
     (i.e. the node poses) while keeping the root and observed
     node poses fixed. Returns a population of trees sampled
@@ -18,14 +26,6 @@ def do_fixed_structure_mcmc(grammar, scene_tree, observation_variance=0.01, num_
     # ones to vary. Then we can use this model in Pyro to perform
     # MCMC, initialized at the continuous site values.
 
-    # TODO(gizatt) NOT RIGHT, for a few reasons:
-    #  1) Biggest: Need to constrain root + observed nodes.
-    #     Root is easy; but observed nodes aren't. I need some form of surrogate
-    #     model where the choice before the observed node is a function of
-    #     the parent node and the observed node location. Or an energy-based thing.
-    #  2) Smaller: Since this doesn't work as written, having pyro woven through the
-    #     whole system is a little excessive, right?
-
     # Better alt method:
     #  1) Build the list of actual choices we need to do sampling over (i.e. poses of
     #     intermediate nodes).
@@ -33,42 +33,80 @@ def do_fixed_structure_mcmc(grammar, scene_tree, observation_variance=0.01, num_
     #  3) Accept/reject based on resulting tree prob.
     # Should be able to do that hella fast, and without torch.
 
-    trace = scene_tree.trace
-    choice_map = {}
-    initial_values = {}
-    known_continuous_dists = (dist.Uniform, dist.Normal)
-    known_discrete_dists = (dist.Categorical)
-    for key, value in trace.nodes.items():
-        if value["type"] == "sample":
-            dist_fn = value["fn"]
-            if isinstance(dist_fn, known_discrete_dists):
-                # Variable to fix!
-                choice_map[key] = value["value"]
+    # TODO this is scrappy as hell
+
+    # Make local tree copy that we'll be decorating.
+    scene_tree = deepcopy(scene_tree) 
+    node_to_pose_variables = {}
+
+    root_node = scene_tree.get_root()
+    for node in scene_tree.nodes:
+        if node is not root_node and not node.observed:
+            # This is a node whose pose we'll want to explore.
+            node_to_pose_variables[node] = deepcopy((node.translation, node.rotation))
+
+    # Do steps of random-walk MCMC on those variables.
+    n_accept = 0
+    old_score = scene_tree.score()
+    assert torch.isfinite(old_score), "Bad initialization for MCMC."
+
+    sample_trees = []
+    for step_k in range(num_samples):
+        for node, value in node_to_pose_variables.items():
+            translation, rotation = value
+            ## The exact perturbation we'll apply depends on the relationship to the parent.
+
+            parent = scene_tree.get_parent(node)
+            rule = scene_tree.get_rule_for_child(parent, node)
+            xyz_rule, rotation_rule = rule.xyz_rule, rule.rotation_rule
+            if isinstance(xyz_rule, WorldBBoxRule):
+                # Perturb in axes that are not equality constrained
+                perturb = dist.Normal(torch.zeros(3), torch.ones(3)*0.01).sample()
+                perturb[xyz_rule.xyz_dist.delta_mask] = 0.
+                node.translation = translation + perturb
+            elif isinstance(xyz_rule, AxisAlignedBBoxRule):
+                perturb = dist.Normal(torch.zeros(3), torch.ones(3)*0.01).sample()
+                perturb[xyz_rule.xyz_offset_dist.delta_mask] = 0.
+                node.translation = translation + perturb
             else:
-                assert isinstance(dist_fn, known_continuous_dists), \
-                    "Unknown distribution %s for site %f" % (dist_fn, key)
-                initial_values[key] = value["value"]
+                raise NotImplementedError("%s" % xyz_rule)
 
-    def mcmc_model():
-        new_tree = pyro.condition(grammar.sample_tree, choice_map)()
+            if isinstance(rotation_rule, UnconstrainedRotationRule):
+                # Apply small random rotation 
+                random_small_rotation = euler_angles_to_matrix(
+                    dist.Normal(torch.zeros(3), torch.ones(3)*0.01).sample().unsqueeze(0),
+                    convention="ZYX"
+                )[0, ...]
+                node.rotation = torch.matmul(rotation, random_small_rotation)
+            elif isinstance(rotation_rule, UniformBoundedRevoluteJointRule):
+                # Apply small rotation around axis, unless the rotation is fully constrained
+                if not np.isclose(rotation_rule.lb, rotation_rule.ub):
+                    random_angle = dist.Normal(torch.zeros(0), torch.ones(1)*0.01).sample()
+                    orig_angle, orig_axis = rotation_rule._recover_relative_angle_axis(parent, node)
+                    # Add angle to orig angle, and rotate around the joint's actual axis to get
+                    # the new rotation offset.
+                    new_angle_axis = rotation_rule.axis * (orig_angle + random_angle)
+                    new_R_offset = axis_angle_to_matrix(new_angle_axis.unsqueeze(0))[0, ...]
+                    node.rotation = torch.matmul(parent.rotation, new_R_offset)
+                    print("New rotation")
+                    
 
-        # Add additional observed sampling of each observed node's pose.
-        obs_dist = dist.Normal(torch.zeros(1), torch.ones(1) * observation_variance)
-        for node_k, node in enumerate(new_tree.nodes):
-            if node.observed:
-                with scope(prefix="%d" % node_k):
-                    # Ugly; ought to use a dist over SO(3) instead.
-                    pyro.sample("obs_rotation", obs_dist.expand(torch.Size((3, 3))), obs=node.rotation)
-                    # This one's OK
-                    pyro.sample("obs_translation", obs_dist.expand(torch.Size((3,))), obs=node.translation)
+        new_score = scene_tree.score()
+        reject = True
+        if torch.isfinite(new_score):
+            # MH acceptance ratio: just score_new / score_old, since proposal is symmetric
+            alpha = torch.min(1, new_score - old_score)
+            if dist.Uniform(0., 1.).sample() <= alpha:
+                # Accepted. Update our temp pose variables to reflect new "good" state.
+                n_accept += 1
+                for node in node_to_pose_variables.keys():
+                    node_to_pose_variables[node] = deepcopy((node.translation, node.rotation))
+        if reject:
+            for node, value in node_to_pose_variables.items():
+                node.translation, node.rotation = value
+        
+        sample_trees.append(deepcopy(scene_tree))
 
-    # 3) Run HMC.
-    mcmc_kernel = NUTS(
-        mcmc_model,
-        init_strategy=pyro.infer.autoguide.init_to_value(values=initial_values)
-    )
-    mcmc = MCMC(mcmc_kernel, num_samples=num_samples, warmup_steps=10, disable_progbar=False)
-    mcmc.run()
-    if verbose:
-        mcmc.summary()
-    return mcmc, choice_map
+        print("%d: Accept rate %f" % (step_k, n_accept / num_samples))
+    return sample_trees
+
