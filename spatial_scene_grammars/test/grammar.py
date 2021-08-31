@@ -53,7 +53,7 @@ class NodeB(OrNode):
     DRule = ProductionRule(
         child_type=NodeD,
         xyz_rule=AxisAlignedBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)),
-        rotation_rule=UnconstrainedRotationRule()#UniformBoundedRevoluteJointRule(axis=torch.tensor([0., 0., 1.]), lb=-1., ub=1.)
+        rotation_rule=UniformBoundedRevoluteJointRule(axis=torch.tensor([0., 0., 1.]), lb=-1., ub=1.)
     )
     ERule = ProductionRule(
         child_type=NodeE,

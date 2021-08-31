@@ -106,11 +106,36 @@ def test_parsing_complex(set_seed):
     assert_explains_observeds(tree, refined_tree)
     assert_feasible(refined_tree)
 
-    # Check out of get-tree-as-close-to-this-one works too
-    projection_Results = optimize_scene_tree_with_nlp(mip_optimized_tree, objective="projection", verbose=True)
+    # Check out of get-tree-as-close-to-this-one works too.
+    tree = grammar.sample_tree()
+    # Perturb node C to a known feasible location.
+    # It's always safe to put C anywhere in the unit box, since its spawning
+    # rule puts it there, and it places all of its children there.
+    C = tree.find_nodes_by_type(NodeC)[0]
+    C_translation_goal = torch.tensor([0.1, 0.2, 0.3])
+    C.translation = C_translation_goal
+    projection_results = optimize_scene_tree_with_nlp(tree, objective="projection", verbose=True)
     elapsed = time.time() - start_time
     print("Refinement took %f secs." % elapsed)
-    assert refinement_results.optim_result.is_success(), "Refinement failed."
-    refined_tree = refinement_results.refined_tree
+    assert projection_results.optim_result.is_success(), "Refinement failed."
+    refined_tree = projection_results.refined_tree
+    C_refined = refined_tree.find_nodes_by_type(NodeC)[0]
     assert_explains_observeds(tree, refined_tree)
     assert_feasible(refined_tree)
+    assert(torch.allclose(C_refined.translation, C_translation_goal))
+
+    # This C *isn't* feasible; the closest feasible should be
+    # within unit box.
+    C = tree.find_nodes_by_type(NodeC)[0]
+    C_translation_goal = torch.tensor([-0.1, 0.2, 0.3])
+    C_expected = torch.tensor([0.0, 0.2, 0.3])
+    C.translation = C_translation_goal
+    projection_results = optimize_scene_tree_with_nlp(tree, objective="projection", verbose=True)
+    elapsed = time.time() - start_time
+    print("Refinement took %f secs." % elapsed)
+    assert projection_results.optim_result.is_success(), "Refinement failed."
+    refined_tree = projection_results.refined_tree
+    C_refined = refined_tree.find_nodes_by_type(NodeC)[0]
+    assert_explains_observeds(tree, refined_tree)
+    assert_feasible(refined_tree)
+    assert torch.allclose(C_refined.translation, C_expected), "%s vs %s" % (C_refined.translation, C_expected)
