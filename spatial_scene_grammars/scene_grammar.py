@@ -58,6 +58,14 @@ class SceneTree(nx.DiGraph):
         assert parent in self.nodes
         return sorted(list(self.successors(parent)), key=lambda x: x.rule_k)
 
+    def get_rule_for_child(self, parent, child):
+        if isinstance(parent, GeometricSetNode):
+            return parent.rule
+        elif isinstance(parent, (AndNode, OrNode)):
+            return parent.rules[child.rule_k]
+        else:
+            raise ValueError("Parent %s of child %s is of bad type for getting rules." % (parent, child))
+
     def get_children_and_rules(self, parent):
         ''' Return the child nodes and their corresponding
         rules (selected from the parent node rule list according

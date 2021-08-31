@@ -45,8 +45,11 @@ def test_grammar(set_seed):
 
     assert len(tree.find_nodes_by_type(NodeA)) == 1
 
-    assert tree.get_parent(tree.find_nodes_by_type(NodeA)[0]) == None
-    assert tree.get_parent(tree.find_nodes_by_type(NodeB)[0]) == tree.find_nodes_by_type(NodeA)[0]
+    A = tree.find_nodes_by_type(NodeA)[0]
+    B = tree.find_nodes_by_type(NodeB)[0]
+    assert tree.get_parent(A) is None
+    assert tree.get_parent(B) is A
+    assert tree.get_rule_for_child(A, B) is A.rules[0]
 
 def test_tree_score(set_seed):
     grammar = SpatialSceneGrammar(
