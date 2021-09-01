@@ -31,6 +31,10 @@ def test_sampling():
     )
     torch.random.manual_seed(42)
     tree = grammar.sample_tree()
+    
+    assert len(tree.find_nodes_by_type(OrientedCluster)) > 0, "Didn't sample any clusters."
+    assert torch.isfinite(tree.score(verbose=True)), "Sampled tree was infeasible."
+
     draw_scene_tree_contents_meshcat(tree, zmq_url=vis.window.zmq_url)
     draw_scene_tree_structure_meshcat(tree, zmq_url=vis.window.zmq_url)
 
