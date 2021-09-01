@@ -42,7 +42,6 @@ def test_sampling():
 
 @pytest.mark.skipif(os.environ.get('GUROBI_PATH') is None or not SnoptSolver().available(),
                     reason='This test relies on Gurobi and SNOPT.')
-@pytest.mark.skip()
 def test_parsing():
     # Try to parse an example of this grammar.
     grammar = SpatialSceneGrammar(
@@ -55,9 +54,11 @@ def test_parsing():
 
     inference_results = infer_mle_tree_with_mip(
         grammar, observed_nodes, verbose=True,
+        max_scene_extent_in_any_dir=10.
     )
     mip_optimized_tree = get_optimized_tree_from_mip_results(inference_results)
-    refinement_results = optimize_scene_tree_with_nlp(mip_optimized_tree, verbose=True)
+    refinement_results = optimize_scene_tree_with_nlp(mip_optimized_tree, verbose=True,
+        max_scene_extent_in_any_dir=10.)
     refined_tree = refinement_results.refined_tree
     score = refined_tree.score(verbose=True)
     assert torch.isfinite(score), "Refined tree was infeasible."

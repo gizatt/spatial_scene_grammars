@@ -97,7 +97,7 @@ def encode_UniformBoundedRevoluteJointRule(rule, prog, parent, child):
     max_angle = rule.ub
     assert min_angle <= max_angle
 
-    if min_angle == max_angle:
+    if max_angle - min_angle <= 1E-6:
         # In this case, the child rotation is exactly equal to the
         # parent rotation, so we can short-circuit.
         relative_rotation = RotationMatrix(AngleAxis(max_angle, axis)).matrix()
@@ -106,7 +106,7 @@ def encode_UniformBoundedRevoluteJointRule(rule, prog, parent, child):
             for j in range(3):
                 prog.AddLinearEqualityConstraint(child.R_optim[i, j] == target_rotation[i, j])
         return True
-        
+
     # Child rotation should be within a relative rotation of the parent around
     # the specified axis, and the axis should *not* be rotated between the
     # parent and child frames. This is similar to the revolute joint constraints
@@ -127,7 +127,7 @@ def encode_UniformBoundedRevoluteJointRule(rule, prog, parent, child):
         )
     
     # Short-circuit if there is no rotational constraint other than axis alignment.
-    if max_angle - min_angle == 2.*np.pi:
+    if max_angle - min_angle >= 2.*np.pi:
         return False
 
     # If we're only allowed a limited rotation around this axis, apply a constraint
@@ -150,7 +150,7 @@ def encode_UniformBoundedRevoluteJointRule(rule, prog, parent, child):
     # where alpha = (b-a) / 2
     alpha = (max_angle - min_angle) / 2.
     offset_angle = (max_angle + min_angle) / 2.
-    R_offset = RotationMatrix(AngleAxis(-offset_angle, axis)).matrix()
+    R_offset = RotationMatrix(AngleAxis(offset_angle, axis)).matrix()
     # |R_WC*R_CJc*v - R_WP * R_PJp * R(k,(a+b)/2)*v | <= 2*sin (α / 2) in
     # global ik code; for us, I'm assuming the joint frames are aligned with
     # the body frames, so R_CJc and R_PJp are identitiy.
@@ -171,8 +171,9 @@ rotation_rule_to_encode_map = {
 
 # Return type of infer_mle_tree_with_mip
 TreeInferenceResults = namedtuple("TreeInferenceResults", ["solver", "optim_result", "super_tree", "observed_nodes"])
+# TODO(gizatt) Remote max_scene_extent_in_any_dir and calculate from grammar.
 def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, solver="gurobi", verbose=False,
-                            num_intervals_per_half_axis=2):
+                            num_intervals_per_half_axis=2, max_scene_extent_in_any_dir=10.):
     ''' Given a grammar and an observed node set, find the MLE tree induced
     by that grammar (up to a maximum recursion depth) that reproduces the
     observed node set, or report that it's infeasible. '''
@@ -327,10 +328,7 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
         prog.AddLinearEqualityConstraint(sum(source_actives) == 1)
 
         for k, node in enumerate(possible_sources):
-            # TODO(gizatt) Inspect grammar support to figure out what this
-            # M should be for a given grammar (i.e. figure out the farthest
-            # any object can go in any direction.)
-            M = 10. # Should upper bound positional error in any single dimension/
+            M = max_scene_extent_in_any_dir # Should upper bound positional error in any single dimension/
 
             # When correspondence is active, force the node to match the observed node.
             # Otherwise, it can vary within a big M of the observed node.
@@ -471,7 +469,7 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
 
 
 TreeRefinementResults = namedtuple("TreeRefinementResults", ["optim_result", "refined_tree", "unrefined_tree"])
-def optimize_scene_tree_with_nlp(scene_tree, objective="mle", verbose=False):
+def optimize_scene_tree_with_nlp(scene_tree, objective="mle", verbose=False, max_scene_extent_in_any_dir=10.):
     ''' Given a scene tree, set up a nonlinear optimization:
     1) Keeps the tree structure the same, but tweaks non-observed,
         non-root node poses.
@@ -526,7 +524,10 @@ def optimize_scene_tree_with_nlp(scene_tree, objective="mle", verbose=False):
             # Add really loose bbox constraint, to keep SNOPT from running away.
             # TODO(gizatt) Update these to use scene tree production bounds, if I
             # ever get around to adding that.
-            prog.AddBoundingBoxConstraint(-np.ones(3)*10, np.ones(3)*10, node.t_optim)
+            prog.AddBoundingBoxConstraint(
+                -np.ones(3)*max_scene_extent_in_any_dir,
+                np.ones(3)*max_scene_extent_in_any_dir,
+            node.t_optim)
 
         
     # Constraint parent/child relationships.

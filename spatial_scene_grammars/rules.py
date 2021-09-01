@@ -180,7 +180,7 @@ class UnconstrainedRotationRule(RotationProductionRule):
         # -> 1 / pi^2
         # Agrees with https://marc-b-reynolds.github.io/quaternions/2017/11/10/AveRandomRot.html
         # TODO(gizatt) But probably doesn't agree with forward sample?
-        return np.log(1. / np.pi**2)
+        return torch.log(torch.ones(1) / np.pi**2)
 
 
 class UniformBoundedRevoluteJointRule(RotationProductionRule):
@@ -205,14 +205,18 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         R = torch.matmul(parent.rotation, R_offset)
         return R
 
-    def _recover_relative_angle_axis(self, parent, child, allowed_axis_diff=5. * np.pi/180.):
+    def _recover_relative_angle_axis(self, parent, child, zero_angle_width=1E-2, allowed_axis_diff=5. * np.pi/180.):
         # Recover angle-axis relationship between a parent and child.
         # Thrrows if we can't find a rotation axis between the two within
         # requested diff of our expected axis.
         relative_R = torch.matmul(torch.transpose(parent.rotation, 0, 1), child.rotation)
-
         axis_angle = quaternion_to_axis_angle(matrix_to_quaternion(relative_R))
         angle = torch.norm(axis_angle, p=2)
+
+        # *Why* is this tolerance so high? This is ridiculous
+        if angle <= zero_angle_width:
+            return torch.tensor(0.), self.axis
+
         axis = axis_angle / angle
         axis_misalignment = torch.acos(torch.clip((axis * self.axis).sum(), -1., 1.))
         if torch.abs(angle) > 0 and axis_misalignment >= np.pi/2.:
@@ -223,6 +227,7 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         axis_misalignment = torch.acos((axis * self.axis).sum()).item()
         if axis_misalignment >= allowed_axis_diff:
             # No saving this; axis doesn't match.
+            print("Our rotation bounds: [%f, %f]" % (self.lb, self.ub))
             raise ValueError("Parent %s, Child %s: " % (parent, child),
                              "Child illegal rotated from parent: %s vs %s, error of %f deg" % (axis, self.axis, axis_misalignment * 180./np.pi))
         return angle, axis
@@ -230,12 +235,11 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
     def score_child(self, parent, child, allowed_axis_diff=5. * np.pi/180.):
         if (self.ub - self.lb) >= 2. * np.pi:
             # Uniform rotation in 1D base case
-            return np.log(1. / (2. * np.pi))
+            return torch.log(torch.ones(1) / (2. * np.pi))
         angle, axis = self._recover_relative_angle_axis(parent, child, allowed_axis_diff=allowed_axis_diff)
         # Correct angle to be within 2pi of both LB and UB -- which should be possible, since 
         while angle < self.lb - 2.*np.pi or angle < self.ub - 2*np.pi:
             angle += 2.*np.pi
         while angle > self.ub + 2.*np.pi or angle > self.ub + 2.*np.pi:
             angle -= 2.*np.pi
-        print("axis ", axis, " and angle ", angle, " and range [%f, %f]" % (self.lb, self.ub))
         return self._angle_dist.log_prob(angle)

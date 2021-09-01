@@ -96,7 +96,7 @@ class Table(AndNode):
             angle = k*np.pi/2.
             rotation = RigidTransform(p=np.zeros(3), rpy=RollPitchYaw(0., 0., angle))
             chair_centroid = rotation.multiply(chair_offset)
-            xyz_center = torch.tensor(chair_centroid.translation())
+            xyz_center = torch.tensor(chair_centroid.translation().copy())
             rules.append(
                 ProductionRule(
                     child_type=MaybeChair,
@@ -144,7 +144,7 @@ class RestaurantRoom(GeometricSetNode):
             rule=rule,
             tf=tf,
             p=0.2,
-            max_children=10,
+            max_children=5,
             physics_geometry_info=geom,
             observed=True
         )

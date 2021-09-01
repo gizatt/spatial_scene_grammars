@@ -1,4 +1,6 @@
 import numpy as np
+import logging
+
 import torch
 from numbers import Number
 from torch.distributions import constraints
@@ -26,7 +28,8 @@ class LeftSidedConstraint(constraints.Constraint):
 
 class UniformWithEqualityHandling(pyro.distributions.Uniform):
     ''' Uniform distribution, but if any of the lower bounds equal
-    the upper bounds, those elements are replaced with Delta distributions. '''
+    the upper bounds, those elements are replaced with Delta distributions,
+    and modifies handling to allow upper bound to be inclusive. '''
 
     def __init__(self, low, high, validate_args=None, eps=1E-6):
         self.low, self.high = broadcast_all(low, high)
@@ -48,15 +51,21 @@ class UniformWithEqualityHandling(pyro.distributions.Uniform):
             batch_shape = self.low.size()
             self.delta_mask = torch.isclose(high - low, high*0.)
 
+        # Ensure we have at least slightly wide range on the inside
+        # where we don't have equality.
+
         self.uniform_in_bounds_ll = -torch.log(self.high - self.low)
         # Have to be very selective with superclass constructors since we'll cause an
         # error in torch.distribution.Uniform.__init__
         # TorchDistributionMixin has no constructor, so we're OK not calling it
         super(torch.distributions.Uniform, self).__init__(batch_shape, validate_args=validate_args)
-    
+
     def log_prob(self, value):
         if self._validate_args:
-            self._validate_sample(value)
+            # TODO(gizatt) Can I turn this back on? It's throwing out
+            # values that are within 1E-17 of the bounds
+            #self._validate_sample(value)
+            logging.warning("validate_sample disabled in UniformWithEqualityHandling")
         
         # Handle uniform part
         in_bounds = torch.logical_and(
