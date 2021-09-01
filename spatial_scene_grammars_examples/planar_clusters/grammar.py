@@ -25,27 +25,6 @@ Table -> MaybeChairs at 4 offsets
 MaybeChairs -> Chair or Null
 '''
 
-
-
-class Null(TerminalNode):
-    def __init__(self, tf):
-        super().__init__(
-            tf=tf,
-            physics_geometry_info=None,
-            observed=False
-        )
-NullProductionRule = ProductionRule(
-    child_type=Null,
-    xyz_rule=AxisAlignedBBoxRule(
-        lb=torch.zeros(3),
-        ub=torch.zeros(3)
-    ),
-    rotation_rule=UniformBoundedRevoluteJointRule(
-        axis=torch.tensor([0., 0., 1.]),
-        lb=0., ub=0.
-    )
-)
-
 class Chair(TerminalNode):
     def __init__(self, tf):
         geom = PhysicsGeometryInfo()
@@ -66,29 +45,7 @@ class Chair(TerminalNode):
         )
 
 
-class MaybeChair(OrNode):
-    ChairProductionRule = ProductionRule(
-        child_type=Chair,
-        xyz_rule=AxisAlignedBBoxRule(
-            lb=torch.zeros(3),
-            ub=torch.zeros(3)
-        ),
-        rotation_rule=UniformBoundedRevoluteJointRule(
-            axis=torch.tensor([0., 0., 1.]),
-            lb=0., ub=0.
-        )
-    )
-    def __init__(self, tf):
-        super().__init__(
-            rules=[MaybeChair.ChairProductionRule, NullProductionRule],
-            rule_probs=torch.tensor([0.5, 0.5]),
-            tf=tf,
-            physics_geometry_info=None,
-            observed=False
-        )
-
-
-class Table(AndNode):
+class Table(IndependentSetNode):
     def __init__(self, tf):
         chair_offset = RigidTransform(p=[1.0, 0., 0.])
         rules = []
@@ -99,7 +56,7 @@ class Table(AndNode):
             xyz_center = torch.tensor(chair_centroid.translation().copy())
             rules.append(
                 ProductionRule(
-                    child_type=MaybeChair,
+                    child_type=Chair,
                     xyz_rule=AxisAlignedBBoxRule(
                         lb=xyz_center-torch.ones(3)*0.1,
                         ub=xyz_center+torch.ones(3)*0.1
@@ -118,6 +75,7 @@ class Table(AndNode):
         )
         super().__init__(
             rules=rules,
+            rule_probs=torch.ones(4)*0.5,
             tf=tf,
             physics_geometry_info=geom,
             observed=True

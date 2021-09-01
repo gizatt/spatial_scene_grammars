@@ -1,4 +1,5 @@
 from copy import deepcopy
+import logging
 
 import torch
 import pyro
@@ -95,7 +96,8 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500, verbose=False)
             try:
                 new_score = new_tree.score()
             except ValueError as e:
-                print("Unexpected ValueError: ", e)
+                logging.warn("Unexpected ValueError: ", e)
+                new_score = -torch.tensor(np.inf)
         else:
             new_score = -torch.tensor(np.inf)
 
