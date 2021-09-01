@@ -18,8 +18,13 @@ node types.
 
 A -> B and C
 B -> D or E
+D -> G with 50% prob
 C -> Geometric repetitions of F
 '''
+
+class NodeG(TerminalNode):
+    def __init__(self, tf):
+        super().__init__(observed=True, physics_geometry_info=None, tf=tf)
 
 class NodeF(TerminalNode):
     def __init__(self, tf):
@@ -29,9 +34,20 @@ class NodeE(TerminalNode):
     def __init__(self, tf):
         super().__init__(observed=True, physics_geometry_info=None, tf=tf)
 
-class NodeD(TerminalNode):
+class NodeD(IndependentSetNode):
+    GRule = ProductionRule(
+        child_type=NodeG,
+        xyz_rule=WorldBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)),
+        rotation_rule=UnconstrainedRotationRule()
+    )
     def __init__(self, tf):
-        super().__init__(observed=True, physics_geometry_info=None, tf=tf)
+        super().__init__(
+            rules=[NodeD.GRule],
+            rule_probs=torch.tensor([0.5]),
+            observed=True,
+            physics_geometry_info=None,
+            tf=tf
+        )
 
 class NodeC(GeometricSetNode):
     FRule = ProductionRule(

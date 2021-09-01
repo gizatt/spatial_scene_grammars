@@ -12,7 +12,7 @@ import torch.distributions.constraints as constraints
 
 from .torch_utils import ConstrainedParameter
 from .nodes import (Node, TerminalNode,
-    AndNode, OrNode, GeometricSetNode
+    AndNode, OrNode, GeometricSetNode, IndependentSetNode
 )
 from .rules import ProductionRule
 
@@ -61,7 +61,7 @@ class SceneTree(nx.DiGraph):
     def get_rule_for_child(self, parent, child):
         if isinstance(parent, GeometricSetNode):
             return parent.rule
-        elif isinstance(parent, (AndNode, OrNode)):
+        elif isinstance(parent, (AndNode, OrNode, IndependentSetNode)):
             return parent.rules[child.rule_k]
         else:
             raise ValueError("Parent %s of child %s is of bad type for getting rules." % (parent, child))
@@ -79,6 +79,8 @@ class SceneTree(nx.DiGraph):
         elif isinstance(parent, OrNode):
             assert len(children) == 1
             rules = [parent.rules[children[0].rule_k]]
+        elif isinstance(parent, IndependentSetNode):
+            rules = [parent.rules[child.rule_k] for child in children]
         elif isinstance(parent, TerminalNode):
             rules = []
         else:
@@ -118,7 +120,7 @@ class SceneTree(nx.DiGraph):
                 for child in children:
                     assert child.rule_k is not None
                     assert child.rule_k >= 0
-                    if isinstance(node, (AndNode, OrNode)):
+                    if isinstance(node, (AndNode, OrNode, IndependentSetNode)):
                         rule = node.rules[child.rule_k]
                     elif isinstance(node, GeometricSetNode):
                         rule = node.rule
@@ -177,7 +179,7 @@ class SpatialSceneGrammar():
         node_queue = [root]
         while len(node_queue) > 0:
             parent = node_queue.pop(0)
-            if isinstance(parent, (AndNode, OrNode)):
+            if isinstance(parent, (AndNode, OrNode, IndependentSetNode)):
                 maximal_children = [r.child_type for r in parent.rules]
             elif isinstance(parent, GeometricSetNode):
                 maximal_children = [parent.rule.child_type for k in range(parent.max_children)]

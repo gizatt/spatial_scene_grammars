@@ -117,3 +117,21 @@ def test_GeometricSetNode(set_seed):
     assert all([isinstance(c, DummyType) for c in children])
     score = node.score_child_set(children)
     assert torch.isclose(score, expected_prob), "%s vs %s" % (expected_prob, score)
+
+
+## IndependentSetNode
+def test_IndependentSetNode(set_seed):
+    node = IndependentSetNode(
+        rules=[dummyRule, dummyRule, dummyRule],
+        rule_probs=torch.tensor([0.75, 0.2, 0.05]),
+        tf=torch.eye(4),
+        observed=False,
+        physics_geometry_info=None
+    )
+    trace = pyro.poutine.trace(node.sample_children).get_trace()
+    children = trace.nodes["_RETURN"]["value"]
+    trace_node = trace.nodes["IndependentSetNode_n"]
+    expected_prob = trace_node["fn"].log_prob(trace_node["value"]).sum()
+    assert all([isinstance(c, DummyType) for c in children])
+    score = node.score_child_set(children)
+    assert torch.isclose(score, expected_prob), "%s vs %s" % (expected_prob, score)

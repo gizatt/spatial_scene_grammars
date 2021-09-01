@@ -256,3 +256,42 @@ class GeometricSetNode(Node):
             if type(child) != self.rule.child_type:
                 return torch.tensor(-np.inf)
         return self.geom_surrogate_dist.log_prob(torch.tensor(len(children) - 1))
+
+
+class IndependentSetNode(Node):
+    ''' Given a list of production rules, enacts each one independently
+    according to coin flip probabilities.'''
+    def __init__(self, rules, rule_probs, **kwargs):
+        assert len(rules) > 0
+        assert all([isinstance(r, ProductionRule) for r in rules])
+        assert isinstance(rule_probs, torch.Tensor)
+        assert len(rules) == len(rule_probs)
+        self.rules = rules
+        self.rule_probs = rule_probs
+
+        self._rule_dist = dist.Bernoulli(rule_probs)
+        super().__init__(**kwargs)
+    
+    def sample_children(self):
+        children = []
+        activations = pyro.sample("IndependentSetNode_n", self._rule_dist)
+        for k, rule in enumerate(self.rules):
+            if activations[k] > 0.5:
+                with scope(prefix="%d" % k):
+                    child = self.rules[k].sample_child(self)
+                child.rule_k = k
+                children.append(child)
+        return children
+
+    def score_child_set(self, children):
+        activations = torch.zeros(len(self.rules))
+        for child in children:
+            if child.rule_k > len(self.rules) or type(child) != self.rules[child.rule_k].child_type:
+                # Mismatched child set
+                return torch.tensor(-np.inf)
+            elif not torch.isclose(activations[child.rule_k], torch.zeros(1)):
+                # Can't produce 2 children from same rule
+                return torch.tensor(-np.inf)
+            else:
+                activations[child.rule_k] = 1.
+        return self._rule_dist.log_prob(activations).sum()

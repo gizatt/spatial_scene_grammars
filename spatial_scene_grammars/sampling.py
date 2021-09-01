@@ -80,7 +80,7 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500, verbose=False)
             elif isinstance(rotation_rule, UniformBoundedRevoluteJointRule):
                 # Apply small rotation around axis, unless the rotation is fully constrained
                 if not np.isclose(rotation_rule.lb, rotation_rule.ub):
-                    random_angle = dist.Normal(torch.zeros(0), torch.ones(1)*0.1).sample()
+                    random_angle = dist.Normal(torch.zeros(1), torch.ones(1)*0.1).sample()
                     orig_angle, orig_axis = rotation_rule._recover_relative_angle_axis(current_parent, current_node)
                     # Add angle to orig angle, and rotate around the joint's actual axis to get
                     # the new rotation offset.

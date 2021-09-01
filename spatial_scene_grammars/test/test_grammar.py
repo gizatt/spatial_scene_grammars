@@ -41,7 +41,7 @@ def test_grammar(set_seed):
 
     obs = tree.get_observed_nodes()
     if len(obs) > 0:
-        assert all([isinstance(c, (NodeD, NodeE, NodeF)) for c in obs])
+        assert all([isinstance(c, (NodeD, NodeE, NodeF, NodeG)) for c in obs])
 
     assert len(tree.find_nodes_by_type(NodeA)) == 1
 

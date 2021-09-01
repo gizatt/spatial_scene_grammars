@@ -239,7 +239,7 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
         ## Get child rule list.
         if isinstance(parent_node, GeometricSetNode):
             rules = [parent_node.rule for k in range(len(children))]
-        elif isinstance(parent_node, (AndNode, OrNode)):
+        elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
             rules = parent_node.rules
         elif isinstance(parent_node, TerminalNode):
             rules = []
@@ -284,7 +284,8 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
             # Exactly one child can be on if the parent is on.
             prog.AddLinearConstraint(sum(child_actives) == parent_node.active)
 
-        elif isinstance(parent_node, TerminalNode):
+        elif isinstance(parent_node, (TerminalNode, IndependentSetNode)):
+            # No additional constraint on which set of children should be active.
             pass
         
         else:
@@ -367,7 +368,7 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
         children = super_tree.get_children(parent_node)
         if isinstance(parent_node, (AndNode, TerminalNode)):
             pass
-        elif isinstance(parent_node, OrNode):
+        elif isinstance(parent_node, (OrNode, IndependentSetNode)):
             # Binary variables * log of probabilities.
             for p, child in zip(parent_node.rule_probs, children):
                 prog.AddLinearCost(-np.log(p) * child.active)
@@ -376,7 +377,7 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
             # of the geometric dist? That might need special handling.
             p = parent_node.p
             for child in children:
-                prog.AddLinearCost(-np.log(1.-p) * child.active)            
+                prog.AddLinearCost(-np.log(1.-p) * child.active)
         else:
             raise ValueError("Unexpected node in cost assembly: ", type(parent_node))
 
