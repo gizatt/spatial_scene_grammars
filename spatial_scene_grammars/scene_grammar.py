@@ -133,10 +133,20 @@ class SceneTree(nx.DiGraph):
         return total_score
 
 
-class SpatialSceneGrammar():
+class SpatialSceneGrammar(torch.nn.Module):
     '''
     Manages a scene grammar that produces scene trees by composition
     of subclasses of the node types in this repo.
+
+    The (torch) parameters of the grammar are the set of parameters
+    for the node types and their rules:
+        - For each node type in the grammar, the parameters of the
+            underlying node type. (For an OR node, the rule_probs;
+            for a GEOMETRIC_SET_NODE, the stopping probability p.)
+        - For each node type in the grammar, the parameters of each of
+            that node type's rules. E.g. if a node type uses
+            a BoundingBox XYZ offset rule, the lower and upper bound
+            of that BoundingBox.
     '''
 
     def __init__(self, root_node_type, root_node_tf, do_sanity_checks=True):
@@ -144,6 +154,27 @@ class SpatialSceneGrammar():
         self.root_node_type = root_node_type
         self.root_node_tf = root_node_tf
         self.do_sanity_checks = do_sanity_checks
+
+        # Build the list of all types in the grammar, and use it
+        # to set up the grammar parameters initialized from the
+        # node default.
+        self.all_types = self._collect_all_types_in_grammar()
+
+    def _collect_all_types_in_grammar(self):
+        # Similar to supertree logic, but doesn't track supertree.
+        # Needs to instantiate nodes to get their rule lists.
+        root = self.root_node_type(tf = torch.eye(4))
+        all_types = set()
+        input_queue = [root]
+        while len(input_queue) > 0:
+            node = input_queue.pop(0)
+            if type(node) in all_types:
+                continue
+            all_types.add(type(node))
+            for rule in node.rules:
+                if rule.child_type not in all_types:
+                    input_queue.append(rule.child_type(tf = torch.eye(4)))
+        return all_types
 
     def sample_tree(self):
         tree = SceneTree()
@@ -179,12 +210,10 @@ class SpatialSceneGrammar():
         node_queue = [root]
         while len(node_queue) > 0:
             parent = node_queue.pop(0)
-            if isinstance(parent, (AndNode, OrNode, IndependentSetNode)):
+            if isinstance(parent, (AndNode, OrNode, IndependentSetNode, TerminalNode)):
                 maximal_children = [r.child_type for r in parent.rules]
             elif isinstance(parent, GeometricSetNode):
                 maximal_children = [parent.rule.child_type for k in range(parent.max_children)]
-            elif isinstance(parent, TerminalNode):
-                maximal_children = []
             else:
                 raise ValueError(type(parent))
 

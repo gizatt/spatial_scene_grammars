@@ -28,6 +28,9 @@ def test_grammar(set_seed):
         root_node_type = NodeA,
         root_node_tf = torch.eye(4)
     )
+
+    assert grammar.all_types == set([NodeA, NodeB, NodeC, NodeD, NodeE, NodeF, NodeG])
+
     tree = grammar.sample_tree()
 
     assert(torch.isfinite(tree.score()))

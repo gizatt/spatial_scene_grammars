@@ -135,6 +135,12 @@ class Node():
     def rule_k(self, rule_k):
         self._rule_k = rule_k
 
+    @property
+    def rules(self):
+        # Returns a list of the rules this node can take. Each
+        # member will be a ProductionRule object.
+        raise NotImplementedError()
+    
     def sample_children(self):
         raise NotImplementedError("Implement sample_children in subclass.")
     def score_child_set(self, children):
@@ -142,6 +148,9 @@ class Node():
 
 class TerminalNode(Node):
     ''' The leafs of a generated scene tree will be terminal nodes. '''
+    @property
+    def rules(self):
+        return []
     def sample_children(self):
         return []
     def score_child_set(self, children):
@@ -155,8 +164,12 @@ class AndNode(Node):
     def __init__(self, rules, **kwargs):
         assert len(rules) > 0
         assert all([isinstance(r, ProductionRule) for r in rules])
-        self.rules = rules
+        self._rules = rules
         super().__init__(**kwargs)
+
+    @property
+    def rules(self):
+        return self._rules
 
     def sample_children(self):
         children = []
@@ -187,12 +200,16 @@ class OrNode(Node):
         assert len(rules) == len(rule_probs)
         rule_probs = rule_probs / torch.sum(rule_probs)
 
-        self.rules = rules
+        self._rules = rules
         self.rule_probs = rule_probs
 
         self._rule_dist = dist.Categorical(rule_probs)
         super().__init__(**kwargs)
-    
+
+    @property
+    def rules(self):
+        return self._rules
+
     def sample_children(self):
         # Pick which child will be produced.
         child_ind = pyro.sample("OrNode_child", self._rule_dist)
@@ -235,6 +252,10 @@ class GeometricSetNode(Node):
         self.geom_surrogate_dist = dist.Categorical(self.rule_probs)
         super().__init__(**kwargs)
     
+    @property
+    def rules(self):
+        return [self.rule]
+
     def sample_children(self):
         children = []
         n = pyro.sample("GeometricSetNode_n", self.geom_surrogate_dist) + 1
@@ -266,12 +287,16 @@ class IndependentSetNode(Node):
         assert all([isinstance(r, ProductionRule) for r in rules])
         assert isinstance(rule_probs, torch.Tensor)
         assert len(rules) == len(rule_probs)
-        self.rules = rules
+        self._rules = rules
         self.rule_probs = rule_probs
 
         self._rule_dist = dist.Bernoulli(rule_probs)
         super().__init__(**kwargs)
     
+    @property
+    def rules(self):
+        return self._rules
+
     def sample_children(self):
         children = []
         activations = pyro.sample("IndependentSetNode_n", self._rule_dist)
