@@ -16,18 +16,30 @@ from pytorch3d.transforms.rotation_conversions import (
     euler_angles_to_matrix, axis_angle_to_matrix
 )
 
-def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500, verbose=False):
+def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
+                            perturb_in_config_space=False, verbose=0,
+                            vis_callback=None,
+                            translation_variance=0.1,
+                            rotation_variance=0.1):
     ''' Given a scene tree, resample its continuous variables
     (i.e. the node poses) while keeping the root and observed
     node poses fixed. Returns a population of trees sampled
     from the joint distribution over node poses given the
-    fixed structure. '''
+    fixed structure.
+
+    Verbose = 0: Print nothing
+    Verbose = 1: Print updates about accept rate and steps
+    Verbose = 2: Print NLP output and scoring info
+    '''
 
     # Strategy sketch:
     # - Initialize a random walk at the current scene tree.
     # - Repeatedly:
     #     1) Apply a random perturbation to the non-observed, non-root
-    #        node poses.
+    #        node poses. If perturb_in_config_space, then this perturbation
+    #        is applied to the root node first, and then that change propagated
+    #        down to its children. Otherwise, every node pose is perturbed
+    #        randomly simultaneously.
     #     2) Use an NLP to project the perturbed tree configuration to
     #        the nearest feasible tree configuration (i.e. satisfying
     #        uniform and joint angle bounds).
@@ -41,6 +53,7 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500, verbose=False)
     #            unless I account for the Hastings ratio. But given my use of
     #            nasty nonlinear projection, that seems rough.
 
+
     current_tree = deepcopy(scene_tree) 
     
     # Do steps of random-walk MCMC on those variables.
@@ -51,69 +64,89 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500, verbose=False)
     sample_trees = []
     for step_k in range(num_samples):
         new_tree = deepcopy(current_tree)
-        current_root = current_tree.get_root()
-        for current_node, new_node in zip(current_tree.nodes, new_tree.nodes):
-            if current_node.observed or current_node is current_root:
-                continue
-            ## The exact perturbation we'll apply depends on the relationship to the parent.
-            current_parent = current_tree.get_parent(current_node)
-            rule = current_tree.get_rule_for_child(current_parent, current_node)
-            xyz_rule, rotation_rule = rule.xyz_rule, rule.rotation_rule
-            if isinstance(xyz_rule, WorldBBoxRule):
-                # Perturb in axes that are not equality constrained
-                perturb = dist.Normal(torch.zeros(3), torch.ones(3)*0.1).sample()
-                perturb[xyz_rule.xyz_dist.delta_mask] = 0.
-                new_node.translation = current_node.translation + perturb
-            elif isinstance(xyz_rule, AxisAlignedBBoxRule):
-                perturb = dist.Normal(torch.zeros(3), torch.ones(3)*0.1).sample()
-                perturb[xyz_rule.xyz_offset_dist.delta_mask] = 0.
-                new_node.translation = current_node.translation + perturb
-            else:
-                raise NotImplementedError("%s" % xyz_rule)
+        # Update tree from root down.
+        node_queue = [(current_tree.get_root(), new_tree.get_root())]
+        while len(node_queue) > 0:
+            current_parent, new_parent = node_queue.pop()
+            current_children, current_rules = current_tree.get_children_and_rules(current_parent)
+            new_children = new_tree.get_children(new_parent)
+            ## Apply pertubrations to children according to their generating rules.
+            for current_child, rule, new_child in zip(current_children, current_rules, new_children):
+                if current_child.observed:
+                    # No perturbation to observed nodes necessary.
+                    continue
+                ## The exact perturbation we'll apply
+                # depends on the relationship to the parent.
+                xyz_rule, rotation_rule = rule.xyz_rule, rule.rotation_rule
+                if isinstance(xyz_rule, WorldBBoxRule):
+                    # Perturb in axes that are not equality constrained
+                    perturb = dist.Normal(torch.zeros(3), torch.ones(3)*translation_variance).sample()
+                    perturb[xyz_rule.xyz_dist.delta_mask] = 0.
+                    new_child.translation = current_child.translation + perturb
+                elif isinstance(xyz_rule, AxisAlignedBBoxRule):
+                    # Perturb in axes that are not equality constrained
+                    perturb = dist.Normal(torch.zeros(3), torch.ones(3)*translation_variance).sample()
+                    perturb[xyz_rule.xyz_offset_dist.delta_mask] = 0.
+                    if perturb_in_config_space:
+                        current_offset = current_child.translation - current_parent.translation
+                        new_child.translation = new_parent.translation + current_offset + perturb
+                    else:
+                        new_child.translation = current_child.translation + perturb
+                else:
+                    raise NotImplementedError("%s" % xyz_rule)
 
-            if isinstance(rotation_rule, UnconstrainedRotationRule):
-                # Apply small random rotation 
-                random_small_rotation = euler_angles_to_matrix(
-                    dist.Normal(torch.zeros(3), torch.ones(3)*0.1).sample().unsqueeze(0),
-                    convention="ZYX"
-                )[0, ...]
-                new_node.rotation = torch.matmul(current_node.rotation, random_small_rotation)
-            elif isinstance(rotation_rule, UniformBoundedRevoluteJointRule):
-                # Apply small rotation around axis, unless the rotation is fully constrained
-                if not np.isclose(rotation_rule.lb, rotation_rule.ub):
-                    random_angle = dist.Normal(torch.zeros(1), torch.ones(1)*0.1).sample()
-                    orig_angle, orig_axis = rotation_rule._recover_relative_angle_axis(current_parent, current_node)
-                    # Add angle to orig angle, and rotate around the joint's actual axis to get
-                    # the new rotation offset.
-                    new_angle_axis = rotation_rule.axis * (orig_angle + random_angle)
-                    new_R_offset = axis_angle_to_matrix(new_angle_axis.unsqueeze(0))[0, ...]
-                    new_node.rotation = torch.matmul(current_parent.rotation, new_R_offset)
+                if isinstance(rotation_rule, UnconstrainedRotationRule):
+                    # Apply small random rotation 
+                    random_small_rotation = euler_angles_to_matrix(
+                        dist.Normal(torch.zeros(3), torch.ones(3)*rotation_variance).sample().unsqueeze(0),
+                        convention="ZYX"
+                    )[0, ...]
+                    new_child.rotation = torch.matmul(current_child.rotation, random_small_rotation)
+                elif isinstance(rotation_rule, UniformBoundedRevoluteJointRule):
+                    # Apply small rotation around axis, unless the rotation is fully constrained
+                    if not np.isclose(rotation_rule.lb, rotation_rule.ub):
+                        random_angle = dist.Normal(torch.zeros(1), torch.ones(1)*translation_variance).sample()
+                        orig_angle, orig_axis = rotation_rule._recover_relative_angle_axis(current_parent, current_child)
+                        # Add angle to orig angle, and rotate around the joint's actual axis to get
+                        # the new rotation offset.
+                        new_angle_axis = rotation_rule.axis * (orig_angle + random_angle)
+                        new_R_offset = axis_angle_to_matrix(new_angle_axis.unsqueeze(0))[0, ...]
+                        if perturb_in_config_space:
+                            new_child.rotation = torch.matmul(new_parent.rotation, new_R_offset)
+                        else:
+                            new_child.rotation = torch.matmul(current_child.rotation, new_R_offset)
+
+            # Add children to the node queue.
+            for current_child, new_child in zip(current_children, new_children):
+                node_queue.append((current_child, new_child))
 
         # Now project the tree to the closest feasible tree to that config.
-        projection_results = optimize_scene_tree_with_nlp(new_tree, objective="projection", verbose=False)
+        projection_results = optimize_scene_tree_with_nlp(new_tree, objective="projection", verbose=verbose>1)
         if projection_results.optim_result.is_success():
             new_tree = projection_results.refined_tree
             try:
-                new_score = new_tree.score()
+                new_score = new_tree.score(verbose=verbose>1)
             except ValueError as e:
-                logging.warn("Unexpected ValueError: ", e)
+                logging.warn("Unexpected ValueError: %s", e)
                 new_score = -torch.tensor(np.inf)
         else:
+            print("Optimization failed")
             new_score = -torch.tensor(np.inf)
 
         reject = True
         if torch.isfinite(new_score):
             # MH acceptance ratio: just score_new / score_old, since proposal is symmetric
             alpha = min(1, torch.exp(new_score - old_score))
-            print("New score %f, old score %f, alpha %f" % (new_score, old_score, alpha))
+            if verbose:
+                print("New score %f, old score %f, alpha %f" % (new_score, old_score, alpha))
             if dist.Uniform(0., 1.).sample() <= alpha:
                 # Accepted. Update our temp pose variables to reflect new "good" state.
                 n_accept += 1
                 current_tree = new_tree
-        if reject:
-            pass
         sample_trees.append(deepcopy(current_tree))
-
-        print("%d: Accept rate %f" % (step_k, n_accept / (step_k + 1)))
+        if vis_callback is not None:
+            vis_callback(current_tree)
+        if verbose:
+            print("%d: Accept rate %f" % (step_k, n_accept / (step_k + 1)))
     return sample_trees
 

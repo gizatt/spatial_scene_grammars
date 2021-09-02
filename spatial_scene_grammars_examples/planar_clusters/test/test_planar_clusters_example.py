@@ -26,13 +26,12 @@ def test_sampling():
 
     # Draw a random sample from the grammar and visualize it.
     grammar = SpatialSceneGrammar(
-        root_node_type = RestaurantRoom,
+        root_node_type = Desk,
         root_node_tf = torch.eye(4)
     )
     torch.random.manual_seed(42)
     tree = grammar.sample_tree()
 
-    assert len(tree.find_nodes_by_type(Table)) > 0, "Didn't sample any tables."
     assert torch.isfinite(tree.score(verbose=True)), "Sampled tree was infeasible."
 
     draw_scene_tree_contents_meshcat(tree, zmq_url=vis.window.zmq_url)
@@ -45,7 +44,7 @@ def test_sampling():
 def test_parsing():
     # Try to parse an example of this grammar.
     grammar = SpatialSceneGrammar(
-        root_node_type = RestaurantRoom,
+        root_node_type = Desk,
         root_node_tf = torch.eye(4)
     )
     torch.random.manual_seed(42)

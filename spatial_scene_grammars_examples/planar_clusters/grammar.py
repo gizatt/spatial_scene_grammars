@@ -14,28 +14,20 @@ from pydrake.all import (
 types while keeping all objects in the XY plane for
 easy visualization.
 
-Themed sort of like the restaurant grammar in
-"Synthesizing Open Worlds with Constraints using
-Locally Annealed Reversible Jump MCMC": geometric
-production of many tables, each of which might produce
-chairs at each cardinal direction.
-
-Root -> Geometric # of (square, axis-aligned) Tables
-Table -> MaybeChairs at 4 offsets
-MaybeChairs -> Chair or Null
+Themed like clutter on a desk: a desk produces
+clusters of stuff on it. Clusters can be clusters
+of food waste, papers, or pencils. Each cluster
+has a geometric number of stuff distributed
+locally.
 '''
 
-class Chair(TerminalNode):
+## Food waste
+class Plate(TerminalNode):
     def __init__(self, tf):
         geom = PhysicsGeometryInfo()
         geom.register_geometry(
-            tf=drake_tf_to_torch_tf(RigidTransform(p=[0., 0., .25])),
-            geometry=pydrake_geom.Box(0.5, 0.5, 0.5),
-            color=np.array([0.8, 0.5, 0.2, 1.0])
-        )
-        geom.register_geometry(
-            tf=drake_tf_to_torch_tf(RigidTransform(p=[0.25, 0., .5])),
-            geometry=pydrake_geom.Box(0.1, 0.5, 1.0),
+            tf=drake_tf_to_torch_tf(RigidTransform(p=[0., 0., .025/2.])),
+            geometry=pydrake_geom.Cylinder(radius=0.1, length=0.025),
             color=np.array([0.8, 0.5, 0.2, 1.0])
         )
         super().__init__(
@@ -44,65 +36,182 @@ class Chair(TerminalNode):
             observed=True
         )
 
-
-class Table(IndependentSetNode):
+class Drink(TerminalNode):
     def __init__(self, tf):
-        chair_offset = RigidTransform(p=[1.0, 0., 0.])
-        rules = []
-        for k in range(4):
-            angle = k*np.pi/2.
-            rotation = RigidTransform(p=np.zeros(3), rpy=RollPitchYaw(0., 0., angle))
-            chair_centroid = rotation.multiply(chair_offset)
-            xyz_center = torch.tensor(chair_centroid.translation().copy())
-            rules.append(
-                ProductionRule(
-                    child_type=Chair,
-                    xyz_rule=AxisAlignedBBoxRule(
-                        lb=xyz_center-torch.ones(3)*0.1,
-                        ub=xyz_center+torch.ones(3)*0.1
-                    ),
-                    rotation_rule=UniformBoundedRevoluteJointRule(
-                        axis=torch.tensor([0., 0., 1.]),
-                        lb=angle-np.pi/8., ub=angle+np.pi/8.
-                    )
-                )
-            )
         geom = PhysicsGeometryInfo()
         geom.register_geometry(
-            tf=drake_tf_to_torch_tf(RigidTransform(p=[0., 0., .5])),
-            geometry=pydrake_geom.Box(1.0, 1.0, 1.0),
-            color=np.array([0.8, 0.8, 0.85, 1.0])
+            tf=drake_tf_to_torch_tf(RigidTransform(p=[0., 0., .1/2.])),
+            geometry=pydrake_geom.Cylinder(radius=0.05, length=0.1),
+            color=np.array([0.3, 0.8, 0.5, 1.0])
         )
         super().__init__(
-            rules=rules,
-            rule_probs=torch.ones(4)*0.5,
             tf=tf,
             physics_geometry_info=geom,
             observed=True
         )
 
 
-class RestaurantRoom(GeometricSetNode):
-    def __init__(self, tf, room_size=[10., 10.]):
-        rule = ProductionRule(
-            child_type=Table,
-            xyz_rule=AxisAlignedBBoxRule(lb=torch.zeros(3), ub=torch.tensor([room_size[0], room_size[1], 0.])),
+class FoodWasteCluster(IndependentSetNode):
+    # Might make either a plate or soda can,
+    # the plate might make more stuff on it.
+    Stuff = [Plate, Drink]
+    Rules = [
+        ProductionRule(
+            child_type=stuff,
+            xyz_rule=AxisAlignedBBoxRule(
+                lb=torch.tensor([-0.2, -0.2, 0.0]),
+                ub=torch.tensor([0.2, 0.2, 0.0])
+            ),
+            rotation_rule=UniformBoundedRevoluteJointRule(
+                axis=torch.tensor([0., 0., 1.]),
+                lb=-np.pi, ub=np.pi
+            )   
+        ) for stuff in Stuff
+    ]
+    Rule_Probs = torch.tensor([0.5, 0.8])
+
+    def __init__(self, tf):
+        super().__init__(
+            rules=self.Rules,
+            rule_probs=self.Rule_Probs,
+            tf=tf,
+            physics_geometry_info=None,
+            observed=False
+        )
+
+## Paper stack
+class Paper(TerminalNode):
+    def __init__(self, tf):
+        geom = PhysicsGeometryInfo()
+        rgba = np.random.uniform([0.85, 0.85, 0.85, 1.0], [0.95, 0.95, 0.95, 1.0])
+        geom.register_geometry(
+            tf=drake_tf_to_torch_tf(RigidTransform(p=[0., 0., .01/2.])),
+            geometry=pydrake_geom.Box(0.2159, 0.2794, 0.01), # 8.5" x 11"
+            color=rgba
+        )
+        super().__init__(
+            tf=tf,
+            physics_geometry_info=geom,
+            observed=True
+        )
+
+class PaperCluster(GeometricSetNode):
+    # Make a stack of papers
+    PaperRule = ProductionRule(
+        child_type=Paper,
+        xyz_rule=AxisAlignedBBoxRule(
+            lb=torch.tensor([-0.05, -0.05, 0.0]),
+            ub=torch.tensor([0.05, 0.05, 0.0])
+        ),
+        rotation_rule=UniformBoundedRevoluteJointRule(
+            axis=torch.tensor([0., 0., 1.]),
+            lb=-np.pi/8., ub=np.pi/8.
+        )   
+    )
+
+    def __init__(self, tf):
+        super().__init__(
+            rule=self.PaperRule,
+            p=0.3,
+            max_children=3,
+            tf=tf,
+            physics_geometry_info=None,
+            observed=False
+        )
+
+## Pencils
+class Pencil(TerminalNode):
+    def __init__(self, tf):
+        geom = PhysicsGeometryInfo()
+        rgba = np.random.uniform([0.85, 0.75, 0.45, 1.0], [0.95, 0.85, 0.55, 1.0])
+        geom.register_geometry(
+            tf=drake_tf_to_torch_tf(RigidTransform(p=[0., 0., .01/2.], rpy=RollPitchYaw(0., np.pi/2., 0.))),
+            geometry=pydrake_geom.Cylinder(radius=0.01, length=0.15),
+            color=rgba,
+        )
+        super().__init__(
+            tf=tf,
+            physics_geometry_info=geom,
+            observed=True
+        )
+
+class PencilCluster(GeometricSetNode):
+    # Make a geometric cluster of roughly-aligned pencils
+    PencilRule = ProductionRule(
+        child_type=Pencil,
+        xyz_rule=AxisAlignedBBoxRule(
+            lb=torch.tensor([-0.05, -0.05, 0.0]),
+            ub=torch.tensor([0.05, 0.05, 0.0])
+        ),
+        rotation_rule=UniformBoundedRevoluteJointRule(
+            axis=torch.tensor([0., 0., 1.]),
+            lb=-np.pi/8., ub=np.pi/8.
+        )   
+    )
+
+    def __init__(self, tf):
+        super().__init__(
+            rule=self.PencilRule,
+            p=0.5,
+            max_children=3,
+            tf=tf,
+            physics_geometry_info=None,
+            observed=False
+        )
+
+
+## Desk and abstract cluster
+class ObjectCluster(OrNode):
+    # Specialize into a type of cluster
+    ClusterTypes = [FoodWasteCluster, PaperCluster, PencilCluster]
+    ClusterRules = [
+        ProductionRule(
+            child_type=cluster_type,
+            xyz_rule=AxisAlignedBBoxRule(
+                lb=torch.zeros(3),
+                ub=torch.zeros(3)
+            ),
             rotation_rule=UniformBoundedRevoluteJointRule(
                 axis=torch.tensor([0., 0., 1.]),
                 lb=0., ub=0.
             )
+        ) for cluster_type in ClusterTypes
+    ]
+    ClusterTypeWeights = torch.tensor([1.0, 1.0, 1.0])
+    def __init__(self, tf):
+        super().__init__(
+            rules=self.ClusterRules,
+            rule_probs=self.ClusterTypeWeights,
+            tf=tf,
+            physics_geometry_info=None,
+            observed=False
+        )
+
+
+class Desk(GeometricSetNode):
+    # Make geometric # of object clusters
+    def __init__(self, tf, desk_size=[1., 1.]):
+        lb = torch.tensor([0.2, 0.2, 0.0])
+        ub = torch.tensor([desk_size[0] - 0.2, desk_size[1] - 0.2, 0.0])
+        rule = ProductionRule(
+            child_type=ObjectCluster,
+            xyz_rule=AxisAlignedBBoxRule(lb=lb, ub=ub),
+            rotation_rule=UniformBoundedRevoluteJointRule(
+                axis=torch.tensor([0., 0., 1.]),
+                lb=-np.pi, ub=np.pi
+            )
         )
         geom = PhysicsGeometryInfo()
         geom.register_geometry(
-            tf=drake_tf_to_torch_tf(RigidTransform(p=[room_size[0]/2., room_size[1]/2., -0.5])),
-            geometry=pydrake_geom.Box(room_size[0], room_size[1], 1.0),
+            tf=drake_tf_to_torch_tf(RigidTransform(p=[desk_size[0]/2., desk_size[1]/2., -0.5])),
+            geometry=pydrake_geom.Box(desk_size[0], desk_size[1], 1.0),
             color=np.array([0.3, 0.2, 0.2, 1.0])
         )
         super().__init__(
             rule=rule,
             tf=tf,
             p=0.2,
-            max_children=5,
+            max_children=6,
             physics_geometry_info=geom,
             observed=True
         )

@@ -546,30 +546,40 @@ def optimize_scene_tree_with_nlp(scene_tree, objective="mle", verbose=False, max
             rotation_was_fully_constrained = \
                 rotation_rule_to_encode_map[type(rotation_rule)](rotation_rule, prog, parent_node, child_node)
 
+    def penalize_rotation_error(R_goal, R_optim):
+        # We don't always have perfect rotations, so instead of using
+        # arccos((tr(R_diff) - 1) / 2) (the angular distance),
+        # I'll use the distance chord distance of a few vectors rotated
+        # by the rotation difference, which goes to zero if the
+        # rotations are the same. I use multiple vectors so the rotation
+        # axis is the same as a vector, we still get signal.
+        # TODO(gizatt) Would just quadratic error between desired + actual R
+        # work just as well but be computationally easier?
+        R_diff = R_goal.T.dot(R_optim)
+        for k in range(3):
+            vec = np.zeros(3)
+            vec[k] = 1.
+            vec_rot = R_diff.dot(vec)
+            prog.AddCost((vec_rot - vec).T.dot(vec_rot - vec))
+
+    def penalize_pose_error(pose_goal, t_optim, R_optim):
+        prog.AddQuadraticErrorCost(np.eye(3), pose_goal.translation(), t_optim)
+        penalize_rotation_error(pose_goal.rotation().matrix(), R_optim)
+
     if objective == "mle":
         # Add costs for MLE tree estimate
         pass
     elif objective == "projection":
-        # Try to get optimized tree as close as possible to current config
+        # Try to get optimized tree as close as possible to current config.
         for node in scene_tree.nodes:
             if not node.observed and node is not root_node:
-                prog.AddQuadraticErrorCost(np.eye(3), node.translation.cpu().detach().numpy(), node.t_optim)
-                # TODO(gizatt) Would just quadratic error between desired + actual R
-                # work just as well but be computationally easier?
+                pose_goal = RigidTransform(
+                    p=node.translation.cpu().detach().numpy(),
+                    R=RotationMatrix(node.rotation.cpu().detach().numpy())
+                )
+                penalize_pose_error(pose_goal, node.t_optim, node.R_optim)
 
-                # We don't always have perfect rotations, so instead of using
-                # arccos((tr(R_diff) - 1) / 2) (the angular distance),
-                # I'll use the distance chord distance of a few vectors rotated
-                # by the rotation difference, which goes to zero if the
-                # rotations are the same. I use multiple vectors so the rotation
-                # axis is the same as a vector, we still get signal.
-                R_des=node.rotation.cpu().detach().numpy()
-                R_diff = R_des.T.dot(node.rotation.cpu().detach().numpy())
-                for k in range(3):
-                    vec = np.zeros(3)
-                    vec[k] = 1.
-                    vec_rot = R_diff.dot(vec)
-                    prog.AddCost((vec_rot - vec).T.dot(vec_rot - vec))
+
     else:
         raise ValueError("Unknown objective spec \"%s\"" % objective)
 

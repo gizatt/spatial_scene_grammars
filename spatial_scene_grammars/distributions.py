@@ -31,7 +31,7 @@ class UniformWithEqualityHandling(pyro.distributions.Uniform):
     the upper bounds, those elements are replaced with Delta distributions,
     and modifies handling to allow upper bound to be inclusive. '''
 
-    def __init__(self, low, high, validate_args=None, eps=1E-6):
+    def __init__(self, low, high, validate_args=None, eps=1E-3):
         self.low, self.high = broadcast_all(low, high)
 
         # Should have been set by pyro Uniform __init__
