@@ -10,6 +10,7 @@ from pytorch3d.transforms.rotation_conversions import (
     axis_angle_to_matrix
 )
 
+from .grammar import *
 
 torch.set_default_tensor_type(torch.DoubleTensor)
 
@@ -17,25 +18,9 @@ torch.set_default_tensor_type(torch.DoubleTensor)
 def set_seed(request):
     torch.manual_seed(request.param)
 
-
-class DummyType(Node):
-    def __init__(self, tf):
-        super().__init__(observed=False, physics_geometry_info=None, tf=tf)
-dummyRule = ProductionRule(
-    child_type=DummyType,
-    xyz_rule=WorldBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)),
-    rotation_rule=UnconstrainedRotationRule()
-)
-
-
 ## Base Node type
 def test_Node():
-    node = Node(
-        tf=torch.eye(4),
-        observed=False,
-        physics_geometry_info=None,
-        do_sanity_checks=True
-    )
+    node = NodeA(tf=torch.eye(4))
     xyz = node.translation
     assert isinstance(xyz, torch.Tensor) and xyz.shape == (3,)
     R = node.rotation
@@ -62,76 +47,49 @@ def test_TerminalNode():
 
 ## AndNode
 def test_AndNode():
-    node = AndNode(
-        rules=[dummyRule, dummyRule, dummyRule],
-        tf=torch.eye(4),
-        observed=False,
-        physics_geometry_info=None
-    )
+    node = NodeA(tf=torch.eye(4))
     trace = pyro.poutine.trace(node.sample_children).get_trace()
     children = trace.nodes["_RETURN"]["value"]
-    assert len(children) == 3
-    assert all([isinstance(c, DummyType) for c in children])
     score = node.score_child_set(children)
     expected_prob_hand = torch.zeros(1)
     # No sample nodes to get log prob from in this trace since AndNode
     # doesn't sample anything.
     assert torch.isclose(score, expected_prob_hand), "%s vs %s" % (expected_prob_hand, score)
+    assert len(node.parameters) == 0
 
 ## OrNode
 def test_OrNode(set_seed):
-    node = OrNode(
-        rules=[dummyRule, dummyRule, dummyRule],
-        rule_probs=torch.tensor([0.75, 0.2, 0.05]),
-        tf=torch.eye(4),
-        observed=False,
-        physics_geometry_info=None
-    )
+    node = NodeB(tf=torch.eye(4))
     trace = pyro.poutine.trace(node.sample_children).get_trace()
     children = trace.nodes["_RETURN"]["value"]
     trace_node = trace.nodes["OrNode_child"]
     expected_prob = trace_node["fn"].log_prob(trace_node["value"])
-    assert len(children) == 1
-    assert all([isinstance(c, DummyType) for c in children])
     expected_prob_hand = torch.log(node.rule_probs[children[0].rule_k])
     score = node.score_child_set(children)
     assert torch.isclose(score, expected_prob), "%s vs %s" % (expected_prob, score)
     assert torch.isclose(score, expected_prob_hand), "%s vs %s" % (expected_prob_hand, score)
+    assert torch.allclose(node.parameters, node.rule_probs)
 
 
 ## GeometricSetNode
 def test_GeometricSetNode(set_seed):
-    node = GeometricSetNode(
-        rule=dummyRule,
-        p=0.2,
-        max_children=5,
-        tf=torch.eye(4),
-        observed=False,
-        physics_geometry_info=None
-    )
+    node = NodeC(tf=torch.eye(4))
     trace = pyro.poutine.trace(node.sample_children).get_trace()
     children = trace.nodes["_RETURN"]["value"]
     trace_node = trace.nodes["GeometricSetNode_n"]
     expected_prob = trace_node["fn"].log_prob(trace_node["value"])
-    assert len(children) <= 5 and len(children) >= 1
-    assert all([isinstance(c, DummyType) for c in children])
+    assert len(children) <= node.max_children and len(children) >= 1
     score = node.score_child_set(children)
     assert torch.isclose(score, expected_prob), "%s vs %s" % (expected_prob, score)
-
+    assert torch.allclose(node.parameters, node.p)
 
 ## IndependentSetNode
 def test_IndependentSetNode(set_seed):
-    node = IndependentSetNode(
-        rules=[dummyRule, dummyRule, dummyRule],
-        rule_probs=torch.tensor([0.75, 0.2, 0.05]),
-        tf=torch.eye(4),
-        observed=False,
-        physics_geometry_info=None
-    )
+    node = NodeD(tf=torch.eye(4))
     trace = pyro.poutine.trace(node.sample_children).get_trace()
     children = trace.nodes["_RETURN"]["value"]
     trace_node = trace.nodes["IndependentSetNode_n"]
     expected_prob = trace_node["fn"].log_prob(trace_node["value"]).sum()
-    assert all([isinstance(c, DummyType) for c in children])
     score = node.score_child_set(children)
     assert torch.isclose(score, expected_prob), "%s vs %s" % (expected_prob, score)
+    assert torch.allclose(node.parameters, node.rule_probs)

@@ -41,11 +41,13 @@ class BoxPreYRotation(AndNode):
     )
     def __init__(self, tf):
         super().__init__(
-            rules=[BoxPreYRotation.LongBoxRule],
             tf=tf,
             physics_geometry_info=None,
             observed=False
         )
+    @classmethod
+    def generate_rules(cls):
+        return [BoxPreYRotation.LongBoxRule]
 
 
 class OrientedCluster(GeometricSetNode):
@@ -62,14 +64,15 @@ class OrientedCluster(GeometricSetNode):
     )
     def __init__(self, tf):
         super().__init__(
-            rule=OrientedCluster.BoxPreYRotationRule,
             tf=tf,
             p=0.3,
             max_children=5,
             physics_geometry_info=None,
             observed=False
         )
-
+    @classmethod
+    def generate_rules(cls):
+        return [OrientedCluster.BoxPreYRotationRule]
 
 class OrientedClusterRoot(GeometricSetNode):
     OrientedClusterRule = ProductionRule(
@@ -77,13 +80,14 @@ class OrientedClusterRoot(GeometricSetNode):
         xyz_rule=AxisAlignedBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)),
         rotation_rule=UnconstrainedRotationRule()
     )
-
     def __init__(self, tf):
         super().__init__(
-            rule=OrientedClusterRoot.OrientedClusterRule,
             tf=tf,
             p=0.3,
             max_children=2,
             physics_geometry_info=None,
             observed=False
         )
+    @classmethod
+    def generate_rules(cls):
+        return [OrientedClusterRoot.OrientedClusterRule]

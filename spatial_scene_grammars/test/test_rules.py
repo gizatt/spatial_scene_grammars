@@ -7,6 +7,8 @@ from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
 from torch.distributions import constraints
 
+from .grammar import *
+
 from pydrake.all import (
     UniformlyRandomRotationMatrix,
     RandomGenerator
@@ -21,13 +23,7 @@ def set_seed(request):
     return RandomGenerator(request.param)
 
 def make_dummy_node():
-    return Node(
-        tf=torch.eye(4),
-        observed=False,
-        physics_geometry_info=None,
-        do_sanity_checks=True
-    )
-
+    return NodeA(torch.eye(4))
 
 ## WorldBBoxRule
 def test_WorldBBoxRule(set_seed):
@@ -129,12 +125,8 @@ def test_AngleAxisInversion(set_seed, angle):
     UniformBoundedRevoluteJointRule(axis=torch.tensor([0., 1., 0.]), lb=-np.pi/2., ub=np.pi/2.)
 ])
 def test_ProductionRule(set_seed, xyz_rule, rotation_rule):
-    class DummyType(Node):
-        def __init__(self, tf):
-            super().__init__(observed=False, physics_geometry_info=None, tf=tf)
-
     rule = ProductionRule(
-        child_type=DummyType,
+        child_type=NodeB,
         xyz_rule=xyz_rule,
         rotation_rule=rotation_rule
     )

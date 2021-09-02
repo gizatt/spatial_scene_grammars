@@ -42,12 +42,14 @@ class NodeD(IndependentSetNode):
     )
     def __init__(self, tf):
         super().__init__(
-            rules=[NodeD.GRule],
             rule_probs=torch.tensor([0.5]),
             observed=True,
             physics_geometry_info=None,
             tf=tf
         )
+    @classmethod
+    def generate_rules(cls):
+        return [NodeD.GRule]
 
 class NodeC(GeometricSetNode):
     FRule = ProductionRule(
@@ -57,13 +59,15 @@ class NodeC(GeometricSetNode):
     )
     def __init__(self, tf):
         super().__init__(
-            rule=NodeC.FRule,
             p=torch.tensor(0.2),
             max_children=5,
             observed=False,
             physics_geometry_info=None,
             tf=tf
         )
+    @classmethod
+    def generate_rules(cls):
+        return [NodeC.FRule]
 
 class NodeB(OrNode):
     DRule = ProductionRule(
@@ -78,12 +82,15 @@ class NodeB(OrNode):
     )
     def __init__(self, tf):
         super().__init__(
-            rules=[NodeB.DRule, NodeB.ERule],
             rule_probs=torch.tensor([0.75, 0.25]),
             observed=False,
             physics_geometry_info=None,
             tf=tf
         )
+    @classmethod
+    def generate_rules(cls):
+        return [NodeB.DRule, NodeB.ERule]
+
 
 class NodeA(AndNode):
     BRule = ProductionRule(
@@ -98,7 +105,10 @@ class NodeA(AndNode):
     )
     def __init__(self, tf):
         super().__init__(
-            rules=[NodeA.BRule, NodeA.CRule],
             observed=False, physics_geometry_info=None, tf=tf
         )
+    @classmethod
+    def generate_rules(cls):
+        return [NodeA.BRule, NodeA.CRule]
+
 

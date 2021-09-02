@@ -149,8 +149,10 @@ class SpatialSceneGrammar(torch.nn.Module):
             of that BoundingBox.
     '''
 
-    def __init__(self, root_node_type, root_node_tf, do_sanity_checks=True):
+    def __init__(self, root_node_type, root_node_tf, sample_params_from_prior=False,
+                 do_sanity_checks=True):
         ''' Given a root node type and its tf, prepares this grammar for use. '''
+        super().__init__()
         self.root_node_type = root_node_type
         self.root_node_tf = root_node_tf
         self.do_sanity_checks = do_sanity_checks
@@ -159,6 +161,25 @@ class SpatialSceneGrammar(torch.nn.Module):
         # to set up the grammar parameters initialized from the
         # node default.
         self.all_types = self._collect_all_types_in_grammar()
+        self.params_by_node_type = torch.nn.ModuleDict()
+        for node_type in self.all_types:
+            param_prior = node_type.get_parameter_prior()
+            if param_prior is None:
+                self.params_by_node_type[node_type.__name__] = None
+                continue
+            if sample_params_from_prior:
+                init_value = param_prior.sample()
+            else:
+                # Grab the default parameter value from an instance
+                # of this node.
+                init_value = node_type(tf=torch.eye(4)).parameters
+                if len(init_value) > 0:
+                    assert torch.all(torch.isfinite(param_prior.log_prob(init_value))), "Bad initial value / prior match in node type %s" % node_type
+            self.params_by_node_type[node_type.__name__] = ConstrainedParameter(
+                init_value=init_value,
+                constraint=param_prior.support
+            )
+
 
     def _collect_all_types_in_grammar(self):
         # Similar to supertree logic, but doesn't track supertree.

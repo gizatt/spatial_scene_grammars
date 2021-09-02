@@ -72,12 +72,14 @@ class FoodWasteCluster(IndependentSetNode):
 
     def __init__(self, tf):
         super().__init__(
-            rules=self.Rules,
             rule_probs=self.Rule_Probs,
             tf=tf,
             physics_geometry_info=None,
             observed=False
         )
+    @classmethod
+    def generate_rules(cls):
+        return cls.Rules
 
 ## Paper stack
 class Paper(TerminalNode):
@@ -111,13 +113,16 @@ class PaperCluster(GeometricSetNode):
 
     def __init__(self, tf):
         super().__init__(
-            rule=self.PaperRule,
             p=0.3,
             max_children=3,
             tf=tf,
             physics_geometry_info=None,
             observed=False
         )
+
+    @classmethod
+    def generate_rules(cls):
+        return [cls.PaperRule]
 
 ## Pencils
 class Pencil(TerminalNode):
@@ -151,14 +156,15 @@ class PencilCluster(GeometricSetNode):
 
     def __init__(self, tf):
         super().__init__(
-            rule=self.PencilRule,
             p=0.5,
             max_children=3,
             tf=tf,
             physics_geometry_info=None,
             observed=False
         )
-
+    @classmethod
+    def generate_rules(cls):
+        return [cls.PencilRule]
 
 ## Desk and abstract cluster
 class ObjectCluster(OrNode):
@@ -180,19 +186,37 @@ class ObjectCluster(OrNode):
     ClusterTypeWeights = torch.tensor([1.0, 1.0, 1.0])
     def __init__(self, tf):
         super().__init__(
-            rules=self.ClusterRules,
             rule_probs=self.ClusterTypeWeights,
             tf=tf,
             physics_geometry_info=None,
             observed=False
         )
 
+    @classmethod
+    def generate_rules(cls):
+        return cls.ClusterRules
 
 class Desk(GeometricSetNode):
     # Make geometric # of object clusters
-    def __init__(self, tf, desk_size=[1., 1.]):
+    desk_size=[1., 1.]
+    def __init__(self, tf):
+        geom = PhysicsGeometryInfo()
+        geom.register_geometry(
+            tf=drake_tf_to_torch_tf(RigidTransform(p=[self.desk_size[0]/2., self.desk_size[1]/2., -0.5])),
+            geometry=pydrake_geom.Box(self.desk_size[0], self.desk_size[1], 1.0),
+            color=np.array([0.3, 0.2, 0.2, 1.0])
+        )
+        super().__init__(
+            tf=tf,
+            p=0.2,
+            max_children=6,
+            physics_geometry_info=geom,
+            observed=True
+        )
+    @classmethod
+    def generate_rules(cls):
         lb = torch.tensor([0.2, 0.2, 0.0])
-        ub = torch.tensor([desk_size[0] - 0.2, desk_size[1] - 0.2, 0.0])
+        ub = torch.tensor([cls.desk_size[0] - 0.2, cls.desk_size[1] - 0.2, 0.0])
         rule = ProductionRule(
             child_type=ObjectCluster,
             xyz_rule=AxisAlignedBBoxRule(lb=lb, ub=ub),
@@ -201,17 +225,4 @@ class Desk(GeometricSetNode):
                 lb=-np.pi, ub=np.pi
             )
         )
-        geom = PhysicsGeometryInfo()
-        geom.register_geometry(
-            tf=drake_tf_to_torch_tf(RigidTransform(p=[desk_size[0]/2., desk_size[1]/2., -0.5])),
-            geometry=pydrake_geom.Box(desk_size[0], desk_size[1], 1.0),
-            color=np.array([0.3, 0.2, 0.2, 1.0])
-        )
-        super().__init__(
-            rule=rule,
-            tf=tf,
-            p=0.2,
-            max_children=6,
-            physics_geometry_info=geom,
-            observed=True
-        )
+        return [rule]
