@@ -11,6 +11,7 @@ from pyro.contrib.autoname import scope
 from .random_walk_kernel import RandomWalkKernel
 from .rules import *
 from .parsing import optimize_scene_tree_with_nlp
+from .torch_utils import interp_translation, interp_rotation
 
 from pytorch3d.transforms.rotation_conversions import (
     euler_angles_to_matrix, axis_angle_to_matrix
@@ -20,7 +21,8 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                             perturb_in_config_space=False, verbose=0,
                             vis_callback=None,
                             translation_variance=0.1,
-                            rotation_variance=0.1):
+                            rotation_variance=0.1,
+                            do_hit_and_run_postprocess=False):
     ''' Given a scene tree, resample its continuous variables
     (i.e. the node poses) while keeping the root and observed
     node poses fixed. Returns a population of trees sampled
@@ -43,6 +45,9 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
     #     2) Use an NLP to project the perturbed tree configuration to
     #        the nearest feasible tree configuration (i.e. satisfying
     #        uniform and joint angle bounds).
+    #     2b) If do_hit_and_run_postprocess, randomly sample a point uniformly
+    #         between the projected config and the initial config, and project
+    #         that to the nearest good config to get a proposed config.
     #     3) Use the Accept/reject with a Metroplis acceptance ratio
     #        (without proposal probabilities, right now).
     #          x_proj = projected pose
@@ -132,6 +137,27 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
         else:
             print("Optimization failed")
             new_score = -torch.tensor(np.inf)
+
+        if torch.isfinite(new_score) and do_hit_and_run_postprocess:
+            # Randomly sample point between this new tree and the
+            # initial tree.
+            interp_factor = dist.Uniform(torch.zeros(1), torch.ones(1)).sample()
+            current_root = current_tree.get_root()
+            for original_node, new_node in zip(current_tree.nodes, new_tree.nodes):
+                new_node.translation = interp_translation(original_node.translation, new_node.translation, interp_factor)
+                new_node.rotation = interp_rotation(original_node.rotation, new_node.rotation, interp_factor)
+
+            projection_results = optimize_scene_tree_with_nlp(new_tree, objective="projection", verbose=verbose>1)
+            if projection_results.optim_result.is_success():
+                new_tree = projection_results.refined_tree
+                try:
+                    new_score = new_tree.score(verbose=verbose>1)
+                except ValueError as e:
+                    logging.warn("Unexpected ValueError after hit-and-run projection: %s", e)
+                    new_score = -torch.tensor(np.inf)
+            else:
+                print("Post-hit-and-run projection failed")
+                new_score = -torch.tensor(np.inf)
 
         reject = True
         if torch.isfinite(new_score):

@@ -606,6 +606,9 @@ def optimize_scene_tree_with_nlp(scene_tree, objective="mle", verbose=False, max
     if result.is_success():
         # Copy results into scene tree node positions
         for out_node, orig_node in zip(out_tree, scene_tree):
+            if orig_node is root_node or orig_node.observed:
+                # Don't mutate the fixed nodes
+                continue
             out_node.translation = torch.tensor(result.GetSolution(orig_node.t_optim))
             out_node.rotation = torch.tensor(result.GetSolution(orig_node.R_optim))
     return TreeRefinementResults(result, out_tree, scene_tree)
