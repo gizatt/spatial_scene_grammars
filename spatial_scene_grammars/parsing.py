@@ -25,6 +25,7 @@ import sys
 from copy import deepcopy
 from collections import namedtuple
 from functools import partial
+import logging
 
 import pydrake
 from pydrake.all import (
@@ -449,8 +450,10 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
             if assert_on_failure:
                 raise ValueError("observed node %s not explained by MLE sol." % str(observed_node))
             else:
-                print("WARN: observed node %s not explained by MLE sol." % str(observed_node))
+                logging.warning("Observed node %s not explained by MLE sol." % str(observed_node))
 
+    if not success:
+        logging.warning("MIP structure finding unsuccessful.")
     optimized_tree = SceneTree()
     for node in super_tree:
         if optim_result.GetSolution(node.active) > 0.5:
@@ -470,7 +473,7 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
 
 
 TreeRefinementResults = namedtuple("TreeRefinementResults", ["optim_result", "refined_tree", "unrefined_tree"])
-def optimize_scene_tree_with_nlp(scene_tree, objective="mle", verbose=False, max_scene_extent_in_any_dir=10.):
+def optimize_scene_tree_with_nlp(scene_tree, initial_guess_tree=None, objective="mle", verbose=False, max_scene_extent_in_any_dir=10.):
     ''' Given a scene tree, set up a nonlinear optimization:
     1) Keeps the tree structure the same, but tweaks non-observed,
         non-root node poses.
@@ -484,15 +487,18 @@ def optimize_scene_tree_with_nlp(scene_tree, objective="mle", verbose=False, max
     start_time = time.time()
     prog = MathematicalProgram()
 
+    if initial_guess_tree is None:
+        initial_guess_tree = scene_tree
+
     # Add pose decision variables with constraints.
     root_node = scene_tree.get_root()
-    for k, node in enumerate(scene_tree.nodes):
+    for k, (node, hint_node) in enumerate(zip(scene_tree.nodes, initial_guess_tree)):
         # Declare decision variables for pose and seed them from
         # the input tree's poses.
         node.R_optim = prog.NewContinuousVariables(3, 3, "R_%d" % k)
-        prog.SetInitialGuess(node.R_optim, node.rotation.detach().cpu().numpy())
+        prog.SetInitialGuess(node.R_optim, hint_node.rotation.detach().cpu().numpy())
         node.t_optim = prog.NewContinuousVariables(3, "t_%d" % k)
-        prog.SetInitialGuess(node.t_optim, node.translation.detach().cpu().numpy())
+        prog.SetInitialGuess(node.t_optim, hint_node.translation.detach().cpu().numpy())
 
         # If it's an observed node or the root node, constrain the pose
         # to not change, and that's it.
@@ -502,7 +508,7 @@ def optimize_scene_tree_with_nlp(scene_tree, objective="mle", verbose=False, max
             R_target = node.rotation.cpu().detach().numpy()
             prog.AddBoundingBoxConstraint(R_target.flatten()-eps, R_target.flatten()+eps, node.R_optim.flatten())
             t_target = node.translation.cpu().detach().numpy()
-            prog.AddBoundingBoxConstraint(t_target-eps, t_target+eps, node.t_optim)
+            prog.AddBoundingBoxConstraint(t_target, t_target, node.t_optim)
         else:
             # Otherwise, constraint the pose to be a legal and good pose.
             # R.' R = I
@@ -611,4 +617,6 @@ def optimize_scene_tree_with_nlp(scene_tree, objective="mle", verbose=False, max
                 continue
             out_node.translation = torch.tensor(result.GetSolution(orig_node.t_optim))
             out_node.rotation = torch.tensor(result.GetSolution(orig_node.R_optim))
+    else:
+        logging.warning("Nonlinear refinement unsuccessful.")
     return TreeRefinementResults(result, out_tree, scene_tree)
