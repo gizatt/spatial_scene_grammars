@@ -89,3 +89,31 @@ def test_supertree():
     assert len(super_tree.find_nodes_by_type(NodeC)) == 1
     assert len(super_tree.find_nodes_by_type(NodeF)) == 0
     
+def test_param_prior(set_seed):
+    # Generate a grammar with random parameters from
+    # their priors.
+    grammar = SpatialSceneGrammar(
+        root_node_type = NodeA,
+        root_node_tf = torch.eye(4),
+        sample_params_from_prior=True
+    )
+    # Scoring should still work identically.
+    trace = pyro.poutine.trace(grammar.sample_tree).get_trace()
+    tree = trace.nodes["_RETURN"]["value"]
+    expected_score = trace.log_prob_sum()
+    score = tree.score()
+    assert torch.isclose(expected_score, score), "%f vs %f" % (score, expected_score)
+    # But the underlying param values should be different from the
+    # default values.
+    default_grammar = SpatialSceneGrammar(
+        root_node_type = NodeA,
+        root_node_tf = torch.eye(4),
+        sample_params_from_prior=False
+    )
+
+    all_identical = True
+    for p1, p2 in zip(grammar.parameters(), default_grammar.parameters()):
+        if not torch.allclose(p1, p2):
+            all_identical = False
+            break
+    assert not all_identical, "Grammar draw from prior was exactly the same as default grammar."
