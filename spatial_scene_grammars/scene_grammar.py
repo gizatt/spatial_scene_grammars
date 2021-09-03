@@ -180,7 +180,6 @@ class SpatialSceneGrammar(torch.nn.Module):
                 constraint=param_prior.support
             )
 
-
     def _collect_all_types_in_grammar(self):
         # Similar to supertree logic, but doesn't track supertree.
         # Needs to instantiate nodes to get their rule lists.
@@ -197,11 +196,20 @@ class SpatialSceneGrammar(torch.nn.Module):
                     input_queue.append(rule.child_type(tf = torch.eye(4)))
         return all_types
 
+    def _set_node_parameters(self, node):
+        constrained_params = self.params_by_node_type[type(node).__name__]
+        if constrained_params is not None:
+            # Resolve to constrained value, and use that to set up node
+            # parameters. Gradients should flow back to this module's
+            # torch params.
+            node.parameters = constrained_params()
+
     def sample_tree(self):
         tree = SceneTree()
 
         def do_sampling():
             root = self.root_node_type(tf=self.root_node_tf)
+            self._set_node_parameters(root)
             tree.add_node(root)
             node_queue = [root]
             k = 0
@@ -212,6 +220,7 @@ class SpatialSceneGrammar(torch.nn.Module):
                     children = parent.sample_children()
                 k += 1
                 for child in children:
+                    self._set_node_parameters(child)
                     tree.add_node(child)
                     tree.add_edge(parent, child)
                     node_queue.append(child)
@@ -225,6 +234,7 @@ class SpatialSceneGrammar(torch.nn.Module):
         tree = SceneTree()
 
         root = self.root_node_type(tf = torch.eye(4))
+        self._set_node_parameters(root)
         # Label recursion depth in on nodes of super tree.
         root._recursion_depth = 0
         tree.add_node(root)
@@ -240,6 +250,7 @@ class SpatialSceneGrammar(torch.nn.Module):
 
             for k, child_type in enumerate(maximal_children):
                 child = child_type(tf = torch.eye(4))
+                self._set_node_parameters(child)
                 child.rule_k = k
                 child._recursion_depth = parent._recursion_depth + 1
                 if child._recursion_depth <= max_recursion_depth:

@@ -89,6 +89,8 @@ def test_supertree():
     assert len(super_tree.find_nodes_by_type(NodeC)) == 1
     assert len(super_tree.find_nodes_by_type(NodeF)) == 0
     
+# No depends, but this test is depended on.
+@pytest.mark.dependency(name="test_param_prior")
 def test_param_prior(set_seed):
     # Generate a grammar with random parameters from
     # their priors.
@@ -117,3 +119,44 @@ def test_param_prior(set_seed):
             all_identical = False
             break
     assert not all_identical, "Grammar draw from prior was exactly the same as default grammar."
+
+@pytest.mark.dependency(depends=["test_param_prior"])
+def test_save_load_grammar():
+    # Generate a grammar with random parameters from
+    # their priors. From `test_param_prior`, we know this'll
+    # be unique from the default grammar.
+    grammar = SpatialSceneGrammar(
+        root_node_type = NodeA,
+        root_node_tf = torch.eye(4),
+        sample_params_from_prior=True
+    )
+    # Default grammar, for comparison.
+    default_grammar = SpatialSceneGrammar(
+        root_node_type = NodeA,
+        root_node_tf = torch.eye(4),
+        sample_params_from_prior=False
+    )
+    torch.save(grammar, "/tmp/test_saved_grammar.torch")
+
+    loaded_grammar = torch.load("/tmp/test_saved_grammar.torch")
+    
+    all_identical = True
+    for p1, p2 in zip(loaded_grammar.parameters(), default_grammar.parameters()):
+        if not torch.allclose(p1, p2):
+            all_identical = False
+            break
+    assert not all_identical, "Grammar draw from prior and saved/loaded was exactly the same as default grammar; didn't load right."
+
+    all_identical = True
+    for p1, p2 in zip(loaded_grammar.parameters(), grammar.parameters()):
+        if not torch.allclose(p1, p2):
+            all_identical = False
+            break
+    assert all_identical, "Grammar loaded from file had different params than one saved."
+
+    # Make sure loaded grammar still works
+    trace = pyro.poutine.trace(loaded_grammar.sample_tree).get_trace()
+    tree = trace.nodes["_RETURN"]["value"]
+    expected_score = trace.log_prob_sum()
+    score = tree.score()
+    assert torch.isclose(expected_score, score), "%f vs %f" % (score, expected_score)
