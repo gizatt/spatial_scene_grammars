@@ -196,20 +196,26 @@ class SpatialSceneGrammar(torch.nn.Module):
                     input_queue.append(rule.child_type(tf = torch.eye(4)))
         return all_types
 
-    def _set_node_parameters(self, node):
-        constrained_params = self.params_by_node_type[type(node).__name__]
-        if constrained_params is not None:
+    def _set_node_parameters(self, node, detach):
+        unconstrained_params = self.params_by_node_type[type(node).__name__]
+        if unconstrained_params is not None:
             # Resolve to constrained value, and use that to set up node
             # parameters. Gradients should flow back to this module's
             # torch params.
-            node.parameters = constrained_params()
+            constrained_params = unconstrained_params()
+            if detach:
+                constrained_params = constrained_params.detach()
+            node.parameters = constrained_params
 
-    def sample_tree(self):
+    def sample_tree(self, detach=False):
+        # If detach is true, this tree will be detached from having
+        # gradients from this grammar's parameters. This is useful in
+        # cases where the sampled tree is going to be deepcopied / pickled.
         tree = SceneTree()
 
         def do_sampling():
             root = self.root_node_type(tf=self.root_node_tf)
-            self._set_node_parameters(root)
+            self._set_node_parameters(root, detach=detach)
             tree.add_node(root)
             node_queue = [root]
             k = 0
@@ -220,7 +226,7 @@ class SpatialSceneGrammar(torch.nn.Module):
                     children = parent.sample_children()
                 k += 1
                 for child in children:
-                    self._set_node_parameters(child)
+                    self._set_node_parameters(child, detach=detach)
                     tree.add_node(child)
                     tree.add_edge(parent, child)
                     node_queue.append(child)
@@ -228,13 +234,13 @@ class SpatialSceneGrammar(torch.nn.Module):
         tree.trace = pyro.poutine.trace(do_sampling).get_trace()
         return tree
 
-    def make_super_tree(self, max_recursion_depth=15):
+    def make_super_tree(self, max_recursion_depth=15, detach=False):
         # Forms a graph of nodes for which any actual sampled tree would be a subgraph.
         # (TF's are all set to 0.)
         tree = SceneTree()
 
         root = self.root_node_type(tf = torch.eye(4))
-        self._set_node_parameters(root)
+        self._set_node_parameters(root, detach=detach)
         # Label recursion depth in on nodes of super tree.
         root._recursion_depth = 0
         tree.add_node(root)
@@ -250,7 +256,7 @@ class SpatialSceneGrammar(torch.nn.Module):
 
             for k, child_type in enumerate(maximal_children):
                 child = child_type(tf = torch.eye(4))
-                self._set_node_parameters(child)
+                self._set_node_parameters(child, detach=detach)
                 child.rule_k = k
                 child._recursion_depth = parent._recursion_depth + 1
                 if child._recursion_depth <= max_recursion_depth:

@@ -182,7 +182,7 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
     if verbose:
         print("Starting setup.")
 
-    super_tree = grammar.make_super_tree(max_recursion_depth=max_recursion_depth)
+    super_tree = grammar.make_super_tree(max_recursion_depth=max_recursion_depth, detach=True)
     # Copy observed node set -- we'll be annotating the nodes with decision variables.
     observed_nodes = deepcopy(observed_nodes)
 

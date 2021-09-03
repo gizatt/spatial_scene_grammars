@@ -48,7 +48,7 @@ def test_parsing_simple(set_seed):
         root_node_type = NodeC,
         root_node_tf = torch.eye(4)
     )
-    tree = grammar.sample_tree()
+    tree = grammar.sample_tree(detach=True)
     observed_nodes = tree.get_observed_nodes()
 
     start_time = time.time()
@@ -83,7 +83,7 @@ def test_parsing_complex(set_seed):
         root_node_type = NodeA,
         root_node_tf = torch.eye(4)
     )
-    tree = grammar.sample_tree()
+    tree = grammar.sample_tree(detach=True)
     observed_nodes = tree.get_observed_nodes()
 
     start_time = time.time()
@@ -107,7 +107,7 @@ def test_parsing_complex(set_seed):
     assert_feasible(refined_tree)
 
     # Check out of get-tree-as-close-to-this-one works too.
-    tree = grammar.sample_tree()
+    tree = grammar.sample_tree(detach=True)
     # Perturb node C to a known feasible location.
     # It's always safe to put C anywhere in the unit box, since its spawning
     # rule puts it there, and it places all of its children there.

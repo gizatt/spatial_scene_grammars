@@ -30,7 +30,7 @@ def test_grammar(set_seed, perturb_in_config_space, do_hit_and_run_postprocess):
         root_node_type = NodeA,
         root_node_tf = torch.eye(4)
     )
-    tree = grammar.sample_tree()
+    tree = grammar.sample_tree(detach=True)
 
     sampled_trees = do_fixed_structure_mcmc(
         grammar, tree, num_samples=5,
