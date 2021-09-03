@@ -83,6 +83,12 @@ class Node():
             "Child class should implement parameters getter. Users should"
             " never have to do this."
         )
+    @parameters.setter
+    def parameters(self, parameters):
+        raise NotImplementedError(
+            "Child class should implement parameters setter. Users should"
+            " never have to do this."
+        )
 
     # Additional accessors into the pose transform
     @property
@@ -132,6 +138,10 @@ class TerminalNode(Node):
     @property
     def parameters(self):
         return torch.empty(size=(0,))
+    @parameters.setter
+    def parameters(self, parameters):
+        if parameters is not None:
+            assert ValueError("TerminalNode has no parameters to set")
     @classmethod
     def get_parameter_prior(cls):
         # No params, so no prior.
@@ -159,6 +169,10 @@ class AndNode(Node):
     @property
     def parameters(self):
         return torch.empty(size=(0,))
+    @parameters.setter
+    def parameters(self, parameters):
+        if parameters is not None:
+            assert ValueError("AndNode has no parameters to set")
     @classmethod
     def get_parameter_prior(cls):
         # No params, so no prior.
@@ -187,17 +201,21 @@ class AndNode(Node):
 class OrNode(Node):
     ''' Given a list of production rule, enacts one of them.'''
     def __init__(self, rule_probs, **kwargs):
+        super().__init__(**kwargs)
         assert isinstance(rule_probs, torch.Tensor)
         rule_probs = rule_probs / torch.sum(rule_probs)
-
-        self.rule_probs = rule_probs
-        self._rule_dist = dist.Categorical(rule_probs)
-        super().__init__(**kwargs)
-        assert len(self.rule_probs) == len(self.rules)
+        self.parameters = rule_probs
 
     @property
     def parameters(self):
         return self.rule_probs
+    @parameters.setter
+    def parameters(self, parameters):
+        assert isinstance(parameters, torch.Tensor)
+        assert len(parameters) == len(self.rules)
+        self.rule_probs = parameters
+        self._rule_dist = dist.Categorical(self.rule_probs)
+
     @classmethod
     def get_parameter_prior(cls):
         # Default parameter prior is a uniform distribution
@@ -229,11 +247,18 @@ class GeometricSetNode(Node):
 
         p here is the probability of *stopping* at any given trial.'''
     def __init__(self, p, max_children, **kwargs):
-        if isinstance(p, float):
-            p = torch.tensor([p])
-        p = p.reshape(1,)
-        self.p  = p
+        super().__init__(**kwargs)
+        assert len(self.rules) == 1
+        self.rule = self.rules[0]
         self.max_children = max_children
+        self.parameters = p
+
+    @property
+    def parameters(self):
+        return self.p
+    @parameters.setter
+    def parameters(self, parameters):
+        assert isinstance(parameters, (torch.Tensor, float))
         # Compile a Categorical dist that's equivalent to sampling
         # from a geometric distribution clamped at some max #.
         # TODO(gizatt): I'm *not* adding the extra term on the final
@@ -241,18 +266,16 @@ class GeometricSetNode(Node):
         # giving more than N children -- I don't have to for this to be
         # a legitimate distribution. But "geometric" in the name is a little
         # misleading, since this'll have slightly lower mean.
+        if isinstance(parameters, float):
+            parameters = torch.tensor([parameters])
+        p = parameters.reshape(1,)
+        self.p  = p
         self.rule_probs = torch.tensor([
             (1. - self.p) ** (k - 1) * self.p
             for k in range(self.max_children)
         ])
         self.geom_surrogate_dist = dist.Categorical(self.rule_probs)
-        super().__init__(**kwargs)
-        assert len(self.rules) == 1
-        self.rule = self.rules[0]
 
-    @property
-    def parameters(self):
-        return self.p
     @classmethod
     def get_parameter_prior(cls):
         # Default parameter prior is a uniform distribution
@@ -286,15 +309,20 @@ class IndependentSetNode(Node):
     ''' Given a list of production rules, enacts each one independently
     according to coin flip probabilities.'''
     def __init__(self, rule_probs, **kwargs):
-        assert isinstance(rule_probs, torch.Tensor)
-        self.rule_probs = rule_probs
-        self._rule_dist = dist.Bernoulli(rule_probs)
         super().__init__(**kwargs)
-        assert len(self.rule_probs) == len(self.rules)
+        assert isinstance(rule_probs, torch.Tensor)
+        self.parameters = rule_probs
 
     @property
     def parameters(self):
         return self.rule_probs
+    @parameters.setter
+    def parameters(self, parameters):
+        assert isinstance(parameters, torch.Tensor)
+        assert len(parameters) == len(self.rules)
+        self.rule_probs = parameters
+        self._rule_dist = dist.Bernoulli(self.rule_probs)
+
     @classmethod
     def get_parameter_prior(cls):
         # Default parameter prior is a uniform distribution over
