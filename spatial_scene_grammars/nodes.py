@@ -270,10 +270,9 @@ class GeometricSetNode(Node):
             parameters = torch.tensor([parameters])
         p = parameters.reshape(1,)
         self.p  = p
-        self.rule_probs = torch.tensor([
-            (1. - self.p) ** (k - 1) * self.p
-            for k in range(self.max_children)
-        ])
+        self.rule_probs = torch.empty(self.max_children)
+        for k in range(self.max_children):
+            self.rule_probs[k] = (1. - self.p) ** (k - 1) * self.p
         self.geom_surrogate_dist = dist.Categorical(self.rule_probs)
 
     @classmethod
