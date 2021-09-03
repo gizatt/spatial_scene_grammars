@@ -46,6 +46,8 @@ def test_grammar(set_seed):
     if len(obs) > 0:
         assert all([isinstance(c, (NodeD, NodeE, NodeF, NodeG)) for c in obs])
 
+    assert len(tree.make_from_observed_nodes(obs).nodes) == len(obs)
+
     assert len(tree.find_nodes_by_type(NodeA)) == 1
 
     A = tree.find_nodes_by_type(NodeA)[0]
@@ -160,3 +162,18 @@ def test_save_load_grammar():
     expected_score = trace.log_prob_sum()
     score = tree.score()
     assert torch.isclose(expected_score, score), "%f vs %f" % (score, expected_score)
+
+def test_attach_reattach():
+    grammar = SpatialSceneGrammar(
+        root_node_type = NodeA,
+        root_node_tf = torch.eye(4),
+        sample_params_from_prior=True
+    )
+    tree = grammar.sample_tree(detach=True)
+    before_score = tree.score()
+    assert before_score.grad_fn is None
+    grammar.update_tree_grammar_parameters(tree)
+    after_score = tree.score()
+    assert after_score.grad_fn is not None
+    after_score.backward()
+    assert torch.isclose(before_score, after_score)

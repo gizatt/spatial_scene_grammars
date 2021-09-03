@@ -1,3 +1,4 @@
+import os, contextlib
 import meshcat
 import meshcat.geometry as meshcat_geom
 import matplotlib.pyplot as plt
@@ -19,7 +20,7 @@ def rgb_2_hex(rgb):
         val += (256**(2 - i)) * int(255 * rgb[i])
     return val
 
-def draw_scene_tree_contents_meshcat(scene_tree, prefix="scene", zmq_url=None, alpha=0.25, draw_clearance_geom=False):
+def draw_scene_tree_contents_meshcat(scene_tree, prefix="scene", zmq_url=None, alpha=0.25, draw_clearance_geom=False, quiet=True):
     ''' Given a scene tree, draws it in meshcat at the requested ZMQ url.
         Can be configured to draw the tree geometry or the clearance geometry. '''
     
@@ -29,8 +30,14 @@ def draw_scene_tree_contents_meshcat(scene_tree, prefix="scene", zmq_url=None, a
         builder, mbp, scene_graph, _, _, = compile_scene_tree_to_mbp_and_sg(scene_tree)
     mbp.Finalize()
 
-    vis = ConnectMeshcatVisualizer(builder, scene_graph,
-        zmq_url=zmq_url or "default", prefix=prefix)
+    if quiet:
+        with open(os.devnull, 'w') as devnull:
+            with contextlib.redirect_stdout(devnull):
+                vis = ConnectMeshcatVisualizer(builder, scene_graph,
+                    zmq_url=zmq_url or "default", prefix=prefix)
+    else:
+        vis = ConnectMeshcatVisualizer(builder, scene_graph,
+            zmq_url=zmq_url or "default", prefix=prefix)
     vis.delete_prefix()
     diagram = builder.Build()
     context = diagram.CreateDefaultContext()
@@ -44,12 +51,18 @@ def draw_scene_tree_contents_meshcat(scene_tree, prefix="scene", zmq_url=None, a
     del vis.vis
 
 def draw_scene_tree_structure_meshcat(scene_tree, prefix="scene_tree", zmq_url=None,
-        alpha=0.5, node_sphere_size=0.025, linewidth=2):
+        alpha=0.5, node_sphere_size=0.025, linewidth=2, quiet=True):
     # Do actual drawing in meshcat, starting from root of tree
     # So first find the root...
     root_node = scene_tree.get_root()
 
-    vis = meshcat.Visualizer(zmq_url=zmq_url or "tcp://127.0.0.1:6000")
+    if quiet:
+        with open(os.devnull, 'w') as devnull:
+            with contextlib.redirect_stdout(devnull):
+                vis = meshcat.Visualizer(zmq_url=zmq_url or "tcp://127.0.0.1:6000")
+    else:
+        vis = meshcat.Visualizer(zmq_url=zmq_url or "tcp://127.0.0.1:6000")
+
     vis[prefix].delete()
     node_queue = [root_node]
     

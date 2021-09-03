@@ -38,6 +38,16 @@ class SceneTree(nx.DiGraph):
         self._trace = None
         super().__init__(self, **kwargs)
 
+    @staticmethod
+    def make_from_observed_nodes(observed_nodes):
+        ''' Constructs a SceneTree that contains the observed nodes.
+        A scene tree constructed like this will have very limited
+        functionality, but can be used for visualization. '''
+        tree = SceneTree()
+        for node in observed_nodes:
+            tree.add_node(node)
+        return tree
+
     @property
     def trace(self):
         assert self._trace is not None, "Trace not recorded for this tree."
@@ -233,6 +243,13 @@ class SpatialSceneGrammar(torch.nn.Module):
 
         tree.trace = pyro.poutine.trace(do_sampling).get_trace()
         return tree
+
+    def update_tree_grammar_parameters(self, tree):
+        # Given a tree, iterates through its nodes and sets the node
+        # parameters to the grammar's parameters for that node type.
+        # If a tree has been detached, this will re-attach it.
+        for node in tree.nodes:
+            self._set_node_parameters(node, detach=False)
 
     def make_super_tree(self, max_recursion_depth=15, detach=False):
         # Forms a graph of nodes for which any actual sampled tree would be a subgraph.
