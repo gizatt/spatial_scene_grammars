@@ -43,7 +43,7 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
     #        down to its children. Otherwise, every node pose is perturbed
     #        randomly simultaneously.
     #     2) Use an NLP to project the perturbed tree configuration to
-    #        the nearest feasible tree configuration (i.e. satisfying
+    #        the nearest feasible tree configuration (i.e. satisfyingq
     #        uniform and joint angle bounds).
     #     2b) If do_hit_and_run_postprocess, randomly sample a point uniformly
     #         between the projected config and the initial config, and project
@@ -83,12 +83,12 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                 ## The exact perturbation we'll apply
                 # depends on the relationship to the parent.
                 xyz_rule, rotation_rule = rule.xyz_rule, rule.rotation_rule
-                if isinstance(xyz_rule, WorldBBoxRule):
+                if type(xyz_rule) is WorldBBoxRule:
                     # Perturb in axes that are not equality constrained
                     perturb = dist.Normal(torch.zeros(3), torch.ones(3)*translation_variance).sample()
                     perturb[xyz_rule.xyz_dist.delta_mask] = 0.
                     new_child.translation = current_child.translation + perturb
-                elif isinstance(xyz_rule, AxisAlignedBBoxRule):
+                elif type(xyz_rule) is AxisAlignedBBoxRule:
                     # Perturb in axes that are not equality constrained
                     perturb = dist.Normal(torch.zeros(3), torch.ones(3)*translation_variance).sample()
                     perturb[xyz_rule.xyz_offset_dist.delta_mask] = 0.
@@ -100,14 +100,14 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                 else:
                     raise NotImplementedError("%s" % xyz_rule)
 
-                if isinstance(rotation_rule, UnconstrainedRotationRule):
+                if type(rotation_rule) is UnconstrainedRotationRule:
                     # Apply small random rotation 
                     random_small_rotation = euler_angles_to_matrix(
                         dist.Normal(torch.zeros(3), torch.ones(3)*rotation_variance).sample().unsqueeze(0),
                         convention="ZYX"
                     )[0, ...]
                     new_child.rotation = torch.matmul(current_child.rotation, random_small_rotation)
-                elif isinstance(rotation_rule, UniformBoundedRevoluteJointRule):
+                elif type(rotation_rule) is UniformBoundedRevoluteJointRule:
                     # Apply small rotation around axis, unless the rotation is fully constrained
                     if not np.isclose(rotation_rule.lb, rotation_rule.ub):
                         random_angle = dist.Normal(torch.zeros(1), torch.ones(1)*translation_variance).sample()

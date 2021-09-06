@@ -37,7 +37,7 @@ class NodeE(TerminalNode):
 class NodeD(IndependentSetNode):
     GRule = ProductionRule(
         child_type=NodeG,
-        xyz_rule=WorldBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)),
+        xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
         rotation_rule=UnconstrainedRotationRule()
     )
     def __init__(self, tf):
@@ -54,7 +54,7 @@ class NodeD(IndependentSetNode):
 class NodeC(GeometricSetNode):
     FRule = ProductionRule(
         child_type=NodeF,
-        xyz_rule=WorldBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)),
+        xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
         rotation_rule=UnconstrainedRotationRule()
     )
     def __init__(self, tf):
@@ -72,12 +72,12 @@ class NodeC(GeometricSetNode):
 class NodeB(OrNode):
     DRule = ProductionRule(
         child_type=NodeD,
-        xyz_rule=AxisAlignedBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)),
-        rotation_rule=UniformBoundedRevoluteJointRule(axis=torch.tensor([0., 0., 1.]), lb=-1., ub=1.)
+        xyz_rule=AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+        rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(axis=torch.tensor([0., 0., 1.]), lb=-1., ub=1.)
     )
     ERule = ProductionRule(
         child_type=NodeE,
-        xyz_rule=AxisAlignedBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)),
+        xyz_rule=AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
         rotation_rule=UnconstrainedRotationRule()
     )
     def __init__(self, tf):
@@ -95,12 +95,12 @@ class NodeB(OrNode):
 class NodeA(AndNode):
     BRule = ProductionRule(
         child_type=NodeB,
-        xyz_rule=WorldBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)),
+        xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
         rotation_rule=UnconstrainedRotationRule()
     )
     CRule = ProductionRule(
         child_type=NodeC,
-        xyz_rule=WorldBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)),
+        xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
         rotation_rule=UnconstrainedRotationRule()
     )
     def __init__(self, tf):

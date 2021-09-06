@@ -58,11 +58,11 @@ class FoodWasteCluster(IndependentSetNode):
     Rules = [
         ProductionRule(
             child_type=stuff,
-            xyz_rule=AxisAlignedBBoxRule(
+            xyz_rule=AxisAlignedBBoxRule.from_bounds(
                 lb=torch.tensor([-0.2, -0.2, 0.0]),
                 ub=torch.tensor([0.2, 0.2, 0.0])
             ),
-            rotation_rule=UniformBoundedRevoluteJointRule(
+            rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(
                 axis=torch.tensor([0., 0., 1.]),
                 lb=-np.pi, ub=np.pi
             )   
@@ -101,11 +101,11 @@ class PaperCluster(GeometricSetNode):
     # Make a stack of papers
     PaperRule = ProductionRule(
         child_type=Paper,
-        xyz_rule=AxisAlignedBBoxRule(
+        xyz_rule=AxisAlignedBBoxRule.from_bounds(
             lb=torch.tensor([-0.05, -0.05, 0.0]),
             ub=torch.tensor([0.05, 0.05, 0.0])
         ),
-        rotation_rule=UniformBoundedRevoluteJointRule(
+        rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(
             axis=torch.tensor([0., 0., 1.]),
             lb=-np.pi/8., ub=np.pi/8.
         )   
@@ -144,11 +144,11 @@ class PencilCluster(GeometricSetNode):
     # Make a geometric cluster of roughly-aligned pencils
     PencilRule = ProductionRule(
         child_type=Pencil,
-        xyz_rule=AxisAlignedBBoxRule(
+        xyz_rule=AxisAlignedBBoxRule.from_bounds(
             lb=torch.tensor([-0.05, -0.05, 0.0]),
             ub=torch.tensor([0.05, 0.05, 0.0])
         ),
-        rotation_rule=UniformBoundedRevoluteJointRule(
+        rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(
             axis=torch.tensor([0., 0., 1.]),
             lb=-np.pi/8., ub=np.pi/8.
         )   
@@ -173,11 +173,11 @@ class ObjectCluster(OrNode):
     ClusterRules = [
         ProductionRule(
             child_type=cluster_type,
-            xyz_rule=AxisAlignedBBoxRule(
+            xyz_rule=AxisAlignedBBoxRule.from_bounds(
                 lb=torch.zeros(3),
                 ub=torch.zeros(3)
             ),
-            rotation_rule=UniformBoundedRevoluteJointRule(
+            rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(
                 axis=torch.tensor([0., 0., 1.]),
                 lb=0., ub=0.
             )
@@ -219,8 +219,8 @@ class Desk(GeometricSetNode):
         ub = torch.tensor([cls.desk_size[0] - 0.2, cls.desk_size[1] - 0.2, 0.0])
         rule = ProductionRule(
             child_type=ObjectCluster,
-            xyz_rule=AxisAlignedBBoxRule(lb=lb, ub=ub),
-            rotation_rule=UniformBoundedRevoluteJointRule(
+            xyz_rule=AxisAlignedBBoxRule.from_bounds(lb=lb, ub=ub),
+            rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(
                 axis=torch.tensor([0., 0., 1.]),
                 lb=-np.pi, ub=np.pi
             )

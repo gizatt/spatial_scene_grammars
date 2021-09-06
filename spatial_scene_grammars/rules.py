@@ -65,6 +65,31 @@ class ProductionRule():
             print("Rot: ", rot_part.item())
         return xyz_part + rot_part
 
+    @classmethod
+    def get_parameter_prior(cls):
+        # Returns a pyro Dist with support matching the parameter
+        # space of the Node subclass being used.
+        raise NotImplementedError(
+            "Please implement a parameter prior in your Node subclass."
+        )
+    @property
+    def parameters(self):
+        # Should return a torch Tensor representing the current
+        # parameter setting for this node. These are *not* torch
+        # parameters, and this is not a Pytorch module, since the
+        # Torch parameters being optimized belong to the grammar / the
+        # node type, not a given instantiated node.
+        raise NotImplementedError(
+            "Child class should implement parameters getter. Users should"
+            " never have to do this."
+        )
+    @parameters.setter
+    def parameters(self, parameters):
+        raise NotImplementedError(
+            "Child class should implement parameters setter. Users should"
+            " never have to do this."
+        )
+
 
 ## XYZ Production rules
 class XyzProductionRule():
@@ -81,45 +106,67 @@ class XyzProductionRule():
 
 
 class WorldBBoxRule(XyzProductionRule):
-    ''' Child xyz is uniformly chosen in [lb, ub] in world frame,
+    ''' Child xyz is uniformly chosen in [center, width] in world frame,
         without relationship to the parent.'''
-    def __init__(self, lb, ub):
-        assert isinstance(lb, torch.Tensor) and lb.shape == (3,)
-        assert isinstance(ub, torch.Tensor) and ub.shape == (3,)
-        self.lb = lb
-        self.ub = ub
-        self.xyz_dist = UniformWithEqualityHandling(lb, ub)
+    @classmethod
+    def from_bounds(cls, lb, ub):
+        assert all(ub >= lb)
+        return cls(center=(ub + lb) / 2., width=ub - lb)
+    def __init__(self, center, width):
+        assert isinstance(center, torch.Tensor) and center.shape == (3,)
+        assert isinstance(width, torch.Tensor) and width.shape == (3,)
+        self.parameters = {"center": center, "width": width}
+        
         super().__init__()
 
     def sample_xyz(self, parent):
         return pyro.sample("WorldBBoxRule_xyz", self.xyz_dist)
-
     def score_child(self, parent, child):
         return self.xyz_dist.log_prob(child.translation).sum()
 
+    @classmethod
+    def get_parameter_prior(cls):
+        # Default prior is a unit Normal for center,
+        # and Uniform-distributed width on some reasonable range.
+        return {
+            "center": dist.Normal(torch.zeros(3), torch.ones(3)),
+            "width": dist.Uniform(torch.zeros(3), torch.ones(3)*10.)
+        }
+    @property
+    def parameters(self):
+        # Parameters of a BBoxRule is the *center* and *width*,
+        # since those are easiest to constrain: width should be
+        # >= 0.
+        return {
+            "center": self.center,
+            "width": self.width
+        }
+    @parameters.setter
+    def parameters(self, parameters):
+        self.center = parameters["center"]
+        self.width = parameters["width"]
+        self.xyz_dist = UniformWithEqualityHandling(self.lb, self.ub)
+    @property
+    def lb(self):
+        return self.center - self.width / 2.
+    @property
+    def ub(self):
+        return self.center + self.width / 2.
 
-class AxisAlignedBBoxRule(XyzProductionRule):
+
+class AxisAlignedBBoxRule(WorldBBoxRule):
     ''' Child xyz is parent xyz + a uniform offset in [lb, ub]
         in world frame.
 
         TODO(gizatt) Add support for lb = ub; this requires
         special wrapping around Uniform to handle the equality
-        cases as Delta distributions. '''
-    def __init__(self, lb, ub):
-        assert isinstance(lb, torch.Tensor) and lb.shape == (3,)
-        assert isinstance(ub, torch.Tensor) and ub.shape == (3,)
-        self.lb = lb
-        self.ub = ub
-        self.xyz_offset_dist = UniformWithEqualityHandling(lb, ub)
-        super().__init__()
-
+        cases as Delta distributions.'''
     def sample_xyz(self, parent):
-        offset = pyro.sample("AxisAlignedBBoxRule_xyz", self.xyz_offset_dist)
+        offset = pyro.sample("AxisAlignedBBoxRule_xyz", self.xyz_dist)
         return parent.translation + offset
-
     def score_child(self, parent, child):
         xyz_offset = child.translation - parent.translation
-        return self.xyz_offset_dist.log_prob(xyz_offset).sum()
+        return self.xyz_dist.log_prob(xyz_offset).sum()
 
 
 ## Rotation production rules
@@ -182,22 +229,42 @@ class UnconstrainedRotationRule(RotationProductionRule):
         # TODO(gizatt) But probably doesn't agree with forward sample?
         return torch.log(torch.ones(1) / np.pi**2)
 
+    @classmethod
+    def get_parameter_prior(cls):
+        return None
+    @property
+    def parameters(self):
+        return None
+    @parameters.setter
+    def parameters(self, parameters):
+        raise ValueError("RotationProductionRule has no parameters.")
+
 
 class UniformBoundedRevoluteJointRule(RotationProductionRule):
     '''
         Child rotation is randomly chosen uniformly from a bounded
         range of angles around a revolute joint axis about the parent.
     '''
-    def __init__(self, axis, lb, ub):
+    @classmethod
+    def from_bounds(cls, axis, lb, ub):
+        assert ub >= lb
+        return cls(axis, (ub+lb)/2., ub-lb)
+    def __init__(self, axis, center, width):
         assert isinstance(axis, torch.Tensor) and axis.shape == (3,)
-        assert isinstance(lb, float) and isinstance(ub, float) and lb <= ub
+        assert isinstance(center, (float, torch.Tensor)) and isinstance(width, (float, torch.Tensor)) and width >= 0 and width <= 2. * np.pi
+        if isinstance(center, float):
+            center = torch.tensor(center)
+        if isinstance(width, float):
+            width = torch.tensor(width)
+        # Axis is *not* a parameter; making it a parameter
+        # would require implementing a prior distribution and constraints over
+        # the 3D unit ball.
         self.axis = axis
         self.axis = self.axis / torch.norm(self.axis)
-        self.lb = lb
-        self.ub = ub
-        assert self.ub - self.lb <= 2. * np.pi, "Bad angle limits: %f to %f is >= 2pi radians." % (self.lb, self.ub)
-        self._angle_dist = UniformWithEqualityHandling(lb, ub)
-
+        self.parameters = {
+            "center": center,
+            "width": width
+        }
     def sample_rotation(self, parent):
         angle = pyro.sample("UniformBoundedRevoluteJointRule_theta", self._angle_dist)
         angle_axis = self.axis * angle
@@ -244,3 +311,30 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         while angle > self.ub + 2.*np.pi or angle > self.ub + 2.*np.pi:
             angle -= 2.*np.pi
         return self._angle_dist.log_prob(angle)
+
+    @classmethod
+    def get_parameter_prior(cls):
+        # Default prior is a unit Normal for center,
+        # and Uniform-distributed width on some reasonable range.
+        return {
+            "center": dist.Normal(torch.zeros(3), torch.ones(3)),
+            "width": dist.Uniform(torch.zeros(3), torch.ones(3)*np.pi*2.)
+        }
+    @property
+    def parameters(self):
+        return {
+            "center": self.center,
+            "width": self.width
+        }
+    @parameters.setter
+    def parameters(self, parameters):
+        self.center = parameters["center"]
+        self.width = parameters["width"]
+        self._angle_dist = UniformWithEqualityHandling(self.lb, self.ub)
+    @property
+    def lb(self):
+        return self.center - self.width / 2.
+    @property
+    def ub(self):
+        return self.center + self.width / 2.
+

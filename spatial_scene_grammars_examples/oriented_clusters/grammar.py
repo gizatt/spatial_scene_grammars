@@ -30,11 +30,11 @@ class LongBox(TerminalNode):
 class BoxPreYRotation(AndNode):
     LongBoxRule = ProductionRule(
         child_type=LongBox,
-        xyz_rule=AxisAlignedBBoxRule(
+        xyz_rule=AxisAlignedBBoxRule.from_bounds(
             lb=torch.zeros(3),
             ub=torch.zeros(3)
         ),
-        rotation_rule=UniformBoundedRevoluteJointRule(
+        rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(
             axis=torch.tensor([0., 1., 0.]),
             lb=-np.pi/8., ub=np.pi/8.
         )
@@ -53,11 +53,11 @@ class BoxPreYRotation(AndNode):
 class OrientedCluster(GeometricSetNode):
     BoxPreYRotationRule = ProductionRule(
         child_type=LongBox,
-        xyz_rule=AxisAlignedBBoxRule(
+        xyz_rule=AxisAlignedBBoxRule.from_bounds(
             lb=-torch.ones(3)*0.1,
             ub=torch.ones(3)*0.1
         ),
-        rotation_rule=UniformBoundedRevoluteJointRule(
+        rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(
             axis=torch.tensor([1., 0., 0.]),
             lb=-np.pi/8., ub=np.pi/8.
         )
@@ -77,7 +77,7 @@ class OrientedCluster(GeometricSetNode):
 class OrientedClusterRoot(GeometricSetNode):
     OrientedClusterRule = ProductionRule(
         child_type=OrientedCluster,
-        xyz_rule=AxisAlignedBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)),
+        xyz_rule=AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
         rotation_rule=UnconstrainedRotationRule()
     )
     def __init__(self, tf):

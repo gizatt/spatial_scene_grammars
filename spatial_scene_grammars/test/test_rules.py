@@ -29,7 +29,14 @@ def make_dummy_node():
 def test_WorldBBoxRule(set_seed):
     lb = torch.zeros(3)
     ub = torch.ones(3)
-    rule = WorldBBoxRule(lb, ub)
+    rule = WorldBBoxRule.from_bounds(lb, ub)
+
+    params = rule.parameters
+    assert isinstance(params, dict)
+    priors = rule.get_parameter_prior()
+    for k, params in params.items():
+        assert all(torch.isfinite(priors[k].log_prob(params)))
+
     parent = make_dummy_node()
 
     xyz = rule.sample_xyz(parent)
@@ -46,13 +53,20 @@ def test_WorldBBoxRule(set_seed):
 def test_AxisAlignedBBoxRule(set_seed):
     lb = torch.zeros(3)
     ub = torch.ones(3)
-    rule = AxisAlignedBBoxRule(lb, ub)
+    rule = AxisAlignedBBoxRule.from_bounds(lb, ub)
+
+    params = rule.parameters
+    assert isinstance(params, dict)
+    priors = rule.get_parameter_prior()
+    for k, params in params.items():
+        assert all(torch.isfinite(priors[k].log_prob(params)))
+
     parent = make_dummy_node()
     parent.translation = torch.tensor([1., 1., 1.])
 
     xyz = rule.sample_xyz(parent)
     assert isinstance(xyz, torch.Tensor)
-    assert all(xyz <= parent.translation + ub) and all(xyz >= parent.translation + lb)
+    assert all(xyz <= parent.translation + ub) and all(xyz >= parent.translation + lb), (xyz, parent.translation, lb, ub)
 
     child = make_dummy_node()
     child.translation = xyz
@@ -64,6 +78,10 @@ def test_AxisAlignedBBoxRule(set_seed):
 def test_UnconstrainedRotationRule(set_seed):
     rule = UnconstrainedRotationRule()
     parent = make_dummy_node()
+
+    params = rule.parameters
+    assert params is None
+    assert rule.get_parameter_prior() is None
 
     R = rule.sample_rotation(parent)
     assert isinstance(R, torch.Tensor)
@@ -80,7 +98,14 @@ def test_UnconstrainedRotationRule(set_seed):
 def test_UniformBoundedRevoluteJointRule(set_seed):
     random_axis = np.random.normal(0., 1., 3)
     random_axis = torch.tensor(random_axis / np.linalg.norm(random_axis))
-    rule = UniformBoundedRevoluteJointRule(axis=random_axis, lb=-np.pi+1E-3, ub=np.pi-1E-3)
+    rule = UniformBoundedRevoluteJointRule.from_bounds(axis=random_axis, lb=-np.pi+1E-3, ub=np.pi-1E-3)
+
+    params = rule.parameters
+    assert isinstance(params, dict)
+    priors = rule.get_parameter_prior()
+    for k, params in params.items():
+        assert all(torch.isfinite(priors[k].log_prob(params)))
+
     parent = make_dummy_node()
 
     R = rule.sample_rotation(parent)
@@ -99,7 +124,7 @@ def test_AngleAxisInversion(set_seed, angle):
     # Test angle-axis inversion
     random_axis = np.random.normal(0., 1., 3)
     random_axis = torch.tensor(random_axis / np.linalg.norm(random_axis))
-    rule = UniformBoundedRevoluteJointRule(axis=random_axis, lb=-np.pi+1E-3, ub=np.pi-1E-3)
+    rule = UniformBoundedRevoluteJointRule.from_bounds(axis=random_axis, lb=-np.pi+1E-3, ub=np.pi-1E-3)
     parent = make_dummy_node()
     parent.rotation = torch.tensor(UniformlyRandomRotationMatrix(set_seed).matrix())
 
@@ -117,12 +142,12 @@ def test_AngleAxisInversion(set_seed, angle):
         assert torch.allclose(recovered_axis, random_axis, atol=1E-4, rtol=1E-4)
 
 @pytest.mark.parametrize("xyz_rule", [
-    WorldBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)*3.),
-    AxisAlignedBBoxRule(lb=torch.zeros(3), ub=torch.ones(3)*5.)
+    WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*3.),
+    AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*5.)
 ])
 @pytest.mark.parametrize("rotation_rule", [
     UnconstrainedRotationRule(),
-    UniformBoundedRevoluteJointRule(axis=torch.tensor([0., 1., 0.]), lb=-np.pi/2., ub=np.pi/2.)
+    UniformBoundedRevoluteJointRule.from_bounds(axis=torch.tensor([0., 1., 0.]), lb=-np.pi/2., ub=np.pi/2.)
 ])
 def test_ProductionRule(set_seed, xyz_rule, rotation_rule):
     rule = ProductionRule(
