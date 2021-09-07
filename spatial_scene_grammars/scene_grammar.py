@@ -221,6 +221,21 @@ class SpatialSceneGrammar(torch.nn.Module):
                 rule_params.append(torch.nn.ModuleList([xyz_param_dict, rot_param_dict]))
             self.rule_params_by_node_type[node_type.__name__] = rule_params
             
+    def print_params(self, node_names=None):
+        for node_type in self.all_types:
+            if node_names is not None:
+                if node_type.__name__ not in node_names:
+                    continue
+            print("\t%s:" % node_type.__name__)
+            constrained_params = self.params_by_node_type[node_type.__name__]
+            if constrained_params is not None:
+                print("\t\t%s: %s" % ("child weights", constrained_params().detach().cpu().numpy()))
+            for k, (xyz_param_dict, rot_param_dict) in enumerate(self.rule_params_by_node_type[node_type.__name__]):
+                print("\t\tRule %d:" % (k))
+                for k, v in xyz_param_dict.items():
+                    print("\t\t\tXYZ %s: %s" % (k, v()))
+                for k, v in rot_param_dict.items():
+                    print("\t\t\tRot %s: %s" % (k, v()))
 
     def _collect_all_types_in_grammar(self):
         # Similar to supertree logic, but doesn't track supertree.
