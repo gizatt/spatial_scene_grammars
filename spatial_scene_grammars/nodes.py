@@ -185,8 +185,7 @@ class AndNode(Node):
     def sample_children(self):
         children = []
         for k, rule in enumerate(self.rules):
-            with scope(prefix="%d" % k):
-                child = rule.sample_child(self)
+            child = rule.sample_child(self)
             child.rule_k = k
             children.append(child)
         return children
@@ -290,8 +289,7 @@ class GeometricSetNode(Node):
         n = pyro.sample("GeometricSetNode_n", self.geom_surrogate_dist) + 1
         assert n >= 1 and n <= self.max_children
         for k in range(n):
-            with scope(prefix="%d" % k):
-                child = self.rule.sample_child(self)
+            child = self.rule.sample_child(self)
             child.rule_k = k
             children.append(child)
         return children
@@ -338,8 +336,7 @@ class IndependentSetNode(Node):
         activations = pyro.sample("IndependentSetNode_n", self._rule_dist)
         for k, rule in enumerate(self.rules):
             if activations[k] > 0.5:
-                with scope(prefix="%d" % k):
-                    child = self.rules[k].sample_child(self)
+                child = self.rules[k].sample_child(self)
                 child.rule_k = k
                 children.append(child)
         return children

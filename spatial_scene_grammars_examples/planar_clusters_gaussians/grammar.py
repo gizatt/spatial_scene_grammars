@@ -21,7 +21,7 @@ has a geometric number of stuff distributed
 locally.
 '''
 
-eps = 1E-4 
+eps = 1E-2
 
 ## Food waste
 class Plate(TerminalNode):

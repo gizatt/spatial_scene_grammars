@@ -17,6 +17,13 @@ from pytorch3d.transforms.rotation_conversions import (
     euler_angles_to_matrix, axis_angle_to_matrix
 )
 
+def is_discrete_distribution(fn):
+    # Returns whether the distribution type ("fn" from
+    # a Pyro trace) is a known discrete distribution type.
+    # This is used to distinguish discrete and continuous choices
+    # made in a trace.
+    return isinstance(fn, (dist.Categorical, dist.Geometric, dist.Bernoulli))
+
 def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                             perturb_in_config_space=False, verbose=0,
                             vis_callback=None,
@@ -85,12 +92,14 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                 xyz_rule, rotation_rule = rule.xyz_rule, rule.rotation_rule
                 if type(xyz_rule) is WorldBBoxRule:
                     # Perturb in axes that are not equality constrained
-                    perturb = dist.Normal(torch.zeros(3), torch.ones(3)*translation_variance).sample()
+                    scale = xyz_rule.ub - xyz_rule.lb
+                    perturb = dist.Normal(torch.zeros(3), scale*translation_variance).sample()
                     perturb[xyz_rule.xyz_dist.delta_mask] = 0.
                     new_child.translation = current_child.translation + perturb
                 elif type(xyz_rule) is AxisAlignedBBoxRule:
                     # Perturb in axes that are not equality constrained
-                    perturb = dist.Normal(torch.zeros(3), torch.ones(3)*translation_variance).sample()
+                    scale = xyz_rule.ub - xyz_rule.lb
+                    perturb = dist.Normal(torch.zeros(3), scale*translation_variance).sample()
                     perturb[xyz_rule.xyz_dist.delta_mask] = 0.
                     if perturb_in_config_space:
                         current_offset = current_child.translation - current_parent.translation
@@ -99,7 +108,8 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                         new_child.translation = current_child.translation + perturb
                 elif type(xyz_rule) is AxisAlignedGaussianOffsetRule:
                     # Perturb all axes
-                    perturb = dist.Normal(torch.zeros(3), torch.ones(3)*translation_variance).sample()
+                    scale = xyz_rule.variance
+                    perturb = dist.Normal(torch.zeros(3), scale*translation_variance).sample()
                     if perturb_in_config_space:
                         current_offset = current_child.translation - current_parent.translation
                         new_child.translation = new_parent.translation + current_offset + perturb
@@ -122,7 +132,8 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                 elif type(rotation_rule) is UniformBoundedRevoluteJointRule:
                     # Apply small rotation around axis, unless the rotation is fully constrained
                     if not np.isclose(rotation_rule.lb, rotation_rule.ub):
-                        random_angle = dist.Normal(torch.zeros(1), torch.ones(1)*translation_variance).sample()
+                        scale = rotation_rule.ub - rotation_rule.lb
+                        random_angle = dist.Normal(torch.zeros(1), scale*translation_variance).sample()
                         orig_angle, orig_axis = recover_relative_angle_axis(current_parent, current_child, target_axis=rotation_rule.axis)
                         # Add angle to orig angle, and rotate around the joint's actual axis to get
                         # the new rotation offset.
@@ -134,7 +145,8 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                             new_child.rotation = torch.matmul(current_child.rotation, new_R_offset)
                 elif type(rotation_rule) is GaussianChordOffsetRule:
                     # Apply small rotation around axis
-                    random_angle = dist.Normal(torch.zeros(1), torch.ones(1)*translation_variance).sample()
+                    scale = rotation_rule.concentration
+                    random_angle = dist.Normal(torch.zeros(1), scale*translation_variance).sample()
                     orig_angle, orig_axis = recover_relative_angle_axis(current_parent, current_child, target_axis=rotation_rule.axis)
                     # Add angle to orig angle, and rotate around the joint's actual axis to get
                     # the new rotation offset.
@@ -201,4 +213,114 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
         if verbose:
             print("%d: Accept rate %f" % (step_k, n_accept / (step_k + 1)))
     return sample_trees
+
+
+def do_fixed_structure_hmc_with_constraint_penalties(
+        grammar, original_tree, num_samples=100, subsample_step=5, verbose=0, kernel_type="NUTS", **kwargs):
+    ''' Given a scene tree, resample its continuous variables
+    (i.e. the node poses) while keeping the root and observed
+    node poses fixed, and trying to keep the constraints implied
+    by the tree and grammar satisfied.. Returns a population of trees sampled
+    from the joint distribution over node poses given the fixed structure.
+
+    Verbose = 0: Print nothing
+    Verbose = 1: Print updates about accept rate and steps
+    Verbose = 2: Print NLP output and scoring info
+    '''
+
+    # Strategy sketch:
+    # - Initialize at the current scene tree, asserting that it's a feasible configuration.
+    # - Form a probabilistic model that samples all of the node poses,
+    #   and uses observe() statements to implement constraint factors as tightly peaked
+    #   energy terms.
+    # - Use Pyro HMC to sample from the model.
+
+    # Make a bookkeeping copy of the tree
+    scene_tree = deepcopy(original_tree) 
+    
+    # Do steps of random-walk MCMC on those variables.
+    initial_score = scene_tree.score()
+    assert torch.isfinite(initial_score), "Bad initialization for MCMC."
+
+    # Form probabilistic model
+    root = scene_tree.get_root()
+    def model():
+        # Resample the continuous structure of the tree.
+        node_queue = [root]
+        while len(node_queue) > 0:
+            parent = node_queue.pop(0)
+            children, rules = scene_tree.get_children_and_rules(parent)
+            for child, rule in zip(children, rules):
+                with scope(prefix=parent.name):
+                    rule.sample_child(parent, child)
+                node_queue.append(child)
+
+        # Implement observation constraints
+        xyz_observed_variance = 1E-2
+        rot_observed_variance = 1E-2
+        for node, original_node in zip(scene_tree.nodes, original_tree.nodes):
+            if node.observed:
+                xyz_observed_dist = dist.Normal(original_node.translation, xyz_observed_variance)
+                rot_observed_dist = dist.Normal(original_node.rotation, rot_observed_variance)
+                pyro.sample("%s_xyz_observed" % node.name, xyz_observed_dist, obs=node.translation)
+                pyro.sample("%s_rotation_observed" % node.name, rot_observed_dist, obs=node.rotation)
+        # Implement joint axis constraints
+        axis_alignment_variance = 1E-2
+        for node, original_node in zip(scene_tree.nodes, original_tree.nodes):
+            children, rules = scene_tree.get_children_and_rules(parent)
+            for child, rule in zip(children, rules):
+                if type(rule) == GaussianChordOffsetRule or type(rule) == UniformBoundedRevoluteJointRule:
+                    # Both of these rule types require that parent/child rotation is
+                    # about an axis.
+                    axis_from_parent = torch.matmul(node.rotation, node.axis)
+                    axis_from_child = torch.matmul(child.rotation, child.axis)
+                    inner_product = (axis_from_parent*axis_from_child).sum()
+                    pyro.sample("%s_axis_error_observed" % node.name,
+                        dist.Normal(1., axis_alignment_variance),
+                        obs=inner_product
+                    )
+
+
+    initial_values = {key: site["value"].detach() for key, site in scene_tree.trace.nodes.items()
+                      if site["type"] == "sample" and not is_discrete_distribution(site["fn"])}
+    trace = pyro.poutine.trace(model).get_trace()
+    for key in initial_values.keys():
+        if key not in trace.nodes.keys():
+            print("Trace keys: ", trace.nodes.keys())
+            print("Initial values keys: ", initial_values.keys())
+            raise ValueError("%s not in trace keys" % key)
+    
+    # If I let MCMC auto-tune its step size, it seems to do well,
+    # but sometimes seems to get lost, and then gets stuck with big step size and
+    # zero acceptances.
+    if kernel_type == "NUTS":
+        kernel = NUTS(model,
+            init_strategy=pyro.infer.autoguide.init_to_value(values=initial_values),
+            **kwargs
+        )
+    elif kernel_type == "HMC":
+        kernel = HMC(model,
+            init_strategy=pyro.infer.autoguide.init_to_value(values=initial_values),
+            **kwargs
+        )
+    else:
+        raise NotImplementedError(kernel_type)
+    mcmc = MCMC(
+        kernel,
+        num_samples=num_samples,
+        warmup_steps=min(int(num_samples/2), 10),
+        num_chains=1
+    )
+    mcmc.run()
+    mcmc.summary(prob=0.5)
+
+    samples = mcmc.get_samples()
+    sampled_trees = []
+    for k in range(0, num_samples, subsample_step):
+        condition = {key: value[k, ...] for key, value in samples.items()}
+        with pyro.condition(data=condition):
+            model()
+        sampled_trees.append(deepcopy(scene_tree))
+
+    return sampled_trees
 

@@ -48,14 +48,21 @@ class ProductionRule():
         self.xyz_rule = xyz_rule
         self.rotation_rule = rotation_rule
 
-    def sample_child(self, parent):
-        xyz = self.xyz_rule.sample_xyz(parent)
-        rotmat = self.rotation_rule.sample_rotation(parent)
+    def sample_child(self, parent, child=None):
+        # Can optionally supply a child to re-sample; otherwise,
+        # we make a new one. The child is pre-created so we can scope
+        # using its generated name.
+        if child is None:
+            child = self.child_type(tf=torch.eye(4))
+        with scope(prefix=child.name):
+            xyz = self.xyz_rule.sample_xyz(parent)
+            rotmat = self.rotation_rule.sample_rotation(parent)
         tf = torch.empty(4, 4)
         tf[:3, :3] = rotmat[:, :]
         tf[:3, 3] = xyz[:]
         tf[3, :] = torch.tensor([0., 0., 0., 1.])
-        return self.child_type(tf=tf)
+        child.tf = tf
+        return child
 
     def score_child(self, parent, child, verbose=False):
         xyz_part = self.xyz_rule.score_child(parent, child)

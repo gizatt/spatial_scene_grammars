@@ -302,7 +302,7 @@ class SpatialSceneGrammar(torch.nn.Module):
             while len(node_queue) > 0:
                 parent = node_queue.pop(0)
                 # Ask node to sample its children.
-                with scope(prefix="%d" % k):
+                with scope(prefix=parent.name):
                     children = parent.sample_children()
                 k += 1
                 for child in children:
