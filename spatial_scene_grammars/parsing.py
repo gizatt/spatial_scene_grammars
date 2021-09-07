@@ -57,7 +57,10 @@ from .drake_interop import *
 # These accept an XyzProductionRule subclass, the MathematicalProgram,
 # and the parent and child nodes, and add appropriate constraints to
 # constrain the parent and child to follow the rule.
-def encode_WorldBBoxRule(rule, prog, parent, child):
+def encode_pass(rule, prog, parent, child):
+    pass
+
+def encode_WorldBBoxRule_constraint(rule, prog, parent, child):
     # Child translation should be within the translation bounds in
     # world frame.
     lb_world = rule.lb.detach().cpu().numpy()
@@ -67,7 +70,7 @@ def encode_WorldBBoxRule(rule, prog, parent, child):
         prog.AddLinearConstraint(child.t_optim[k] >= lb_world[k])
         prog.AddLinearConstraint(child.t_optim[k] <= ub_world[k])
 
-def encode_AxisAlignedBBoxRule(rule, prog, parent, child):
+def encode_AxisAlignedBBoxRule_constraint(rule, prog, parent, child):
     # Child translation should be within relative translation bounds
     # parent, but added in world frame (with no rotations).
     lb_world = rule.lb.detach().cpu().numpy() + parent.t_optim
@@ -77,9 +80,26 @@ def encode_AxisAlignedBBoxRule(rule, prog, parent, child):
         prog.AddLinearConstraint(child.t_optim[k] >= lb_world[k])
         prog.AddLinearConstraint(child.t_optim[k] <= ub_world[k])
 
-xyz_rule_to_encode_map = {
-    WorldBBoxRule: encode_WorldBBoxRule,
-    AxisAlignedBBoxRule: encode_AxisAlignedBBoxRule
+def encode_AxisAlignedGaussianOffsetRule_cost(rule, prog, parent, child):
+    # Get some distribution info
+    covar = rule.covariance.detach().cpu().numpy()
+    inverse_covariance = np.linalg.inv(rule.covariance)
+    covariance_det = np.linalg.det(rule.covariance)
+    log_normalizer = -np.log(np.sqrt( (2. * np.pi) ** 3 * covariance_det))
+
+    xyz_offset = parent.t_optim - child.t_optim
+    error = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset))
+    prog.AddQuadraticCost(error + log_normalizer)
+
+xyz_rule_to_encode_constraints_map = {
+    WorldBBoxRule: encode_WorldBBoxRule_constraint,
+    AxisAlignedBBoxRule: encode_AxisAlignedBBoxRule_constraint,
+    AxisAlignedGaussianOffsetRule: encode_pass
+}
+xyz_rule_to_encode_costs_map = {
+    WorldBBoxRule: encode_pass,
+    AxisAlignedBBoxRule: encode_pass,
+    AxisAlignedGaussianOffsetRule: encode_AxisAlignedGaussianOffsetRule_cost
 }
 
 # These accept a RotationProductionRule subclass, the MathematicalProgram,
@@ -87,12 +107,12 @@ xyz_rule_to_encode_map = {
 # constrain the parent and child to follow the rule. These should return
 # True if the rotation was *completely constrained*, or False otherwise,
 # to enable some logic in the optimization setup.
-def encode_UnconstrainedRotationRule(rule, prog, parent, child):
+def encode_UnconstrainedRotationRule_constraint(rule, prog, parent, child):
     # No constraints to add! Just report that the child rotation
     # was unconstrained.
     return False
 
-def encode_UniformBoundedRevoluteJointRule(rule, prog, parent, child):
+def encode_UniformBoundedRevoluteJointRule_constraint(rule, prog, parent, child):
     axis = rule.axis.detach().cpu().numpy()
     min_angle = rule.lb
     max_angle = rule.ub
@@ -164,9 +184,46 @@ def encode_UniformBoundedRevoluteJointRule(rule, prog, parent, child):
     prog.AddLorentzConeConstraint(np.r_[lorentz_bound, vector_diff])
     return False
 
-rotation_rule_to_encode_map = {
-    UnconstrainedRotationRule: encode_UnconstrainedRotationRule,
-    UniformBoundedRevoluteJointRule: encode_UniformBoundedRevoluteJointRule
+def encode_GaussianChordOffsetRule_constraint(rule, prog, parent, child):
+    # Constrain parent/child rotations to not change the rotation axis.
+    axis = rule.axis.detach().cpu().numpy()
+
+    # Child rotation should be within a relative rotation of the parent around
+    # the specified axis, and the axis should *not* be rotated between the
+    # parent and child frames. This is similar to the revolute joint constraints
+    # used by Hongkai Dai in his global IK formulation.
+    # (1): The direction of the rotation axis doesn't change between
+    # parent and child frames.
+    # The axis is the same in both the parent and child frame
+    # (see https://drake.mit.edu/doxygen_cxx/classdrake_1_1multibody_1_1_revolute_joint.html).
+    # Though there may be an additional offset according to the axis offset
+    # in the parent and child frames.
+    #axis_offset_in_parent = RigidTransform()
+    #axis_offset_in_child = RigidTransform()
+    parent_view_of_axis_in_world = parent.R_optim.dot(axis)
+    child_view_of_axis_in_world = child.R_optim.dot(axis)
+    for k in range(3):
+        prog.AddLinearEqualityConstraint(
+            parent_view_of_axis_in_world[k] == child_view_of_axis_in_world[k]
+        )
+    # Child rotation is not fully constrained.
+    return False
+
+def encode_GaussianChordOffsetRule_cost(rule, prog, parent, child):
+    # Compute chord distance between parent and child
+    raise NotImplementedError("TODO")
+
+
+rotation_rule_to_encode_constraints_map = {
+    UnconstrainedRotationRule: encode_UnconstrainedRotationRule_constraint,
+    UniformBoundedRevoluteJointRule: encode_UniformBoundedRevoluteJointRule_constraint,
+    GaussianChordOffsetRule: encode_GaussianChordOffsetRule_constraint
+}
+
+rotation_rule_to_encode_costs_map = {
+    UnconstrainedRotationRule: encode_pass,
+    UniformBoundedRevoluteJointRule: encode_pass,
+    GaussianChordOffsetRule: encode_GaussianChordOffsetRule_cost
 }
 
 
@@ -298,11 +355,11 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
             xyz_rule, rotation_rule = rule.xyz_rule, rule.rotation_rule
 
             # Look up how to encode these rule types, and dispatch.
-            assert type(xyz_rule) in xyz_rule_to_encode_map.keys(), type(xyz_rule)
-            xyz_rule_to_encode_map[type(xyz_rule)](xyz_rule, prog, parent_node, child_node)
-            assert type(rotation_rule) in rotation_rule_to_encode_map.keys(), type(rotation_rule)
+            assert type(xyz_rule) in xyz_rule_to_encode_constraints_map.keys(), type(xyz_rule)
+            xyz_rule_to_encode_constraints_map[type(xyz_rule)](xyz_rule, prog, parent_node, child_node)
+            assert type(rotation_rule) in rotation_rule_to_encode_constraints_map.keys(), type(rotation_rule)
             rotation_was_fully_constrained = \
-                rotation_rule_to_encode_map[type(rotation_rule)](rotation_rule, prog, parent_node, child_node)
+                rotation_rule_to_encode_constraints_map[type(rotation_rule)](rotation_rule, prog, parent_node, child_node)
 
             if not child_node.observed and not rotation_was_fully_constrained:
                 # In this case, and only this case, we need to make sure R_optim
@@ -382,8 +439,15 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
         else:
             raise ValueError("Unexpected node in cost assembly: ", type(parent_node))
 
-        # TODO(gizatt) Continuous costs, if I add rules that are expressed as
-        # Gaussian costs (e.g. Gaussian relative placement).
+        ## Child location costs relative to parent.
+        for rule, child_node in zip(rules, children):
+            xyz_rule, rotation_rule = rule.xyz_rule, rule.rotation_rule
+
+            # Look up how to encode these rule types, and dispatch.
+            assert type(xyz_rule) in xyz_rule_to_encode_costs_map.keys(), type(xyz_rule)
+            xyz_rule_to_encode_costs_map[type(xyz_rule)](xyz_rule, prog, parent_node, child_node)
+            assert type(rotation_rule) in rotation_rule_to_encode_costs_map.keys(), type(rotation_rule)
+            rotation_rule_to_encode_costs_map[type(rotation_rule)](rotation_rule, prog, parent_node, child_node)
 
     setup_time = time.time()
     if verbose:
@@ -546,11 +610,11 @@ def optimize_scene_tree_with_nlp(scene_tree, initial_guess_tree=None, objective=
             xyz_rule, rotation_rule = rule.xyz_rule, rule.rotation_rule
 
             # Look up how to encode these rule types, and dispatch.
-            assert type(xyz_rule) in xyz_rule_to_encode_map.keys(), type(xyz_rule)
-            xyz_rule_to_encode_map[type(xyz_rule)](xyz_rule, prog, parent_node, child_node)
-            assert type(rotation_rule) in rotation_rule_to_encode_map.keys(), type(rotation_rule)
+            assert type(xyz_rule) in xyz_rule_to_encode_constraints_map.keys(), type(xyz_rule)
+            xyz_rule_to_encode_constraints_map[type(xyz_rule)](xyz_rule, prog, parent_node, child_node)
+            assert type(rotation_rule) in rotation_rule_to_encode_constraints_map.keys(), type(rotation_rule)
             rotation_was_fully_constrained = \
-                rotation_rule_to_encode_map[type(rotation_rule)](rotation_rule, prog, parent_node, child_node)
+                rotation_rule_to_encode_constraints_map[type(rotation_rule)](rotation_rule, prog, parent_node, child_node)
 
     def penalize_rotation_error(R_goal, R_optim):
         # We don't always have perfect rotations, so instead of using

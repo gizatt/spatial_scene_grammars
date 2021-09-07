@@ -192,6 +192,12 @@ class AxisAlignedBBoxRule(WorldBBoxRule):
         return self.xyz_dist.log_prob(xyz_offset).sum()
 
 
+class AxisAlignedGaussianOffsetRule(XyzProductionRule):
+    ''' Placeholder '''
+    def __init__(self):
+        raise NotImplementedError()
+
+
 ## Rotation production rules
 class RotationProductionRule():
     '''
@@ -385,3 +391,8 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
     def ub(self):
         return self.center + self.width / 2.
 
+
+class GaussianChordOffsetRule(RotationProductionRule):
+    ''' Placeholder '''
+    def __init__(self):
+        raise NotImplementedError()
