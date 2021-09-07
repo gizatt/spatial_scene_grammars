@@ -309,10 +309,12 @@ def do_fixed_structure_hmc_with_constraint_penalties(
         kernel,
         num_samples=num_samples,
         warmup_steps=min(int(num_samples/2), 10),
-        num_chains=1
+        num_chains=1,
+        disable_progbar=(verbose==0)
     )
     mcmc.run()
-    mcmc.summary(prob=0.5)
+    if verbose == 1:
+        mcmc.summary(prob=0.5)
 
     samples = mcmc.get_samples()
     sampled_trees = []
