@@ -97,6 +97,16 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                         new_child.translation = new_parent.translation + current_offset + perturb
                     else:
                         new_child.translation = current_child.translation + perturb
+                elif type(xyz_rule) is AxisAlignedGaussianOffsetRule:
+                    # Perturb all axes
+                    perturb = dist.Normal(torch.zeros(3), torch.ones(3)*translation_variance).sample()
+                    if perturb_in_config_space:
+                        current_offset = current_child.translation - current_parent.translation
+                        new_child.translation = new_parent.translation + current_offset + perturb
+                    else:
+                        new_child.translation = current_child.translation + perturb
+                elif type(xyz_rule) is SamePositionRule:
+                    pass
                 else:
                     raise NotImplementedError("%s" % xyz_rule)
 
@@ -107,11 +117,13 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                         convention="ZYX"
                     )[0, ...]
                     new_child.rotation = torch.matmul(current_child.rotation, random_small_rotation)
+                elif type(rotation_rule) is SameRotationRule:
+                    pass
                 elif type(rotation_rule) is UniformBoundedRevoluteJointRule:
                     # Apply small rotation around axis, unless the rotation is fully constrained
                     if not np.isclose(rotation_rule.lb, rotation_rule.ub):
                         random_angle = dist.Normal(torch.zeros(1), torch.ones(1)*translation_variance).sample()
-                        orig_angle, orig_axis = rotation_rule._recover_relative_angle_axis(current_parent, current_child)
+                        orig_angle, orig_axis = recover_relative_angle_axis(current_parent, current_child, target_axis=rotation_rule.axis)
                         # Add angle to orig angle, and rotate around the joint's actual axis to get
                         # the new rotation offset.
                         new_angle_axis = rotation_rule.axis * (orig_angle + random_angle)
@@ -120,6 +132,20 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                             new_child.rotation = torch.matmul(new_parent.rotation, new_R_offset)
                         else:
                             new_child.rotation = torch.matmul(current_child.rotation, new_R_offset)
+                elif type(rotation_rule) is GaussianChordOffsetRule:
+                    # Apply small rotation around axis
+                    random_angle = dist.Normal(torch.zeros(1), torch.ones(1)*translation_variance).sample()
+                    orig_angle, orig_axis = recover_relative_angle_axis(current_parent, current_child, target_axis=rotation_rule.axis)
+                    # Add angle to orig angle, and rotate around the joint's actual axis to get
+                    # the new rotation offset.
+                    new_angle_axis = rotation_rule.axis * (orig_angle + random_angle)
+                    new_R_offset = axis_angle_to_matrix(new_angle_axis.unsqueeze(0))[0, ...]
+                    if perturb_in_config_space:
+                        new_child.rotation = torch.matmul(new_parent.rotation, new_R_offset)
+                    else:
+                        new_child.rotation = torch.matmul(current_child.rotation, new_R_offset)
+                else:
+                    raise NotImplementedError("%s" % xyz_rule)
 
             # Add children to the node queue.
             for current_child, new_child in zip(current_children, new_children):

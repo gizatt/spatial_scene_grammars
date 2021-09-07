@@ -61,6 +61,10 @@ from .drake_interop import *
 def encode_pass(rule, prog, parent, child):
     pass
 
+def encode_SamePositionRule_constraint(rule, prog, parent, child):
+    for k in range(3):
+        prog.AddLinearEqualityConstraint(child.t_optim[k] == parent.t_optim[k])
+
 def encode_WorldBBoxRule_constraint(rule, prog, parent, child):
     # Child translation should be within the translation bounds in
     # world frame.
@@ -83,21 +87,24 @@ def encode_AxisAlignedBBoxRule_constraint(rule, prog, parent, child):
 
 def encode_AxisAlignedGaussianOffsetRule_cost(rule, prog, parent, child):
     # Get some distribution info
-    covar = rule.covariance_optim
-    inverse_covariance = np.linalg.inv(rule.covariance)
-    covariance_det = np.linalg.det(rule.covariance)
+    mean = rule.mean_optim
+    covar = rule.variance_optim
+    inverse_covariance = np.linalg.inv(covar)
+    covariance_det = np.linalg.det(covar)
     log_normalizer = -np.log(np.sqrt( (2. * np.pi) ** 3 * covariance_det))
 
-    xyz_offset = parent.t_optim - child.t_optim
-    error = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset))
-    prog.AddCost(error + log_normalizer)
+    xyz_offset = child.t_optim - (parent.t_optim + mean)
+    total_ll = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset)) + log_normalizer
+    prog.AddCost(-total_ll)
 
 xyz_rule_to_encode_constraints_map = {
+    SamePositionRule: encode_SamePositionRule_constraint,
     WorldBBoxRule: encode_WorldBBoxRule_constraint,
     AxisAlignedBBoxRule: encode_AxisAlignedBBoxRule_constraint,
     AxisAlignedGaussianOffsetRule: encode_pass
 }
 xyz_rule_to_encode_costs_map = {
+    SamePositionRule: encode_pass,
     WorldBBoxRule: encode_pass,
     AxisAlignedBBoxRule: encode_pass,
     AxisAlignedGaussianOffsetRule: encode_AxisAlignedGaussianOffsetRule_cost
@@ -112,6 +119,13 @@ def encode_UnconstrainedRotationRule_constraint(rule, prog, parent, child):
     # No constraints to add! Just report that the child rotation
     # was unconstrained.
     return False
+
+def encode_SameRotationRule_constraint(rule, prog, parent, child):
+    for i in range(3):
+        for j in range(3):
+            prog.AddLinearEqualityConstraint(child.R_optim[i, j] == parent.R_optim[i, j])
+    # Fully constrained
+    return True
 
 def encode_UniformBoundedRevoluteJointRule_constraint(rule, prog, parent, child):
     axis = rule.axis.detach().cpu().numpy()
@@ -216,16 +230,49 @@ def encode_GaussianChordOffsetRule_constraint(rule, prog, parent, child):
 
 def encode_GaussianChordOffsetRule_cost(rule, prog, parent, child):
     # Compute chord distance between parent and child
-    raise NotImplementedError("TODO")
+    
+    # Same logic as in the uniform bounded constraint; see eq Eq(10) in the global IK paper.
+
+    # Generate vector normal to axis.
+    axis = rule.axis.detach().cpu().numpy()
+    v_c = np.cross(axis, np.array([0., 0., 1.]))
+    if np.linalg.norm(v_c) <= np.sqrt(2)/2:
+        # Axis is too close to +z; try a different axis.
+        v_c = np.cross(axis, np.array([0., 1., 0.]))
+    v_c = v_c / np.linalg.norm(v_c)
+    # TODO: Hongkai uses multiple perpendicular vectors for tighter
+    # bound. Why does that make it tighter? Maybe worth a try?
+
+    # Use a von-Mises-Fisher distribution: project the rotated unit vector onto the
+    # unrotated vector and multiply by the density. I think this is sort of like a
+    # Normal distribution over the set of 3D unit vectors?
+    # https://en.wikipedia.org/wiki/Von_Mises%E2%80%93Fisher_distribution
+    concentration = rule.concentration_optim
+    loc = rule.loc_optim
+    R_offset = RotationMatrix(AngleAxis(loc, axis)).matrix()
+    target_mu = parent.R_optim.dot(R_offset).dot(v_c)
+    child_vector = child.R_optim.dot(v_c)
+    dot_product = target_mu.dot(child_vector)
+    vector_diff = (
+        target_mu - child_vector
+    ) 
+    vmf_normalizer = concentration / (2 * np.pi * (np.exp(concentration) - np.exp(-concentration)))
+    # VMF; unfortunately does not appear to lead to convex cost (not positive definite).
+    total_ll = dot_product * concentration - vmf_normalizer
+    # Instead, this happens to be?
+    total_ll = vector_diff.sum() * concentration - vmf_normalizer
+    prog.AddCost(-total_ll)
 
 
 rotation_rule_to_encode_constraints_map = {
+    SameRotationRule: encode_SameRotationRule_constraint,
     UnconstrainedRotationRule: encode_UnconstrainedRotationRule_constraint,
     UniformBoundedRevoluteJointRule: encode_UniformBoundedRevoluteJointRule_constraint,
     GaussianChordOffsetRule: encode_GaussianChordOffsetRule_constraint
 }
 
 rotation_rule_to_encode_costs_map = {
+    SameRotationRule: encode_pass,
     UnconstrainedRotationRule: encode_pass,
     UniformBoundedRevoluteJointRule: encode_pass,
     GaussianChordOffsetRule: encode_GaussianChordOffsetRule_cost
@@ -283,14 +330,22 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
             if type(xyz_rule) == WorldBBoxRule or type(xyz_rule) == AxisAlignedBBoxRule:
                 xyz_rule.lb_optim = xyz_rule.lb.detach().cpu().numpy()
                 xyz_rule.ub_optim = xyz_rule.ub.detach().cpu().numpy()
+            elif type(xyz_rule) == AxisAlignedGaussianOffsetRule:
+                xyz_rule.mean_optim = xyz_rule.mean.detach().cpu().numpy()
+                xyz_rule.variance_optim = np.diag(xyz_rule.variance.detach().cpu().numpy())
+            elif type(xyz_rule) == SamePositionRule:
+                pass
             else:
                 raise NotImplementedError(type(xyz_rule))
             rot_rule = rule.rotation_rule
-            if type(rot_rule) == UnconstrainedRotationRule:
+            if type(rot_rule) == UnconstrainedRotationRule or type(rot_rule) == SameRotationRule:
                 pass
             elif type(rot_rule) == UniformBoundedRevoluteJointRule:
                 rot_rule.lb_optim = rot_rule.lb.detach().item()
                 rot_rule.ub_optim = rot_rule.ub.detach().item()
+            elif type(rot_rule) == GaussianChordOffsetRule:
+                rot_rule.loc_optim = rot_rule.loc.detach().item()
+                rot_rule.concentration_optim = rot_rule.concentration.detach().item()
             else:
                 raise NotImplementedError(type(rot_rule))
         
@@ -446,6 +501,16 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
     for parent_node in super_tree:
         # For the discrete states, do maximum likelihood.
         children = super_tree.get_children(parent_node)
+        ## Get child rule list.
+        if isinstance(parent_node, GeometricSetNode):
+            rules = [parent_node.rule for k in range(len(children))]
+        elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
+            rules = parent_node.rules
+        elif isinstance(parent_node, TerminalNode):
+            rules = []
+        else:
+            raise ValueError("Unexpected node type: ", type(parent_node))
+
         if isinstance(parent_node, (AndNode, TerminalNode)):
             pass
         elif isinstance(parent_node, (OrNode, IndependentSetNode)):
@@ -629,14 +694,22 @@ def optimize_scene_tree_with_nlp(scene_tree, initial_guess_tree=None, objective=
             if type(xyz_rule) == WorldBBoxRule or type(xyz_rule) == AxisAlignedBBoxRule:
                 xyz_rule.lb_optim = xyz_rule.lb.detach().cpu().numpy()
                 xyz_rule.ub_optim = xyz_rule.ub.detach().cpu().numpy()
+            elif type(xyz_rule) == AxisAlignedGaussianOffsetRule:
+                xyz_rule.mean_optim = xyz_rule.mean.detach().cpu().numpy()
+                xyz_rule.covariance_optim = np.diag(xyz_rule.variance.detach().cpu().numpy())
+            elif type(xyz_rule) == SamePositionRule:
+                pass
             else:
                 raise NotImplementedError(type(xyz_rule))
             rot_rule = rule.rotation_rule
-            if type(rot_rule) == UnconstrainedRotationRule:
+            if type(rot_rule) == UnconstrainedRotationRule or type(rot_rule) == SameRotationRule:
                 pass
             elif type(rot_rule) == UniformBoundedRevoluteJointRule:
                 rot_rule.lb_optim = rot_rule.lb.detach().item()
                 rot_rule.ub_optim = rot_rule.ub.detach().item()
+            elif type(rot_rule) == GaussianChordOffsetRule:
+                rot_rule.loc_optim = rot_rule.loc.detach().item()
+                rot_rule.concentration_optim = rot_rule.concentration.detach().item()
             else:
                 raise NotImplementedError(type(rot_rule))
 
@@ -678,7 +751,18 @@ def optimize_scene_tree_with_nlp(scene_tree, initial_guess_tree=None, objective=
 
     if objective == "mle":
         # Add costs for MLE tree estimate
-        pass
+        ## Child location costs relative to parent.
+        for prent_node in scene_tree.nodes:
+            children, rules = scene_tree.get_children_and_rules(parent_node)
+            for rule, child_node in zip(rules, children):
+                xyz_rule, rotation_rule = rule.xyz_rule, rule.rotation_rule
+
+                # Look up how to encode these rule types, and dispatch.
+                assert type(xyz_rule) in xyz_rule_to_encode_costs_map.keys(), type(xyz_rule)
+                xyz_rule_to_encode_costs_map[type(xyz_rule)](xyz_rule, prog, parent_node, child_node)
+                assert type(rotation_rule) in rotation_rule_to_encode_costs_map.keys(), type(rotation_rule)
+                rotation_rule_to_encode_costs_map[type(rotation_rule)](rotation_rule, prog, parent_node, child_node)
+
     elif objective == "projection":
         # Try to get optimized tree as close as possible to current config.
         for node in scene_tree.nodes:

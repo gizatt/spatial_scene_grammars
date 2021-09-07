@@ -127,6 +127,27 @@ class XyzProductionRule():
             " never have to do this."
         )
 
+class SamePositionRule(XyzProductionRule):
+    ''' Child Xyz is identically parent xyz. '''
+    def __init__(self):
+        super().__init__()
+
+    def sample_xyz(self, parent):
+        return parent.translation
+    def score_child(self, parent, child):
+        return torch.tensor(0.)
+
+    @classmethod
+    def get_parameter_prior(cls):
+        return {}
+    @property
+    def parameters(self):
+        return {}
+    @parameters.setter
+    def parameters(self, parameters):
+        if len(parameters.keys()) > 0:
+            raise ValueError("SamePositionRule has no parameters.")
+
 
 class WorldBBoxRule(XyzProductionRule):
     ''' Child xyz is uniformly chosen in [center, width] in world frame,
@@ -193,9 +214,35 @@ class AxisAlignedBBoxRule(WorldBBoxRule):
 
 
 class AxisAlignedGaussianOffsetRule(XyzProductionRule):
-    ''' Placeholder '''
-    def __init__(self):
-        raise NotImplementedError()
+    ''' Child xyz is diagonally-Normally distributed relative to parent in world frame.'''
+    def __init__(self, mean, variance):
+        assert isinstance(mean, torch.Tensor) and mean.shape == (3,)
+        assert isinstance(variance, torch.Tensor) and variance.shape == (3,)
+        self.parameters = {"mean": mean, "variance": variance}
+        super().__init__()
+
+    def sample_xyz(self, parent):
+        return parent.translation + pyro.sample("AxisAlignedGaussianOffsetRule_xyz", self.xyz_dist)
+    def score_child(self, parent, child):
+        return self.xyz_dist.log_prob(child.translation - parent.translation).sum()
+
+    @classmethod
+    def get_parameter_prior(cls):
+        return {
+            "mean": dist.Normal(torch.zeros(3), torch.ones(3)),
+            "variance": dist.Uniform(torch.zeros(3)+1E-6, torch.ones(3)*10.) # TODO: Inverse gamma is better
+        }
+    @property
+    def parameters(self):
+        return {
+            "mean": self.mean,
+            "variance": self.variance
+        }
+    @parameters.setter
+    def parameters(self, parameters):
+        self.mean = parameters["mean"]
+        self.variance = parameters["variance"]
+        self.xyz_dist = dist.Normal(self.mean, self.variance)
 
 
 ## Rotation production rules
@@ -234,6 +281,27 @@ class RotationProductionRule():
             " never have to do this."
         )
 
+
+class SameRotationRule(RotationProductionRule):
+    ''' Child Xyz is identically parent xyz. '''
+    def __init__(self):
+        super().__init__()
+
+    def sample_rotation(self, parent):
+        return parent.rotation
+    def score_child(self, parent, child):
+        return torch.tensor(0.)
+
+    @classmethod
+    def get_parameter_prior(cls):
+        return {}
+    @property
+    def parameters(self):
+        return {}
+    @parameters.setter
+    def parameters(self, parameters):
+        if len(parameters.keys()) > 0:
+            raise ValueError("SameRotationRule has no parameters.")
 
 class UnconstrainedRotationRule(RotationProductionRule):
     '''
@@ -293,6 +361,32 @@ class UnconstrainedRotationRule(RotationProductionRule):
             raise ValueError("RotationProductionRule has no parameters.")
 
 
+def recover_relative_angle_axis(parent, child, target_axis, zero_angle_width=1E-2, allowed_axis_diff=10. * np.pi/180.):
+    # Recover angle-axis relationship between a parent and child.
+    # Thrrows if we can't find a rotation axis between the two within
+    # requested diff of our expected axis.
+    relative_R = torch.matmul(torch.transpose(parent.rotation, 0, 1), child.rotation)
+    axis_angle = quaternion_to_axis_angle(matrix_to_quaternion(relative_R))
+    angle = torch.norm(axis_angle, p=2)
+
+    # *Why* is this tolerance so high? This is ridiculous
+    if angle <= zero_angle_width:
+        return torch.tensor(0.), target_axis
+
+    axis = axis_angle / angle
+    axis_misalignment = torch.acos(torch.clip((axis * target_axis).sum(), -1., 1.))
+    if torch.abs(angle) > 0 and axis_misalignment >= np.pi/2.:
+        # Flipping axis will give us a close axis.
+        axis = -axis
+        angle = -angle
+
+    axis_misalignment = torch.acos((axis * target_axis).sum()).item()
+    if axis_misalignment >= allowed_axis_diff:
+        # No saving this; axis doesn't match.
+        raise ValueError("Parent %s, Child %s: " % (parent, child),
+                         "Child illegal rotated from parent: %s vs %s, error of %f deg" % (axis, target_axis, axis_misalignment * 180./np.pi))
+    return angle, axis
+
 class UniformBoundedRevoluteJointRule(RotationProductionRule):
     '''
         Child rotation is randomly chosen uniformly from a bounded
@@ -324,39 +418,12 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         R_offset = axis_angle_to_matrix(angle_axis.unsqueeze(0))[0, ...]
         R = torch.matmul(parent.rotation, R_offset)
         return R
-
-    def _recover_relative_angle_axis(self, parent, child, zero_angle_width=1E-2, allowed_axis_diff=10. * np.pi/180.):
-        # Recover angle-axis relationship between a parent and child.
-        # Thrrows if we can't find a rotation axis between the two within
-        # requested diff of our expected axis.
-        relative_R = torch.matmul(torch.transpose(parent.rotation, 0, 1), child.rotation)
-        axis_angle = quaternion_to_axis_angle(matrix_to_quaternion(relative_R))
-        angle = torch.norm(axis_angle, p=2)
-
-        # *Why* is this tolerance so high? This is ridiculous
-        if angle <= zero_angle_width:
-            return torch.tensor(0.), self.axis
-
-        axis = axis_angle / angle
-        axis_misalignment = torch.acos(torch.clip((axis * self.axis).sum(), -1., 1.))
-        if torch.abs(angle) > 0 and axis_misalignment >= np.pi/2.:
-            # Flipping axis will give us a close axis.
-            axis = -axis
-            angle = -angle
-
-        axis_misalignment = torch.acos((axis * self.axis).sum()).item()
-        if axis_misalignment >= allowed_axis_diff:
-            # No saving this; axis doesn't match.
-            print("Our rotation bounds: [%f, %f]" % (self.lb, self.ub))
-            raise ValueError("Parent %s, Child %s: " % (parent, child),
-                             "Child illegal rotated from parent: %s vs %s, error of %f deg" % (axis, self.axis, axis_misalignment * 180./np.pi))
-        return angle, axis
         
     def score_child(self, parent, child, allowed_axis_diff=10. * np.pi/180.):
         if (self.ub - self.lb) >= 2. * np.pi:
             # Uniform rotation in 1D base case
             return torch.log(torch.ones(1) / (2. * np.pi))
-        angle, axis = self._recover_relative_angle_axis(parent, child, allowed_axis_diff=allowed_axis_diff)
+        angle, axis = recover_relative_angle_axis(parent, child, target_axis=self.axis, allowed_axis_diff=allowed_axis_diff)
         # Correct angle to be within 2pi of both LB and UB -- which should be possible,
         # since ub - lb is <= 2pi.
         while angle < self.lb - 2.*np.pi or angle < self.ub - 2*np.pi:
@@ -394,5 +461,55 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
 
 class GaussianChordOffsetRule(RotationProductionRule):
     ''' Placeholder '''
-    def __init__(self):
-        raise NotImplementedError()
+    def __init__(self, axis, loc, concentration):
+        assert isinstance(axis, torch.Tensor) and axis.shape == (3,)
+        assert isinstance(loc, (float, torch.Tensor))
+        assert isinstance(concentration, (float, torch.Tensor)) and concentration >= 0
+        if isinstance(concentration, float):
+            concentration = torch.tensor(concentration)
+        if isinstance(loc, float):
+            loc = torch.tensor(loc)
+        
+        # Axis is *not* a parameter; making it a parameter
+        # would require implementing a prior distribution and constraints over
+        # the 3D unit ball.
+        self.axis = axis
+        self.axis = self.axis / torch.norm(self.axis)
+        self.parameters = {
+            "concentration": concentration,
+            "loc": loc
+        }
+    
+    def sample_rotation(self, parent):
+        angle = pyro.sample("GaussianChordOffsetRule_theta", self._angle_dist)
+        angle_axis = self.axis * angle
+        R_offset = axis_angle_to_matrix(angle_axis.unsqueeze(0))[0, ...]
+        R = torch.matmul(parent.rotation, R_offset)
+        return R
+
+        
+    def score_child(self, parent, child, allowed_axis_diff=10. * np.pi/180.):
+        angle, axis = recover_relative_angle_axis(parent, child, target_axis=self.axis, allowed_axis_diff=allowed_axis_diff)
+        # Fisher distribution should be able to handle arbitrary +/-2pis.
+        return self._angle_dist.log_prob(angle)
+
+    @classmethod
+    def get_parameter_prior(cls):
+        # Default prior is a unit Normal for center,
+        # and Uniform-distributed width on some reasonable range.
+        return {
+            "loc": dist.Normal(torch.zeros(1), torch.ones(1)),
+            "concentration": dist.Uniform(torch.zeros(1)+1E-6, torch.ones(1)*np.pi*2.) # TODO: inverse gamma is better
+        }
+    @property
+    def parameters(self):
+        return {
+            "concentration": self.concentration,
+            "loc": self.loc
+        }
+    @parameters.setter
+    def parameters(self, parameters):
+        self.concentration = parameters["concentration"]
+        self.loc = parameters["loc"]
+        self._angle_dist = dist.VonMises(loc=self.loc, concentration=self.concentration)
+
