@@ -16,7 +16,7 @@ from torch.distributions import constraints
 
 torch.set_default_tensor_type(torch.DoubleTensor)
 
-@pytest.fixture(params=[0, 1])
+@pytest.fixture(params=range(3))
 def set_seed(request):
     torch.manual_seed(request.param)
 
@@ -32,6 +32,9 @@ def test_grammar(set_seed, perturb_in_config_space, do_hit_and_run_postprocess):
     )
     tree = grammar.sample_tree(detach=True)
 
+    # Hack tree to be totally unobserved to get more code coverage
+    for node in tree:
+        node.observed = False
     sampled_trees = do_fixed_structure_mcmc(
         grammar, tree, num_samples=5,
         perturb_in_config_space=perturb_in_config_space, verbose=2,

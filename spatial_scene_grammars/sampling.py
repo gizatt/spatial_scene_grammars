@@ -91,7 +91,7 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                 elif type(xyz_rule) is AxisAlignedBBoxRule:
                     # Perturb in axes that are not equality constrained
                     perturb = dist.Normal(torch.zeros(3), torch.ones(3)*translation_variance).sample()
-                    perturb[xyz_rule.xyz_offset_dist.delta_mask] = 0.
+                    perturb[xyz_rule.xyz_dist.delta_mask] = 0.
                     if perturb_in_config_space:
                         current_offset = current_child.translation - current_parent.translation
                         new_child.translation = new_parent.translation + current_offset + perturb
