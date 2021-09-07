@@ -46,7 +46,8 @@ from pydrake.all import (
     SolutionResult,
     VPolytope,
     MixedIntegerRotationConstraintGenerator,
-    IntervalBinning
+    IntervalBinning,
+    Variable
 )
 
 from .nodes import *
@@ -63,8 +64,8 @@ def encode_pass(rule, prog, parent, child):
 def encode_WorldBBoxRule_constraint(rule, prog, parent, child):
     # Child translation should be within the translation bounds in
     # world frame.
-    lb_world = rule.lb.detach().cpu().numpy()
-    ub_world = rule.ub.detach().cpu().numpy()
+    lb_world = rule.lb_optim
+    ub_world = rule.ub_optim
     # X should be within a half-bound-width of the centerl.
     for k in range(3):
         prog.AddLinearConstraint(child.t_optim[k] >= lb_world[k])
@@ -73,8 +74,8 @@ def encode_WorldBBoxRule_constraint(rule, prog, parent, child):
 def encode_AxisAlignedBBoxRule_constraint(rule, prog, parent, child):
     # Child translation should be within relative translation bounds
     # parent, but added in world frame (with no rotations).
-    lb_world = rule.lb.detach().cpu().numpy() + parent.t_optim
-    ub_world = rule.ub.detach().cpu().numpy() + parent.t_optim
+    lb_world = rule.lb_optim + parent.t_optim
+    ub_world = rule.ub_optim + parent.t_optim
     # X should be within a half-bound-width of the centerl.
     for k in range(3):
         prog.AddLinearConstraint(child.t_optim[k] >= lb_world[k])
@@ -82,14 +83,14 @@ def encode_AxisAlignedBBoxRule_constraint(rule, prog, parent, child):
 
 def encode_AxisAlignedGaussianOffsetRule_cost(rule, prog, parent, child):
     # Get some distribution info
-    covar = rule.covariance.detach().cpu().numpy()
+    covar = rule.covariance_optim
     inverse_covariance = np.linalg.inv(rule.covariance)
     covariance_det = np.linalg.det(rule.covariance)
     log_normalizer = -np.log(np.sqrt( (2. * np.pi) ** 3 * covariance_det))
 
     xyz_offset = parent.t_optim - child.t_optim
     error = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset))
-    prog.AddQuadraticCost(error + log_normalizer)
+    prog.AddCost(error + log_normalizer)
 
 xyz_rule_to_encode_constraints_map = {
     WorldBBoxRule: encode_WorldBBoxRule_constraint,
@@ -114,19 +115,23 @@ def encode_UnconstrainedRotationRule_constraint(rule, prog, parent, child):
 
 def encode_UniformBoundedRevoluteJointRule_constraint(rule, prog, parent, child):
     axis = rule.axis.detach().cpu().numpy()
-    min_angle = rule.lb
-    max_angle = rule.ub
-    assert min_angle <= max_angle
+    min_angle = rule.lb_optim
+    max_angle = rule.ub_optim
 
-    if max_angle - min_angle <= 1E-6:
-        # In this case, the child rotation is exactly equal to the
-        # parent rotation, so we can short-circuit.
-        relative_rotation = RotationMatrix(AngleAxis(max_angle, axis)).matrix()
-        target_rotation = parent.R_optim.dot(relative_rotation)
-        for i in range(3):
-            for j in range(3):
-                prog.AddLinearEqualityConstraint(child.R_optim[i, j] == target_rotation[i, j])
-        return True
+    if isinstance(min_angle, float) and isinstance(max_angle, float):
+        assert min_angle <= max_angle
+        if max_angle - min_angle <= 1E-6:
+            # In this case, the child rotation is exactly equal to the
+            # parent rotation, so we can short-circuit.
+            relative_rotation = RotationMatrix(AngleAxis(max_angle, axis)).matrix()
+            target_rotation = parent.R_optim.dot(relative_rotation)
+            for i in range(3):
+                for j in range(3):
+                    prog.AddLinearEqualityConstraint(child.R_optim[i, j] == target_rotation[i, j])
+            return True
+    else:
+        assert isinstance(min_angle, Variable) and isinstance(max_angle, Variable)
+        prog.AddLinearConstraint(min_angle <= max_angle)
 
     # Child rotation should be within a relative rotation of the parent around
     # the specified axis, and the axis should *not* be rotated between the
@@ -148,7 +153,7 @@ def encode_UniformBoundedRevoluteJointRule_constraint(rule, prog, parent, child)
         )
     
     # Short-circuit if there is no rotational constraint other than axis alignment.
-    if max_angle - min_angle >= 2.*np.pi:
+    if isinstance(min_angle, float) and isinstance(max_angle, float) and max_angle - min_angle >= 2.*np.pi:
         return False
 
     # If we're only allowed a limited rotation around this axis, apply a constraint
@@ -271,6 +276,23 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
         # many R's are directly constrained and don't actually need
         # this (very expensive to create) constraint. So we delay
         # setup until we know the rotation is unconstrained.
+        # For rules, create placeholders for the rule parameters that are expected
+        # by our rule encoders.
+        for rule in node.rules:
+            xyz_rule = rule.xyz_rule
+            if type(xyz_rule) == WorldBBoxRule or type(xyz_rule) == AxisAlignedBBoxRule:
+                xyz_rule.lb_optim = xyz_rule.lb.detach().cpu().numpy()
+                xyz_rule.ub_optim = xyz_rule.ub.detach().cpu().numpy()
+            else:
+                raise NotImplementedError(type(xyz_rule))
+            rot_rule = rule.rotation_rule
+            if type(rot_rule) == UnconstrainedRotationRule:
+                pass
+            elif type(rot_rule) == UniformBoundedRevoluteJointRule:
+                rot_rule.lb_optim = rot_rule.lb.detach().item()
+                rot_rule.ub_optim = rot_rule.ub.detach().item()
+            else:
+                raise NotImplementedError(type(rot_rule))
         
     if verbose:
         print("Continuous variables allocated.")
@@ -599,6 +621,24 @@ def optimize_scene_tree_with_nlp(scene_tree, initial_guess_tree=None, objective=
                 -np.ones(3)*max_scene_extent_in_any_dir,
                 np.ones(3)*max_scene_extent_in_any_dir,
             node.t_optim)
+
+        # Create placeholder variables for rule parameters, which are expected
+        # by the rule encoding functions.
+        for rule in node.rules:
+            xyz_rule = rule.xyz_rule
+            if type(xyz_rule) == WorldBBoxRule or type(xyz_rule) == AxisAlignedBBoxRule:
+                xyz_rule.lb_optim = xyz_rule.lb.detach().cpu().numpy()
+                xyz_rule.ub_optim = xyz_rule.ub.detach().cpu().numpy()
+            else:
+                raise NotImplementedError(type(xyz_rule))
+            rot_rule = rule.rotation_rule
+            if type(rot_rule) == UnconstrainedRotationRule:
+                pass
+            elif type(rot_rule) == UniformBoundedRevoluteJointRule:
+                rot_rule.lb_optim = rot_rule.lb.detach().item()
+                rot_rule.ub_optim = rot_rule.ub.detach().item()
+            else:
+                raise NotImplementedError(type(rot_rule))
 
         
     # Constraint parent/child relationships.
