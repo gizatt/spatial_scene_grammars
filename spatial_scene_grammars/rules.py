@@ -65,30 +65,30 @@ class ProductionRule():
             print("Rot: ", rot_part.item())
         return xyz_part + rot_part
 
-    @classmethod
-    def get_parameter_prior(cls):
-        # Returns a pyro Dist with support matching the parameter
-        # space of the Node subclass being used.
-        raise NotImplementedError(
-            "Please implement a parameter prior in your Node subclass."
+    def get_parameter_prior(self):
+        # Returns a tuple of the parameter prior dicts for the
+        # xyz and rotation rules.
+        # TODO(gizatt) Reorganization of ProductionRule definitions
+        # might allow this to be a classmethod, which would match how
+        # Node definitions are set up.
+        return (
+            self.xyz_rule.get_parameter_prior(),
+            self.rotation_rule.get_parameter_prior()
         )
     @property
     def parameters(self):
-        # Should return a torch Tensor representing the current
-        # parameter setting for this node. These are *not* torch
-        # parameters, and this is not a Pytorch module, since the
-        # Torch parameters being optimized belong to the grammar / the
-        # node type, not a given instantiated node.
-        raise NotImplementedError(
-            "Child class should implement parameters getter. Users should"
-            " never have to do this."
+        # Returns a tuple of the parameters dicts for the
+        # xyz and rotation rules.
+        return (
+            self.xyz_rule.parameters,
+            self.rotation_rule.parameters
         )
+
     @parameters.setter
     def parameters(self, parameters):
-        raise NotImplementedError(
-            "Child class should implement parameters setter. Users should"
-            " never have to do this."
-        )
+        assert isinstance(parameters, (tuple, list)) and len(parameters) == 2
+        self.xyz_rule.parameters = parameters[0]
+        self.rotation_rule.parameters = parameters[1]
 
 
 ## XYZ Production rules
@@ -103,6 +103,29 @@ class XyzProductionRule():
         raise NotImplementedError()
     def score_child(self, parent, child):
         raise NotImplementedError()
+
+    @classmethod
+    def get_parameter_prior(cls):
+        # Should return a dict of pyro Dists with supports matching the parameter
+        # space of the Rule subclass being used.
+        raise NotImplementedError("Child rule should implement parameter priors.")
+    @property
+    def parameters(self):
+        # Should return a dict of torch Tensors representing the current
+        # parameter settings for this node. These are *not* torch
+        # parameters, and this is not a Pytorch module, since the
+        # Torch parameters being optimized belong to the grammar / the
+        # node type, not a given instantiated node.
+        raise NotImplementedError(
+            "Child class should implement parameters getter. Users should"
+            " never have to do this."
+        )
+    @parameters.setter
+    def parameters(self, parameters):
+        raise NotImplementedError(
+            "Child class should implement parameters setter. Users should"
+            " never have to do this."
+        )
 
 
 class WorldBBoxRule(XyzProductionRule):
@@ -182,6 +205,29 @@ class RotationProductionRule():
     def score_child(self, parent, child):
         raise NotImplementedError()
 
+    @classmethod
+    def get_parameter_prior(cls):
+        # Should return a dict of pyro Dists with supports matching the parameter
+        # space of the Rule subclass being used.
+        raise NotImplementedError("Child rule should implement parameter priors.")
+    @property
+    def parameters(self):
+        # Should return a dict of torch Tensors representing the current
+        # parameter settings for this node. These are *not* torch
+        # parameters, and this is not a Pytorch module, since the
+        # Torch parameters being optimized belong to the grammar / the
+        # node type, not a given instantiated node.
+        raise NotImplementedError(
+            "Child class should implement parameters getter. Users should"
+            " never have to do this."
+        )
+    @parameters.setter
+    def parameters(self, parameters):
+        raise NotImplementedError(
+            "Child class should implement parameters setter. Users should"
+            " never have to do this."
+        )
+
 
 class UnconstrainedRotationRule(RotationProductionRule):
     '''
@@ -231,13 +277,14 @@ class UnconstrainedRotationRule(RotationProductionRule):
 
     @classmethod
     def get_parameter_prior(cls):
-        return None
+        return {}
     @property
     def parameters(self):
-        return None
+        return {}
     @parameters.setter
     def parameters(self, parameters):
-        raise ValueError("RotationProductionRule has no parameters.")
+        if len(parameters.keys()) > 0:
+            raise ValueError("RotationProductionRule has no parameters.")
 
 
 class UniformBoundedRevoluteJointRule(RotationProductionRule):
@@ -317,8 +364,8 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         # Default prior is a unit Normal for center,
         # and Uniform-distributed width on some reasonable range.
         return {
-            "center": dist.Normal(torch.zeros(3), torch.ones(3)),
-            "width": dist.Uniform(torch.zeros(3), torch.ones(3)*np.pi*2.)
+            "center": dist.Normal(torch.zeros(1), torch.ones(1)),
+            "width": dist.Uniform(torch.zeros(1), torch.ones(1)*np.pi*2.)
         }
     @property
     def parameters(self):

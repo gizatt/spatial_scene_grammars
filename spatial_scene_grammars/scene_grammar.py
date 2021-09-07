@@ -172,23 +172,55 @@ class SpatialSceneGrammar(torch.nn.Module):
         # node default.
         self.all_types = self._collect_all_types_in_grammar()
         self.params_by_node_type = torch.nn.ModuleDict()
+        self.rule_params_by_node_type = torch.nn.ModuleDict()
         for node_type in self.all_types:
+            # Set up node parameters.
             param_prior = node_type.get_parameter_prior()
             if param_prior is None:
                 self.params_by_node_type[node_type.__name__] = None
-                continue
-            if sample_params_from_prior:
-                init_value = param_prior.sample()
             else:
-                # Grab the default parameter value from an instance
-                # of this node.
-                init_value = node_type(tf=torch.eye(4)).parameters
-                if len(init_value) > 0:
-                    assert torch.all(torch.isfinite(param_prior.log_prob(init_value))), "Bad initial value / prior match in node type %s" % node_type
-            self.params_by_node_type[node_type.__name__] = ConstrainedParameter(
-                init_value=init_value,
-                constraint=param_prior.support
-            )
+                if sample_params_from_prior:
+                    init_value = param_prior.sample()
+                else:
+                    # Grab the default parameter value from an instance
+                    # of this node.
+                    init_value = node_type(tf=torch.eye(4)).parameters
+                    if len(init_value) > 0:
+                        assert torch.all(torch.isfinite(param_prior.log_prob(init_value))), "Bad initial value / prior match in node type %s" % node_type
+                self.params_by_node_type[node_type.__name__] = ConstrainedParameter(
+                    init_value=init_value,
+                    constraint=param_prior.support
+                )
+            # Set up rule parameters.
+            rules = node_type.generate_rules()
+            rule_params = torch.nn.ModuleList()
+            for rule in rules:
+                # TODO(gizatt) This process is pretty ugly; moving stuff
+                # more into a direction of not having to regenerate rules a bunch
+                # of times would be cleaner.
+                xyz_param_prior_dict, rot_param_prior_dict = rule.get_parameter_prior()
+
+                if sample_params_from_prior:
+                    xyz_param_value_dict = {k: v.sample() for k, v in xyz_param_prior_dict.items()}
+                    rot_param_value_dict = {k: v.sample() for k, v in rot_param_prior_dict.items()}
+                else:
+                    # Grab the default parameter value from the instantiated rule.
+                    xyz_param_value_dict, rot_param_value_dict = rule.parameters
+                xyz_param_dict = torch.nn.ModuleDict(
+                    {k: ConstrainedParameter(
+                        init_value = xyz_param_value_dict[k],
+                        constraint = xyz_param_prior_dict[k].support
+                    ) for k in xyz_param_prior_dict.keys()}
+                )
+                rot_param_dict = torch.nn.ModuleDict(
+                    {k: ConstrainedParameter(
+                        init_value = rot_param_value_dict[k],
+                        constraint = rot_param_prior_dict[k].support
+                    ) for k in rot_param_prior_dict.keys()}
+                )
+                rule_params.append(torch.nn.ModuleList([xyz_param_dict, rot_param_dict]))
+            self.rule_params_by_node_type[node_type.__name__] = rule_params
+            
 
     def _collect_all_types_in_grammar(self):
         # Similar to supertree logic, but doesn't track supertree.
@@ -207,6 +239,7 @@ class SpatialSceneGrammar(torch.nn.Module):
         return all_types
 
     def _set_node_parameters(self, node, detach):
+        # Node params
         unconstrained_params = self.params_by_node_type[type(node).__name__]
         if unconstrained_params is not None:
             # Resolve to constrained value, and use that to set up node
@@ -216,6 +249,28 @@ class SpatialSceneGrammar(torch.nn.Module):
             if detach:
                 constrained_params = constrained_params.detach()
             node.parameters = constrained_params
+        # Rule params
+        unconstrained_params_by_rule = self.rule_params_by_node_type[type(node).__name__]
+        for xyz_and_rot_params, rule in zip(unconstrained_params_by_rule, node.rules):
+            # This rule has XYZ and Rotation params. Resolve them to constrained
+            # values; then detach if requested, before feeding them to the
+            # rule.
+            constrained_xyz_params, constrained_rot_params = xyz_and_rot_params
+            if detach:
+                unconstrained_xyz_params = {
+                    k: v().detach() for k, v in constrained_xyz_params.items()
+                }
+                unconstrained_rot_params  = {
+                    k: v().detach() for k, v in constrained_rot_params.items()
+                }
+            else:
+                unconstrained_xyz_params = {
+                    k: v() for k, v in constrained_xyz_params.items()
+                }
+                unconstrained_rot_params  = {
+                    k: v() for k, v in constrained_rot_params.items()
+                }
+            rule.parameters = (unconstrained_xyz_params, unconstrained_rot_params)
 
     def sample_tree(self, detach=False):
         # If detach is true, this tree will be detached from having

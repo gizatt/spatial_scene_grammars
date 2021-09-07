@@ -35,11 +35,6 @@ class NodeE(TerminalNode):
         super().__init__(observed=True, physics_geometry_info=None, tf=tf)
 
 class NodeD(IndependentSetNode):
-    GRule = ProductionRule(
-        child_type=NodeG,
-        xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
-        rotation_rule=UnconstrainedRotationRule()
-    )
     def __init__(self, tf):
         super().__init__(
             rule_probs=torch.tensor([0.5]),
@@ -49,14 +44,15 @@ class NodeD(IndependentSetNode):
         )
     @classmethod
     def generate_rules(cls):
-        return [NodeD.GRule]
+        return [
+            ProductionRule(
+                child_type=NodeG,
+                xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+                rotation_rule=UnconstrainedRotationRule()
+            )
+        ]
 
 class NodeC(GeometricSetNode):
-    FRule = ProductionRule(
-        child_type=NodeF,
-        xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
-        rotation_rule=UnconstrainedRotationRule()
-    )
     def __init__(self, tf):
         super().__init__(
             p=torch.tensor(0.2),
@@ -67,19 +63,15 @@ class NodeC(GeometricSetNode):
         )
     @classmethod
     def generate_rules(cls):
-        return [NodeC.FRule]
+        return [
+            ProductionRule(
+                child_type=NodeF,
+                xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+                rotation_rule=UnconstrainedRotationRule()
+            )
+        ]
 
 class NodeB(OrNode):
-    DRule = ProductionRule(
-        child_type=NodeD,
-        xyz_rule=AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
-        rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(axis=torch.tensor([0., 0., 1.]), lb=-1., ub=1.)
-    )
-    ERule = ProductionRule(
-        child_type=NodeE,
-        xyz_rule=AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
-        rotation_rule=UnconstrainedRotationRule()
-    )
     def __init__(self, tf):
         super().__init__(
             rule_probs=torch.tensor([0.75, 0.25]),
@@ -89,26 +81,38 @@ class NodeB(OrNode):
         )
     @classmethod
     def generate_rules(cls):
-        return [NodeB.DRule, NodeB.ERule]
-
+        return [
+            ProductionRule(
+                child_type=NodeD,
+                xyz_rule=AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+                rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(axis=torch.tensor([0., 0., 1.]), lb=-1., ub=1.)
+            ),
+            ProductionRule(
+                child_type=NodeE,
+                xyz_rule=AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+                rotation_rule=UnconstrainedRotationRule()
+            )
+        ]
 
 class NodeA(AndNode):
-    BRule = ProductionRule(
-        child_type=NodeB,
-        xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
-        rotation_rule=UnconstrainedRotationRule()
-    )
-    CRule = ProductionRule(
-        child_type=NodeC,
-        xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
-        rotation_rule=UnconstrainedRotationRule()
-    )
     def __init__(self, tf):
         super().__init__(
             observed=False, physics_geometry_info=None, tf=tf
         )
     @classmethod
     def generate_rules(cls):
-        return [NodeA.BRule, NodeA.CRule]
+        return [
+            ProductionRule(
+                child_type=NodeB,
+                xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+                rotation_rule=UnconstrainedRotationRule()
+            ),
+            ProductionRule(
+                child_type=NodeC,
+                xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+                rotation_rule=UnconstrainedRotationRule()
+            )
+        ]
+
 
 

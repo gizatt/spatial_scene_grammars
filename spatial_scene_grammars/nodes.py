@@ -50,7 +50,8 @@ class Node():
           for the node type.
 
     '''
-    def __init__(self, tf, observed, physics_geometry_info, do_sanity_checks=True):
+    def __init__(self, tf, observed, physics_geometry_info, do_sanity_checks=True,
+                 params_for_rules=None):
         # Public attributes
         self.name = node_name_store.get_name(self)
         self.tf = tf
@@ -60,7 +61,10 @@ class Node():
         # Non-public attributes
         self._do_sanity_checks = do_sanity_checks
         self._rule_k = None # Bookkeeping; which rule does this correspond to in a parent?
-        self._rules = self.generate_rules()
+        if params_for_rules is not None:
+            self._rules = self.generate_rules_with_params(params_for_rules)
+        else:
+            self._rules = self.generate_rules()
         assert all([isinstance(r, ProductionRule) for r in self._rules])
         super().__init__()
 
@@ -114,7 +118,7 @@ class Node():
         # rule set before it's instantiated, and that the rule set can't
         # depend on instantiation details or arguments.)
         raise NotImplementedError("Please implement generate_rules in subclass.")
-
+    
     @property
     def rule_k(self):
         return self._rule_k

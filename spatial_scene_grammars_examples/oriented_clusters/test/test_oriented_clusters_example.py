@@ -47,7 +47,7 @@ def test_parsing():
         root_node_tf = torch.eye(4)
     )
     torch.random.manual_seed(42)
-    observed_tree = grammar.sample_tree()
+    observed_tree = grammar.sample_tree(detach=True)
     observed_nodes = observed_tree.get_observed_nodes()
 
     inference_results = infer_mle_tree_with_mip(

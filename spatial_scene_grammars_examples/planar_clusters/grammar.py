@@ -54,32 +54,31 @@ class Drink(TerminalNode):
 class FoodWasteCluster(IndependentSetNode):
     # Might make either a plate or soda can,
     # the plate might make more stuff on it.
-    Stuff = [Plate, Drink]
-    Rules = [
-        ProductionRule(
-            child_type=stuff,
-            xyz_rule=AxisAlignedBBoxRule.from_bounds(
-                lb=torch.tensor([-0.2, -0.2, 0.0]),
-                ub=torch.tensor([0.2, 0.2, 0.0])
-            ),
-            rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(
-                axis=torch.tensor([0., 0., 1.]),
-                lb=-np.pi, ub=np.pi
-            )   
-        ) for stuff in Stuff
-    ]
-    Rule_Probs = torch.tensor([0.5, 0.8])
-
+    Default_Rule_Probs = torch.tensor([0.5, 0.8])
     def __init__(self, tf):
         super().__init__(
-            rule_probs=self.Rule_Probs,
+            rule_probs=self.Default_Rule_Probs,
             tf=tf,
             physics_geometry_info=None,
             observed=False
         )
     @classmethod
     def generate_rules(cls):
-        return cls.Rules
+        Stuff = [Plate, Drink]
+        Rules = [
+            ProductionRule(
+                child_type=stuff,
+                xyz_rule=AxisAlignedBBoxRule.from_bounds(
+                    lb=torch.tensor([-0.2, -0.2, 0.0]),
+                    ub=torch.tensor([0.2, 0.2, 0.0])
+                ),
+                rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(
+                    axis=torch.tensor([0., 0., 1.]),
+                    lb=-np.pi, ub=np.pi
+                )   
+            ) for stuff in Stuff
+        ]
+        return Rules
 
 ## Paper stack
 class Paper(TerminalNode):
@@ -99,18 +98,6 @@ class Paper(TerminalNode):
 
 class PaperCluster(GeometricSetNode):
     # Make a stack of papers
-    PaperRule = ProductionRule(
-        child_type=Paper,
-        xyz_rule=AxisAlignedBBoxRule.from_bounds(
-            lb=torch.tensor([-0.05, -0.05, 0.0]),
-            ub=torch.tensor([0.05, 0.05, 0.0])
-        ),
-        rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(
-            axis=torch.tensor([0., 0., 1.]),
-            lb=-np.pi/8., ub=np.pi/8.
-        )   
-    )
-
     def __init__(self, tf):
         super().__init__(
             p=0.3,
@@ -119,10 +106,19 @@ class PaperCluster(GeometricSetNode):
             physics_geometry_info=None,
             observed=False
         )
-
     @classmethod
     def generate_rules(cls):
-        return [cls.PaperRule]
+        return [ProductionRule(
+            child_type=Paper,
+            xyz_rule=AxisAlignedBBoxRule.from_bounds(
+                lb=torch.tensor([-0.05, -0.05, 0.0]),
+                ub=torch.tensor([0.05, 0.05, 0.0])
+            ),
+            rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(
+                axis=torch.tensor([0., 0., 1.]),
+                lb=-np.pi/8., ub=np.pi/8.
+            )   
+        )]
 
 ## Pencils
 class Pencil(TerminalNode):
@@ -142,18 +138,6 @@ class Pencil(TerminalNode):
 
 class PencilCluster(GeometricSetNode):
     # Make a geometric cluster of roughly-aligned pencils
-    PencilRule = ProductionRule(
-        child_type=Pencil,
-        xyz_rule=AxisAlignedBBoxRule.from_bounds(
-            lb=torch.tensor([-0.05, -0.05, 0.0]),
-            ub=torch.tensor([0.05, 0.05, 0.0])
-        ),
-        rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(
-            axis=torch.tensor([0., 0., 1.]),
-            lb=-np.pi/8., ub=np.pi/8.
-        )   
-    )
-
     def __init__(self, tf):
         super().__init__(
             p=0.5,
@@ -164,29 +148,25 @@ class PencilCluster(GeometricSetNode):
         )
     @classmethod
     def generate_rules(cls):
-        return [cls.PencilRule]
+        return [ProductionRule(
+            child_type=Pencil,
+            xyz_rule=AxisAlignedBBoxRule.from_bounds(
+                lb=torch.tensor([-0.05, -0.05, 0.0]),
+                ub=torch.tensor([0.05, 0.05, 0.0])
+            ),
+            rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(
+                axis=torch.tensor([0., 0., 1.]),
+                lb=-np.pi/8., ub=np.pi/8.
+            )   
+        )]
 
 ## Desk and abstract cluster
 class ObjectCluster(OrNode):
     # Specialize into a type of cluster
-    ClusterTypes = [FoodWasteCluster, PaperCluster, PencilCluster]
-    ClusterRules = [
-        ProductionRule(
-            child_type=cluster_type,
-            xyz_rule=AxisAlignedBBoxRule.from_bounds(
-                lb=torch.zeros(3),
-                ub=torch.zeros(3)
-            ),
-            rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(
-                axis=torch.tensor([0., 0., 1.]),
-                lb=0., ub=0.
-            )
-        ) for cluster_type in ClusterTypes
-    ]
-    ClusterTypeWeights = torch.tensor([1.0, 1.0, 1.0])
+    DefaultClusterTypeWeights = torch.tensor([1.0, 1.0, 1.0])
     def __init__(self, tf):
         super().__init__(
-            rule_probs=self.ClusterTypeWeights,
+            rule_probs=self.DefaultClusterTypeWeights,
             tf=tf,
             physics_geometry_info=None,
             observed=False
@@ -194,7 +174,21 @@ class ObjectCluster(OrNode):
 
     @classmethod
     def generate_rules(cls):
-        return cls.ClusterRules
+        ClusterTypes = [FoodWasteCluster, PaperCluster, PencilCluster]
+        ClusterRules = [
+            ProductionRule(
+                child_type=cluster_type,
+                xyz_rule=AxisAlignedBBoxRule.from_bounds(
+                    lb=torch.zeros(3),
+                    ub=torch.zeros(3)
+                ),
+                rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(
+                    axis=torch.tensor([0., 0., 1.]),
+                    lb=0., ub=0.
+                )
+            ) for cluster_type in ClusterTypes
+        ]
+        return ClusterRules
 
 class Desk(GeometricSetNode):
     # Make geometric # of object clusters

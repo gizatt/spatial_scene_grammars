@@ -80,8 +80,8 @@ def test_UnconstrainedRotationRule(set_seed):
     parent = make_dummy_node()
 
     params = rule.parameters
-    assert params is None
-    assert rule.get_parameter_prior() is None
+    assert params == {}
+    assert rule.get_parameter_prior() == {}
 
     R = rule.sample_rotation(parent)
     assert isinstance(R, torch.Tensor)
@@ -158,6 +158,15 @@ def test_ProductionRule(set_seed, xyz_rule, rotation_rule):
     parent = make_dummy_node()
     child = rule.sample_child(parent)
     rule.score_child(parent, child)
+
+    priors = rule.get_parameter_prior()
+    assert isinstance(priors, tuple) and len(priors) == 2
+    params = rule.parameters
+    assert isinstance(params, tuple) and len(params) == 2
+    for prior_set, param_set in zip(priors, params):
+        for k in prior_set.keys():
+            assert all(torch.isfinite(prior_set[k].log_prob(param_set[k])))
+    rule.parameters = params
 
     trace = pyro.poutine.trace(rule.sample_child).get_trace(parent)
     expected = trace.log_prob_sum()

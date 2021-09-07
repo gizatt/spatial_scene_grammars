@@ -66,7 +66,7 @@ class UniformWithEqualityHandling(pyro.distributions.Uniform):
             # values that are within 1E-17 of the bounds
             #self._validate_sample(value)
             logging.warning("validate_sample disabled in UniformWithEqualityHandling")
-        
+        value = value.reshape(self.delta_mask.shape)
         # Handle uniform part
         in_bounds = torch.logical_and(
             value >= self.low,
