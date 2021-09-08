@@ -97,6 +97,18 @@ class ProductionRule():
         self.xyz_rule.parameters = parameters[0]
         self.rotation_rule.parameters = parameters[1]
 
+    def get_site_values(self, parent, child):
+        # Given a parent and child, return a dictionary
+        # of the pyro sample sites and sampled values
+        # that would lead to that parent child pair.
+        # (Used for reconstructing traces for conditioning models
+        # to match optimization-derived scene trees, and used
+        # for scoring.
+        return {
+            **self.xyz_rule.get_site_values(parent, child),
+            **self.rotation_rule.get_site_values(parent, child)
+        }
+        raise NotImplementedError()
 
 ## XYZ Production rules
 class XyzProductionRule():
@@ -109,6 +121,8 @@ class XyzProductionRule():
     def sample_xyz(self, parent):
         raise NotImplementedError()
     def score_child(self, parent, child):
+        raise NotImplementedError()
+    def get_site_values(self, parent, child):
         raise NotImplementedError()
 
     @classmethod
@@ -143,6 +157,8 @@ class SamePositionRule(XyzProductionRule):
         return parent.translation
     def score_child(self, parent, child):
         return torch.tensor(0.)
+    def get_site_values(self, parent, child):
+        return {}
 
     @classmethod
     def get_parameter_prior(cls):
@@ -174,6 +190,8 @@ class WorldBBoxRule(XyzProductionRule):
         return pyro.sample("WorldBBoxRule_xyz", self.xyz_dist)
     def score_child(self, parent, child):
         return self.xyz_dist.log_prob(child.translation).sum()
+    def get_site_values(self, parent, child):
+        return {"WorldBBoxRule_xyz": child.translation}
 
     @classmethod
     def get_parameter_prior(cls):
@@ -218,6 +236,8 @@ class AxisAlignedBBoxRule(WorldBBoxRule):
     def score_child(self, parent, child):
         xyz_offset = child.translation - parent.translation
         return self.xyz_dist.log_prob(xyz_offset).sum()
+    def get_site_values(self, parent, child):
+        return {"AxisAlignedBBoxRule_xyz": child.translation - parent.translation}
 
 
 class AxisAlignedGaussianOffsetRule(XyzProductionRule):
@@ -232,6 +252,8 @@ class AxisAlignedGaussianOffsetRule(XyzProductionRule):
         return parent.translation + pyro.sample("AxisAlignedGaussianOffsetRule_xyz", self.xyz_dist)
     def score_child(self, parent, child):
         return self.xyz_dist.log_prob(child.translation - parent.translation).sum()
+    def get_site_values(self, parent, child):
+        return {"AxisAlignedGaussianOffsetRule_xyz": child.translation - parent.translation}
 
     @classmethod
     def get_parameter_prior(cls):
@@ -263,6 +285,8 @@ class RotationProductionRule():
     def sample_rotation(self, parent):
         raise NotImplementedError()
     def score_child(self, parent, child):
+        raise NotImplementedError()
+    def get_site_values(self, parent, child):
         raise NotImplementedError()
 
     @classmethod
@@ -298,6 +322,8 @@ class SameRotationRule(RotationProductionRule):
         return parent.rotation
     def score_child(self, parent, child):
         return torch.tensor(0.)
+    def get_site_values(self, parent, child):
+        return {}
 
     @classmethod
     def get_parameter_prior(cls):
@@ -322,7 +348,9 @@ class UnconstrainedRotationRule(RotationProductionRule):
         # Sample random unit quaternion via
         # http://planning.cs.uiuc.edu/node198.html (referencing
         # Honkai's implementation in Drake), and convert to rotation
-        # matrix.
+        # matrix, with one modification to ensure the
+        # generated quaternions have known sign (the 3rd element
+        # is always positive).
         # TODO(gizatt) I've chosen the uniform bounds so that
         # the density of the uniform at any sample point matches the
         # expected density for sampling from SO(3); then I rescale
@@ -331,15 +359,18 @@ class UnconstrainedRotationRule(RotationProductionRule):
         # so I'm effectively counteracting the rescaling this whole
         # transformation is applying?
         # Expected density = 1 / pi^2
-        # Actual density 1/(max)^3
-        # -> Ub should be = pi^(2/3)
-        ub = torch.ones(3) * np.pi**(2./3.)
-        u = pyro.sample("UnconstrainedRotationRule_u", dist.Uniform(torch.zeros(3), ub))/ub
+        # Actual density 1 / (pi * pi * .5 pi) = 2 / pi^3
+        # -> Normalize should be = pi^(2/3) / 2
+        desired_density = 1 / np.pi ** 2.
+        true_ub = torch.tensor([1., 1., 0.5])
+        self.scaling = torch.tensor([1., 1., 2.]) * np.pi ** (2. / 3)
+
+        u = pyro.sample("UnconstrainedRotationRule_u", dist.Uniform(torch.zeros(3), true_ub * self.scaling))/self.scaling
         random_quat = torch.tensor([
-            torch.sqrt(1. - u[0]) * torch.sin(2. * np.pi * u[1]),
-            torch.sqrt(1. - u[0]) * torch.cos(2. * np.pi * u[1]),
-            torch.sqrt(u[0]) * torch.sin(2. * np.pi * u[2]),
-            torch.sqrt(u[0]) * torch.cos(2. * np.pi * u[2])
+            torch.sqrt(1. - u[0]) * torch.sin(2. * np.pi * u[1]), # [0, 2pi -> -1 -> 1]
+            torch.sqrt(1. - u[0]) * torch.cos(2. * np.pi * u[1]), # [0, 2pi -> -1 -> 1]
+            torch.sqrt(u[0]) * torch.sin(2. * np.pi * u[2]), # [0, pi -> 0 -> 1]
+            torch.sqrt(u[0]) * torch.cos(2. * np.pi * u[2])  # [0, pi -> -1, 1]
         ])
         assert torch.isclose(random_quat.square().sum(), torch.ones(1))
         R = quaternion_to_matrix(random_quat.unsqueeze(0))[0, ...]
@@ -355,6 +386,26 @@ class UnconstrainedRotationRule(RotationProductionRule):
         # Agrees with https://marc-b-reynolds.github.io/quaternions/2017/11/10/AveRandomRot.html
         # TODO(gizatt) But probably doesn't agree with forward sample?
         return torch.log(torch.ones(1) / np.pi**2)
+    def get_site_values(self, parent, child):
+        # Reverse the equations linked above to recover u's.
+        quaternion = matrix_to_quaternion(child.rotation)
+        if quaternion[2] < 0:
+            quaternion = -quaternion
+        u1 = quaternion[2]**2 + quaternion[3]**2
+        # Sanity-check that my inversion is reasonable
+        assert torch.isclose(quaternion[0]**2. + quaternion[1]**2, 1. - u1)
+        u3_1 = torch.atan2(quaternion[2], quaternion[3])
+        u2_1 = torch.atan2(quaternion[0], quaternion[1])
+
+        assert u3_1 >= 0 and u3_1 <= np.pi, (quaternion, u3_1)
+        
+        if u2_1 < 0:
+            u2_1 = u2_1 + 2. * np.pi
+        
+        u2_1 /= (2. * np.pi)
+        u3_1 /= (2. * np.pi)
+
+        return {"UnconstrainedRotationRule_u": torch.stack([u1, u2_1, u3_1]) * self.scaling}
 
     @classmethod
     def get_parameter_prior(cls):
@@ -439,6 +490,11 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
             angle -= 2.*np.pi
         return self._angle_dist.log_prob(angle)
 
+    def get_site_values(self, parent, child):
+        # TODO: Not exactly reverse-engineering, but hopefully close.
+        theta, _ = recover_relative_angle_axis(parent, child, target_axis=self.axis)
+        return {"UniformBoundedRevoluteJointRule_theta": theta}
+
     @classmethod
     def get_parameter_prior(cls):
         # Default prior is a unit Normal for center,
@@ -499,6 +555,11 @@ class GaussianChordOffsetRule(RotationProductionRule):
         angle, axis = recover_relative_angle_axis(parent, child, target_axis=self.axis, allowed_axis_diff=allowed_axis_diff)
         # Fisher distribution should be able to handle arbitrary +/-2pis.
         return self._angle_dist.log_prob(angle)
+
+    def get_site_values(self, parent, child):
+        # TODO: Not exactly reverse-engineering, but hopefully close.
+        theta, _ = recover_relative_angle_axis(parent, child, target_axis=self.axis)
+        return {"GaussianChordOffsetRule_theta": theta}
 
     @classmethod
     def get_parameter_prior(cls):
