@@ -313,7 +313,7 @@ def do_fixed_structure_hmc_with_constraint_penalties(
     mcmc = MCMC(
         kernel,
         num_samples=num_samples,
-        warmup_steps=min(int(num_samples/2), 10),
+        warmup_steps=min(int(num_samples/2), 50),
         num_chains=1,
         disable_progbar=(verbose==-1)
     )

@@ -1,3 +1,5 @@
 __pycache__
 .coverage
 *.png
+*.dat
+*.ipynb_checkpoints

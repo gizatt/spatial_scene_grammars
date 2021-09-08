@@ -242,7 +242,7 @@ def get_posterior_tree_samples_from_observation(
     if hmc_strategy=="langevin":
         sampled_trees = do_fixed_structure_hmc_with_constraint_penalties(
             grammar, refined_tree, num_samples=num_samples, subsample_step=subsample_step, verbose=verbose,
-            kernel_type="HMC", num_steps=1, step_size=1E-3, adapt_step_size=True
+            kernel_type="HMC", num_steps=1, step_size=1.0, adapt_step_size=False, target_accept_prob=0.75
         )
     # NUTS, defaults except limiting tree depth, to save on calls to
     # the slow model. Much slower, but should theoretically get much more
@@ -250,7 +250,7 @@ def get_posterior_tree_samples_from_observation(
     elif hmc_strategy=="NUTS":
         sampled_trees = do_fixed_structure_hmc_with_constraint_penalties(
             grammar, refined_tree, num_samples=num_samples, subsample_step=subsample_step, verbose=verbose,
-            kernel_type="NUTS", max_tree_depth=4
+            kernel_type="NUTS", max_tree_depth=5, target_accept_prob=0.75
         )
     else:
         raise ValueError(hmc_strategy)
@@ -287,19 +287,18 @@ def _cleanup_tree_for_pickling(tree):
             _cleanup_object(rule)
     return tree
 
-def _get_samples_from_observation(arg_tuple):
-    grammar, observed_nodes, vis = arg_tuple
+def _get_samples_from_observation(arg_dict):
     try:
         posterior_samples = get_posterior_tree_samples_from_observation(
-            grammar, observed_nodes, verbose=1, hmc_strategy="NUTS",
-            num_samples=100, subsample_step=5, vis=vis
+            **arg_dict
         )
     except Exception as e:
         logging.warning("Unexpected error: ", e)
         return None
     return [_cleanup_tree_for_pickling(tree) for tree in posterior_samples]
 
-def collect_posterior_sample_sets(grammar, observed_node_sets, num_workers=1, tqdm=None, vis=None):
+def collect_posterior_sample_sets(grammar, observed_node_sets, num_workers=1, tqdm=None, vis=None,
+                                  verbose=1, hmc_strategy="NUTS", num_samples=100, subsample_step=5, **kwargs):
     # Given a grammar and a set of observed node sets, retrieves a list of
     # lists of scene trees sampled (approximately) from the posterior of
     # trees given that observed set.
@@ -313,20 +312,32 @@ def collect_posterior_sample_sets(grammar, observed_node_sets, num_workers=1, tq
     if num_workers > 1:
         logging.warning("Multiprocessing takes tons of FDs: make sure ulimit is large (~100k).")
 
+    def make_arg_dict(k):
+        return {
+            "grammar": grammar,
+            "observed_nodes": observed_node_sets[k],
+            "verbose": verbose,
+            "hmc_strategy": hmc_strategy,
+            "num_samples": num_samples,
+            "subsample_step": subsample_step,
+            "vis": vis,
+            **kwargs
+        }
+    
     if num_workers == 1:
         # Single-threaded case.
         if tqdm is None:
-            iterator = observed_node_sets
+            iterator = range(len(observed_node_sets))
         else:
-            iterator = tqdm(observed_node_sets, desc='Collecting posterior samples')
-        for observed_nodes in iterator:
-            posterior_samples = _get_samples_from_observation((grammar, observed_nodes, vis))
+            iterator = tqdm(range(len(observed_node_sets)), desc='Collecting posterior samples')
+        for k in iterator:
+            posterior_samples = _get_samples_from_observation(make_arg_dict(k))
             if posterior_samples is not None:
                 posterior_sample_sets.append(posterior_samples)
     else:
         # Multi-processing case.
         pool = mp.Pool(min(num_workers, mp.cpu_count()))
-        args = [ (grammar, observed_nodes, None) for observed_nodes in observed_node_sets ]
+        args = [ make_arg_dict(k) for k in range(len(observed_node_sets)) ]
         imap = pool.imap(func=_get_samples_from_observation, iterable=args)
         if tqdm is not None:
             imap = tqdm(imap, total=len(args))
