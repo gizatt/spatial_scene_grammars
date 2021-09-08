@@ -280,9 +280,14 @@ def do_fixed_structure_hmc_with_constraint_penalties(
                         obs=inner_product
                     )
 
-
-    initial_values = {key: site["value"].detach() for key, site in scene_tree.trace.nodes.items()
-                      if site["type"] == "sample" and not is_discrete_distribution(site["fn"])}
+    # Ugh, I shouldn't need to manually reproduce the site names here.
+    # Can I rearrange how traces get assembled to extract these?
+    initial_values = {}
+    for parent in original_tree.nodes:
+        children, rules = original_tree.get_children_and_rules(parent)
+        for child, rule in zip(children, rules):
+            for key, value in rule.get_site_values(parent, child).items():
+                initial_values["%s/%s/%s" % (parent.name, child.name, key)] = value
     trace = pyro.poutine.trace(model).get_trace()
     for key in initial_values.keys():
         if key not in trace.nodes.keys():

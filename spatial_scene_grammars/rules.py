@@ -271,7 +271,7 @@ class AxisAlignedGaussianOffsetRule(XyzProductionRule):
     def parameters(self, parameters):
         self.mean = parameters["mean"]
         self.variance = parameters["variance"]
-        self.xyz_dist = dist.Normal(self.mean, self.variance)
+        self.xyz_dist = dist.Normal(self.mean, torch.sqrt(self.variance))
 
 
 ## Rotation production rules

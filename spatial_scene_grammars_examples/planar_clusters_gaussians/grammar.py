@@ -76,7 +76,7 @@ class FoodWasteCluster(IndependentSetNode):
                 ),
                 rotation_rule=GaussianChordOffsetRule(
                     axis=torch.tensor([0., 0., 1.]),
-                    loc=0., concentration=0.1
+                    loc=0., concentration=0.1 # Basically uniform
                 ) 
             ) for stuff in Stuff
         ]
@@ -118,7 +118,7 @@ class PaperCluster(GeometricSetNode):
             ),
             rotation_rule=GaussianChordOffsetRule(
                 axis=torch.tensor([0., 0., 1.]),
-                loc=0., concentration=0.1
+                loc=0., concentration=100. # Roughly aligned
             )
         )]
 
@@ -158,7 +158,7 @@ class PencilCluster(GeometricSetNode):
             ),
             rotation_rule=GaussianChordOffsetRule(
                 axis=torch.tensor([0., 0., 1.]),
-                loc=0., concentration=0.1
+                loc=0., concentration=1000. # Very aligned
             )
         )]
 
@@ -213,7 +213,7 @@ class Desk(GeometricSetNode):
             rotation_rule=GaussianChordOffsetRule(
                 axis=torch.tensor([0., 0., 1.]),
                 loc=0.,
-                concentration=1.0
+                concentration=0.1 # This is basically uniform
             )
         )
         return [rule]
