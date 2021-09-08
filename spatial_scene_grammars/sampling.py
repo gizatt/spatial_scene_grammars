@@ -310,10 +310,10 @@ def do_fixed_structure_hmc_with_constraint_penalties(
         num_samples=num_samples,
         warmup_steps=min(int(num_samples/2), 10),
         num_chains=1,
-        disable_progbar=(verbose==0)
+        disable_progbar=(verbose==-1)
     )
     mcmc.run()
-    if verbose == 1:
+    if verbose > 1:
         mcmc.summary(prob=0.5)
 
     samples = mcmc.get_samples()

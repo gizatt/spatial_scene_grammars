@@ -50,7 +50,7 @@ class ConstrainedParameter(torch.nn.Module):
         if self.unconstrained_value is None:
             self.unconstrained_value = torch.nn.Parameter(unconstrained_value)
         else:
-            assert unconstrained_value.shape == self.unconstrained_value.shape
+            unconstrained_value = unconstrained_value.reshape(self.unconstrained_value.shape)
             self.unconstrained_value.data = unconstrained_value
     def set(self, constrained_value):
         with torch.no_grad():
