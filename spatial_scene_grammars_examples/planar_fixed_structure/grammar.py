@@ -21,7 +21,7 @@ from their parent in xyz, but have identical rotation.
 '''
 
 # Deviation from planar epsilon
-eps = 1E-2
+eps = 1E-3
 
 ## Food waste
 class VisibleNode(TerminalNode):
