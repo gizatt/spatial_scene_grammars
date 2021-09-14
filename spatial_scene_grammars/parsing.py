@@ -30,14 +30,17 @@ import logging
 import pydrake
 from pydrake.all import (
     AngleAxis,
+    AngleAxis_,
     ClpSolver,
     CommonSolverOption,
+    Expression,
     MathematicalProgram,
     MakeSolver,
     MixedIntegerBranchAndBound,
     RigidTransform,
     RollPitchYaw,
     RotationMatrix,
+    RotationMatrix_,
     GurobiSolver,
     SnoptSolver,
     OsqpSolver,
@@ -75,6 +78,13 @@ def encode_WorldBBoxRule_constraint(rule, prog, parent, child):
         prog.AddLinearConstraint(child.t_optim[k] >= lb_world[k])
         prog.AddLinearConstraint(child.t_optim[k] <= ub_world[k])
 
+def encode_WorldBBoxRule_cost(rule, prog, parent, child):
+    lb_world = rule.lb_optim
+    ub_world = rule.ub_optim
+    # log prob = 1 / width on each axis
+    total_ll = -sum(ub_world - lb_world)
+    prog.AddLinearCost(-total_ll)
+
 def encode_AxisAlignedBBoxRule_constraint(rule, prog, parent, child):
     # Child translation should be within relative translation bounds
     # parent, but added in world frame (with no rotations).
@@ -85,10 +95,18 @@ def encode_AxisAlignedBBoxRule_constraint(rule, prog, parent, child):
         prog.AddLinearConstraint(child.t_optim[k] >= lb_world[k])
         prog.AddLinearConstraint(child.t_optim[k] <= ub_world[k])
 
+def encode_AxisAlignedBBoxRule_cost(rule, prog, parent, child):
+    lb_world = rule.lb_optim
+    ub_world = rule.ub_optim
+    # log prob = 1 / width on each axis
+    total_ll = -sum(ub_world - lb_world)
+    prog.AddLinearCost(-total_ll)
+
+
 def encode_AxisAlignedGaussianOffsetRule_cost(rule, prog, parent, child):
     # Get some distribution info
     mean = rule.mean_optim
-    covar = rule.variance_optim
+    covar = np.diag(rule.variance_optim)
     inverse_covariance = np.linalg.inv(covar)
     covariance_det = np.linalg.det(covar)
     log_normalizer = -np.log(np.sqrt( (2. * np.pi) ** 3 * covariance_det))
@@ -105,8 +123,8 @@ xyz_rule_to_encode_constraints_map = {
 }
 xyz_rule_to_encode_costs_map = {
     SamePositionRule: encode_pass,
-    WorldBBoxRule: encode_pass,
-    AxisAlignedBBoxRule: encode_pass,
+    WorldBBoxRule: encode_WorldBBoxRule_cost,
+    AxisAlignedBBoxRule: encode_AxisAlignedBBoxRule_cost,
     AxisAlignedGaussianOffsetRule: encode_AxisAlignedGaussianOffsetRule_cost
 }
 
@@ -144,7 +162,7 @@ def encode_UniformBoundedRevoluteJointRule_constraint(rule, prog, parent, child)
                     prog.AddLinearEqualityConstraint(child.R_optim[i, j] == target_rotation[i, j])
             return True
     else:
-        assert isinstance(min_angle, Variable) and isinstance(max_angle, Variable)
+        assert isinstance(min_angle, Expression) and isinstance(max_angle, Expression), (min_angle, max_angle)
         prog.AddLinearConstraint(min_angle <= max_angle)
 
     # Child rotation should be within a relative rotation of the parent around
@@ -190,7 +208,8 @@ def encode_UniformBoundedRevoluteJointRule_constraint(rule, prog, parent, child)
     # where alpha = (b-a) / 2
     alpha = (max_angle - min_angle) / 2.
     offset_angle = (max_angle + min_angle) / 2.
-    R_offset = RotationMatrix(AngleAxis(offset_angle, axis)).matrix()
+    R_offset = RotationMatrix_[type(offset_angle)](
+        AngleAxis_[type(offset_angle)](offset_angle, axis)).matrix()
     # |R_WC*R_CJc*v - R_WP * R_PJp * R(k,(a+b)/2)*v | <= 2*sin (α / 2) in
     # global ik code; for us, I'm assuming the joint frames are aligned with
     # the body frames, so R_CJc and R_PJp are identitiy.
@@ -279,24 +298,66 @@ rotation_rule_to_encode_costs_map = {
 }
 
 
-# Return type of infer_mle_tree_with_mip
-TreeInferenceResults = namedtuple("TreeInferenceResults", ["solver", "optim_result", "super_tree", "observed_nodes"])
-# TODO(gizatt) Remote max_scene_extent_in_any_dir and calculate from grammar.
-def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, solver="gurobi", verbose=False,
-                            num_intervals_per_half_axis=2, max_scene_extent_in_any_dir=10.):
-    ''' Given a grammar and an observed node set, find the MLE tree induced
-    by that grammar (up to a maximum recursion depth) that reproduces the
-    observed node set, or report that it's infeasible. '''
+def prepare_grammar_for_mip_parsing(prog, grammar, optimize_parameters=False, inequality_eps=1E-6):
+    # Populates grammar.rule_params_by_node_type_optim, which has parallel
+    # structure to grammar.rule_params_by_node_type, which with appropriately
+    # constrained decision variables if optimize_parameters is True, or
+    # placeholder numpy values of the current parameter setting otherwise.
 
-    start_time = time.time()
-    if verbose:
-        print("Starting setup.")
+    def _make_constrained_param(param, name):
+        assert isinstance(param, ConstrainedParameter)
+        val = param().detach().cpu().numpy()
+        if optimize_parameters:
+            new_vars = prog.NewContinuousVariables(*val.shape, name)
+            if isinstance(param.constraint, constraints._Real):
+                # No constraint necessary
+                pass
+            elif isinstance(param.constraint, constraints._Interval):
+                prog.AddBoundingBoxConstraint(
+                    param.constraint.lower_bound.detach().cpu().numpy(),
+                    param.constraint.upper_bound.detach().cpu().numpy(),
+                    new_vars
+                )
+            elif isinstance(param.constraint, constraints._Positive):
+                for var in new_vars:
+                    prog.AddLinearConstraint(prog >= inequality_eps)
+            else:
+                raise NotImplementedError("Constraint type %s" % param.constraint)
+            return new_vars
+        else:
+            return val
 
+
+    grammar.rule_params_by_node_type_optim = {}
+    for node_type in grammar.all_types:
+        param_dicts_by_rule = grammar.rule_params_by_node_type[node_type.__name__]
+        grammar.rule_params_by_node_type_optim[node_type.__name__] = []
+        rules = node_type.generate_rules()
+        for k, (rule, (xyz_params, rot_params)) in enumerate(zip(rules, param_dicts_by_rule)):
+            prefix = "%s:%s(%d):" % (node_type.__name__, type(rule).__name__, k)
+            xyz_var_dict = {}
+            for key, param in xyz_params.items():
+                xyz_var_dict[key] = _make_constrained_param(param, name=prefix+key)
+            rot_var_dict = {}
+            for key, param in rot_params.items():
+                rot_var_dict[key] = _make_constrained_param(param, name=prefix+key)
+            grammar.rule_params_by_node_type_optim[node_type.__name__].append(
+                [xyz_var_dict, rot_var_dict]
+            )
+    return grammar
+
+
+def add_mle_tree_parsing_to_prog(
+        prog, grammar, observed_nodes, max_recursion_depth=10,
+        num_intervals_per_half_axis=2, max_scene_extent_in_any_dir=10.,
+        verbose=False):
+    # The grammar should be pre-processed by `prepare_grammar_for_mip_parsing`,
+    # which creates decision variables or placeholders for the grammar parameters,
+    # which we access from here.
+    
     super_tree = grammar.make_super_tree(max_recursion_depth=max_recursion_depth, detach=True)
     # Copy observed node set -- we'll be annotating the nodes with decision variables.
     observed_nodes = deepcopy(observed_nodes)
-
-    prog = MathematicalProgram()
 
     # Every node gets a binary variable to indicate
     # whether it's active or node. This is equivalent to a
@@ -323,16 +384,18 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
         # many R's are directly constrained and don't actually need
         # this (very expensive to create) constraint. So we delay
         # setup until we know the rotation is unconstrained.
-        # For rules, create placeholders for the rule parameters that are expected
-        # by our rule encoders.
-        for rule in node.rules:
+        # For rules, grab the appropriate decision variables (or placeholders) from the
+        # grammar that are expected by the rule encoders.
+
+        param_vars_by_rule = grammar.rule_params_by_node_type_optim[node.__class__.__name__]
+        for rule, (xyz_param_vars, rot_param_vars) in zip(node.rules, param_vars_by_rule):
             xyz_rule = rule.xyz_rule
             if type(xyz_rule) == WorldBBoxRule or type(xyz_rule) == AxisAlignedBBoxRule:
-                xyz_rule.lb_optim = xyz_rule.lb.detach().cpu().numpy()
-                xyz_rule.ub_optim = xyz_rule.ub.detach().cpu().numpy()
+                xyz_rule.lb_optim = xyz_param_vars["center"] - xyz_param_vars["width"]/2.
+                xyz_rule.ub_optim = xyz_param_vars["center"] + xyz_param_vars["width"]/2.
             elif type(xyz_rule) == AxisAlignedGaussianOffsetRule:
-                xyz_rule.mean_optim = xyz_rule.mean.detach().cpu().numpy()
-                xyz_rule.variance_optim = np.diag(xyz_rule.variance.detach().cpu().numpy())
+                xyz_rule.mean_optim = xyz_param_vars["mean"]
+                xyz_rule.variance_optim = xyz_param_vars["variance"]
             elif type(xyz_rule) == SamePositionRule:
                 pass
             else:
@@ -341,11 +404,12 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
             if type(rot_rule) == UnconstrainedRotationRule or type(rot_rule) == SameRotationRule:
                 pass
             elif type(rot_rule) == UniformBoundedRevoluteJointRule:
-                rot_rule.lb_optim = rot_rule.lb.detach().item()
-                rot_rule.ub_optim = rot_rule.ub.detach().item()
+                rot_rule.lb_optim = (rot_param_vars["center"] - rot_param_vars["width"]/2.)[0]
+                rot_rule.ub_optim = (rot_param_vars["center"] + rot_param_vars["width"]/2.)[0]
             elif type(rot_rule) == GaussianChordOffsetRule:
-                rot_rule.loc_optim = rot_rule.loc.detach().item()
-                rot_rule.concentration_optim = rot_rule.concentration.detach().item()
+                print(rot_param_vars)
+                rot_rule.loc_optim = rot_param_vars["loc"]
+                rot_rule.concentration_optim = rot_param_vars["concentration"][0]
             else:
                 raise NotImplementedError(type(rot_rule))
         
@@ -535,7 +599,29 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
             xyz_rule_to_encode_costs_map[type(xyz_rule)](xyz_rule, prog, parent_node, child_node)
             assert type(rotation_rule) in rotation_rule_to_encode_costs_map.keys(), type(rotation_rule)
             rotation_rule_to_encode_costs_map[type(rotation_rule)](rotation_rule, prog, parent_node, child_node)
+    return super_tree, observed_nodes
 
+# Return type of infer_mle_tree_with_mip
+TreeInferenceResults = namedtuple("TreeInferenceResults", ["solver", "optim_result", "super_tree", "observed_nodes"])
+# TODO(gizatt) Remote max_scene_extent_in_any_dir and calculate from grammar.
+def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, solver="gurobi", verbose=False,
+                            num_intervals_per_half_axis=2, max_scene_extent_in_any_dir=10.):
+    ''' Given a grammar and an observed node set, find the MLE tree induced
+    by that grammar (up to a maximum recursion depth) that reproduces the
+    observed node set, or report that it's infeasible. '''
+    start_time = time.time()
+    if verbose:
+        print("Starting setup.")
+
+    prog = MathematicalProgram()
+
+    grammar = prepare_grammar_for_mip_parsing(prog, grammar, optimize_parameters=False)
+    super_tree, observed_nodes = add_mle_tree_parsing_to_prog(
+        prog, grammar, observed_nodes, max_recursion_depth=max_recursion_depth,
+        verbose=verbose, num_intervals_per_half_axis=num_intervals_per_half_axis,
+        max_scene_extent_in_any_dir=max_scene_extent_in_any_dir
+    )
+    
     setup_time = time.time()
     if verbose:
         print("Setup time: ", setup_time - start_time)
