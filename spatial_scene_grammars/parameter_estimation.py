@@ -230,7 +230,7 @@ def get_posterior_tree_samples_from_observation(
         draw_scene_tree_structure_meshcat(mip_optimized_tree, zmq_url=vis.window.zmq_url, prefix="mip_optimized")
                                       
     # Use NLP to refine that to a MAP estimate.
-    refinement_results = optimize_scene_tree_with_nlp(mip_optimized_tree, verbose=verbose>1)
+    refinement_results = optimize_scene_tree_with_nlp(grammar, mip_optimized_tree, verbose=verbose>1)
     refined_tree = refinement_results.refined_tree
 
     if vis is not None:

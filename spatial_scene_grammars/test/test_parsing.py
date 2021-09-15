@@ -64,7 +64,7 @@ def test_parsing_simple(set_seed):
     assert_explains_observeds(tree, mip_optimized_tree), "MIP parsing failed."
     
     start_time = time.time()
-    refinement_results = optimize_scene_tree_with_nlp(mip_optimized_tree, verbose=True)
+    refinement_results = optimize_scene_tree_with_nlp(grammar, mip_optimized_tree, verbose=True)
     elapsed = time.time() - start_time
     print("Refinement took %f secs." % elapsed)
     assert refinement_results.optim_result.is_success()
@@ -98,7 +98,7 @@ def test_parsing_complex(set_seed):
     assert_explains_observeds(tree, mip_optimized_tree)
 
     start_time = time.time()
-    refinement_results = optimize_scene_tree_with_nlp(mip_optimized_tree, objective="mle", verbose=True)
+    refinement_results = optimize_scene_tree_with_nlp(grammar, mip_optimized_tree, objective="mle", verbose=True)
     elapsed = time.time() - start_time
     print("Refinement took %f secs." % elapsed)
     assert refinement_results.optim_result.is_success(), "Refinement failed."
@@ -114,7 +114,7 @@ def test_parsing_complex(set_seed):
     C = tree.find_nodes_by_type(NodeC)[0]
     C_translation_goal = torch.tensor([0.1, 0.2, 0.3])
     C.translation = C_translation_goal
-    projection_results = optimize_scene_tree_with_nlp(tree, objective="projection", verbose=True)
+    projection_results = optimize_scene_tree_with_nlp(grammar, tree, objective="projection", verbose=True)
     elapsed = time.time() - start_time
     print("Refinement took %f secs." % elapsed)
     assert projection_results.optim_result.is_success(), "Refinement failed."
@@ -130,7 +130,7 @@ def test_parsing_complex(set_seed):
     C_translation_goal = torch.tensor([-0.1, 0.2, 0.3])
     C_expected = torch.tensor([0.0, 0.2, 0.3])
     C.translation = C_translation_goal
-    projection_results = optimize_scene_tree_with_nlp(tree, objective="projection", verbose=True)
+    projection_results = optimize_scene_tree_with_nlp(grammar, tree, objective="projection", verbose=True)
     elapsed = time.time() - start_time
     print("Refinement took %f secs." % elapsed)
     assert projection_results.optim_result.is_success(), "Refinement failed."

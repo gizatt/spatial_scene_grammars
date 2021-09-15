@@ -164,7 +164,7 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                 node_queue.append((current_child, new_child))
 
         # Now project the tree to the closest feasible tree to that config.
-        projection_results = optimize_scene_tree_with_nlp(new_tree, initial_guess_tree=current_tree, objective="projection", verbose=verbose>1)
+        projection_results = optimize_scene_tree_with_nlp(grammar, new_tree, initial_guess_tree=current_tree, objective="projection", verbose=verbose>1)
         if projection_results.optim_result.is_success():
             new_tree = projection_results.refined_tree
             try:
@@ -185,7 +185,7 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                 new_node.translation = interp_translation(original_node.translation, new_node.translation, interp_factor)
                 new_node.rotation = interp_rotation(original_node.rotation, new_node.rotation, interp_factor)
 
-            projection_results = optimize_scene_tree_with_nlp(new_tree, initial_guess_tree=current_tree, objective="projection", verbose=verbose>1)
+            projection_results = optimize_scene_tree_with_nlp(grammar, new_tree, initial_guess_tree=current_tree, objective="projection", verbose=verbose>1)
             if projection_results.optim_result.is_success():
                 new_tree = projection_results.refined_tree
                 try:

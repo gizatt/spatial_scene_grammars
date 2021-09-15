@@ -56,7 +56,7 @@ def test_parsing():
         max_scene_extent_in_any_dir=10.
     )
     mip_optimized_tree = get_optimized_tree_from_mip_results(inference_results)
-    refinement_results = optimize_scene_tree_with_nlp(mip_optimized_tree, verbose=True,
+    refinement_results = optimize_scene_tree_with_nlp(grammar, mip_optimized_tree, verbose=True,
         max_scene_extent_in_any_dir=10.)
     refined_tree = refinement_results.refined_tree
     score = refined_tree.score(verbose=True)

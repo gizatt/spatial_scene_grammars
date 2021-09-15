@@ -54,7 +54,7 @@ def test_parsing():
         grammar, observed_nodes, verbose=True,
     )
     mip_optimized_tree = get_optimized_tree_from_mip_results(inference_results)
-    refinement_results = optimize_scene_tree_with_nlp(mip_optimized_tree, verbose=True)
+    refinement_results = optimize_scene_tree_with_nlp(grammar, mip_optimized_tree, verbose=True)
     refined_tree = refinement_results.refined_tree
     score = refined_tree.score(verbose=True)
     assert torch.isfinite(score), "Refined tree was infeasible."

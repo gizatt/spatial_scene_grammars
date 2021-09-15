@@ -17,11 +17,17 @@ from .torch_utils import ConstrainedParameter
 
 import pydrake
 from pydrake.all import (
+    AngleAxis,
+    AngleAxis_,
+    Expression,
     CoulombFriction,
+    RotationMatrix,
+    RotationMatrix_,
+    RollPitchYaw,
     SpatialInertia,
-    UnitInertia
+    UnitInertia,
+    Variable
 )
-
 
 class ProductionRule():
     '''
@@ -110,6 +116,31 @@ class ProductionRule():
         }
         raise NotImplementedError()
 
+    def encode_constraint(self, prog, xyz_optim_params, rot_optim_params, parent, child):
+        ''' Given a MathematicalProgram prog, parameter dictionaries for
+        the xyz and rotation rules matching their parameters (but possibly valued
+        by decision variables or fixed values for those parameters), and parent and
+        child nodes that have been given R_optim and t_optim decision variable members,
+        encodes the constraints implied by this rule into the optimization.
+
+        Returns the return value of encoding the rotation rule (i.e. whether the rotation
+        was fully constrained by the constraints).'''
+        self.xyz_rule.encode_constraint(prog, xyz_optim_params, parent, child)
+        return self.rotation_rule.encode_constraint(prog, rot_optim_params, parent, child)
+
+    def encode_cost(self, prog, xyz_optim_params, rot_optim_params, parent, child):
+        ''' Given a MathematicalProgram prog, parameter dictionaries for
+        the xyz and rotation rules matching their parameters (but possibly valued
+        by decision variables or fixed values for those parameters), and parent and
+        child nodes that have been given R_optim and t_optim decision variable members,
+        encodes the negative log probability of this rule given that parent and child.
+
+        Returns the return value of encoding the rotation rule (i.e. whether the rotation
+        was fully constrained by the constraints).'''
+        self.xyz_rule.encode_cost(prog, xyz_optim_params, parent, child)
+        self.rotation_rule.encode_cost(prog, rot_optim_params, parent, child)
+
+
 ## XYZ Production rules
 class XyzProductionRule():
     '''
@@ -148,6 +179,20 @@ class XyzProductionRule():
             " never have to do this."
         )
 
+    def encode_constraint(self, prog, optim_params, parent, child):
+        ''' Given a MathematicalProgram prog, parameter dictionaries for this
+        rule type, and parent and child nodes that have been given R_optim and
+        t_optim decision variable members, encodes the constraints implied by
+        this rule into the optimization program. '''
+        raise NotImplementedError()
+    def encode_cost(self, prog, optim_params, parent, child):
+        ''' Given a MathematicalProgram prog, parameter dictionaries for this
+        rule type, and parent and child nodes that have been given R_optim and
+        t_optim decision variable members, adds the negative log probability
+        of this rule given the parent and child to the program.'''
+        raise NotImplementedError()
+
+
 class SamePositionRule(XyzProductionRule):
     ''' Child Xyz is identically parent xyz. '''
     def __init__(self):
@@ -171,6 +216,12 @@ class SamePositionRule(XyzProductionRule):
         if len(parameters.keys()) > 0:
             raise ValueError("SamePositionRule has no parameters.")
 
+    def encode_constraint(self, prog, optim_params, parent, child):
+        # Constrain child translation to be equal to parent translation.
+        for k in range(3):
+            prog.AddLinearEqualityConstraint(child.t_optim[k] == parent.t_optim[k])
+    def encode_cost(self, prog, optim_params, parent, child):
+        pass
 
 class WorldBBoxRule(XyzProductionRule):
     ''' Child xyz is uniformly chosen in [center, width] in world frame,
@@ -222,6 +273,22 @@ class WorldBBoxRule(XyzProductionRule):
     def ub(self):
         return self.center + self.width / 2.
 
+    def encode_constraint(self, prog, optim_params, parent, child):
+        # Child translation should be within the translation bounds in
+        # world frame.
+        lb_world = optim_params["center"] - optim_params["width"]/2.
+        ub_world = optim_params["center"] + optim_params["width"]/2.
+        # X should be within a half-bound-width of the centerl.
+        for k in range(3):
+            prog.AddLinearConstraint(child.t_optim[k] >= lb_world[k])
+            prog.AddLinearConstraint(child.t_optim[k] <= ub_world[k])
+    def encode_cost(self, prog, optim_params, parent, child):
+        lb_world = optim_params["center"] - optim_params["width"]/2.
+        ub_world = optim_params["center"] + optim_params["width"]/2.
+        # log prob = 1 / width on each axis
+        total_ll = -sum(ub_world - lb_world)
+        prog.AddLinearCost(-total_ll)
+
 
 class AxisAlignedBBoxRule(WorldBBoxRule):
     ''' Child xyz is parent xyz + a uniform offset in [lb, ub]
@@ -238,6 +305,17 @@ class AxisAlignedBBoxRule(WorldBBoxRule):
         return self.xyz_dist.log_prob(xyz_offset).sum()
     def get_site_values(self, parent, child):
         return {"AxisAlignedBBoxRule_xyz": child.translation - parent.translation}
+
+    def encode_constraint(self, prog, optim_params, parent, child):
+        # Child translation should be within the translation bounds in
+        # world frame.
+        lb_world = optim_params["center"] - optim_params["width"]/2. + parent.t_optim
+        ub_world = optim_params["center"] + optim_params["width"]/2. + parent.t_optim
+        # X should be within a half-bound-width of the centerl.
+        for k in range(3):
+            prog.AddLinearConstraint(child.t_optim[k] >= lb_world[k])
+            prog.AddLinearConstraint(child.t_optim[k] <= ub_world[k])
+    # Uses encode_cost implementation in WorldBBoxRule
 
 
 class AxisAlignedGaussianOffsetRule(XyzProductionRule):
@@ -272,6 +350,19 @@ class AxisAlignedGaussianOffsetRule(XyzProductionRule):
         self.mean = parameters["mean"]
         self.variance = parameters["variance"]
         self.xyz_dist = dist.Normal(self.mean, torch.sqrt(self.variance))
+
+    def encode_constraint(self, prog, optim_params, parent, child):
+        pass
+    def encode_cost(self, prog, optim_params, parent, child):
+        mean = optim_params["mean"]
+        covar = np.diag(optim_params["variance"])
+        inverse_covariance = np.linalg.inv(covar)
+        covariance_det = np.linalg.det(covar)
+        log_normalizer = -np.log(np.sqrt( (2. * np.pi) ** 3 * covariance_det))
+
+        xyz_offset = child.t_optim - (parent.t_optim + mean)
+        total_ll = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset)) + log_normalizer
+        prog.AddCost(-total_ll)
 
 
 ## Rotation production rules
@@ -312,6 +403,20 @@ class RotationProductionRule():
             " never have to do this."
         )
 
+    def encode_constraint(self, prog, optim_params, parent, child):
+        ''' Given a MathematicalProgram prog, parameter dictionaries for this
+        rule type, and parent and child nodes that have been given R_optim and
+        t_optim decision variable members, encodes the constraints implied by
+        this rule into the optimization program. Returns whether the rotation
+        of the child is fully constrained by the application of this rule. '''
+        raise NotImplementedError()
+    def encode_cost(self, prog, optim_params, parent, child):
+        ''' Given a MathematicalProgram prog, parameter dictionaries for this
+        rule type, and parent and child nodes that have been given R_optim and
+        t_optim decision variable members, adds the negative log probability
+        of this rule given the parent and child to the program.'''
+        raise NotImplementedError()
+
 
 class SameRotationRule(RotationProductionRule):
     ''' Child Xyz is identically parent xyz. '''
@@ -335,6 +440,15 @@ class SameRotationRule(RotationProductionRule):
     def parameters(self, parameters):
         if len(parameters.keys()) > 0:
             raise ValueError("SameRotationRule has no parameters.")
+
+    def encode_constraint(self, prog, optim_params, parent, child):
+        for i in range(3):
+            for j in range(3):
+                prog.AddLinearEqualityConstraint(child.R_optim[i, j] == parent.R_optim[i, j])
+        # Child is fully constrained.
+        return True
+    def encode_cost(self, prog, optim_params, parent, child):
+        pass
 
 class UnconstrainedRotationRule(RotationProductionRule):
     '''
@@ -418,6 +532,11 @@ class UnconstrainedRotationRule(RotationProductionRule):
         if len(parameters.keys()) > 0:
             raise ValueError("RotationProductionRule has no parameters.")
 
+    def encode_constraint(self, prog, optim_params, parent, child):
+        # Child rotation not fully constrained.
+        return False
+    def encode_cost(self, prog, optim_params, parent, child):
+        pass
 
 def recover_relative_angle_axis(parent, child, target_axis, zero_angle_width=1E-2, allowed_axis_diff=10. * np.pi/180.):
     # Recover angle-axis relationship between a parent and child.
@@ -521,6 +640,85 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
     def ub(self):
         return self.center + self.width / 2.
 
+    def encode_constraint(self, prog, optim_params, parent, child):
+        axis = self.axis.detach().cpu().numpy()
+        min_angle = (optim_params["center"] - optim_params["width"]/2.)[0]
+        max_angle = (optim_params["center"] + optim_params["width"]/2.)[0]
+
+        if isinstance(min_angle, float) and isinstance(max_angle, float):
+            assert min_angle <= max_angle
+            if max_angle - min_angle <= 1E-6:
+                # In this case, the child rotation is exactly equal to the
+                # parent rotation, so we can short-circuit.
+                relative_rotation = RotationMatrix(AngleAxis(max_angle, axis)).matrix()
+                target_rotation = parent.R_optim.dot(relative_rotation)
+                for i in range(3):
+                    for j in range(3):
+                        prog.AddLinearEqualityConstraint(child.R_optim[i, j] == target_rotation[i, j])
+                return True
+        else:
+            assert isinstance(min_angle, Expression) and isinstance(max_angle, Expression), (min_angle, max_angle)
+            prog.AddLinearConstraint(min_angle <= max_angle)
+
+        # Child rotation should be within a relative rotation of the parent around
+        # the specified axis, and the axis should *not* be rotated between the
+        # parent and child frames. This is similar to the revolute joint constraints
+        # used by Hongkai Dai in his global IK formulation.
+        # (1): The direction of the rotation axis doesn't change between
+        # parent and child frames.
+        # The axis is the same in both the parent and child frame
+        # (see https://drake.mit.edu/doxygen_cxx/classdrake_1_1multibody_1_1_revolute_joint.html).
+        # Though there may be an additional offset according to the axis offset
+        # in the parent and child frames.
+        #axis_offset_in_parent = RigidTransform()
+        #axis_offset_in_child = RigidTransform()
+        parent_view_of_axis_in_world = parent.R_optim.dot(axis)
+        child_view_of_axis_in_world = child.R_optim.dot(axis)
+        for k in range(3):
+            prog.AddLinearEqualityConstraint(
+                parent_view_of_axis_in_world[k] == child_view_of_axis_in_world[k]
+            )
+        
+        # Short-circuit if there is no rotational constraint other than axis alignment.
+        if isinstance(min_angle, float) and isinstance(max_angle, float) and max_angle - min_angle >= 2.*np.pi:
+            return False
+
+        # If we're only allowed a limited rotation around this axis, apply a constraint
+        # to enforce that.
+        # (2): Eq(10) in the global IK paper. Following implementation in
+        # https://github.com/RobotLocomotion/drake/blob/master/multibody/inverse_kinematics/global_inverse_kinematics.cc
+        # First generate a vector normal to the rotation axis via cross products.
+
+        v_c = np.cross(axis, np.array([0., 0., 1.]))
+        if np.linalg.norm(v_c) <= np.sqrt(2)/2:
+            # Axis is too close to +z; try a different axis.
+            v_c = np.cross(axis, np.array([0., 1., 0.]))
+        v_c = v_c / np.linalg.norm(v_c)
+        # TODO: Hongkai uses multiple perpendicular vectors for tighter
+        # bound. Why does that make it tighter? Maybe worth a try?
+
+        # Translate into a symmetric bound by finding a rotation to
+        # "center" us in the bound region, and the symmetric bound size alpha.
+        # -alpha <= theta - (a+b)/2 <= alpha
+        # where alpha = (b-a) / 2
+        alpha = (max_angle - min_angle) / 2.
+        offset_angle = (max_angle + min_angle) / 2.
+        R_offset = RotationMatrix_[type(offset_angle)](
+            AngleAxis_[type(offset_angle)](offset_angle, axis)).matrix()
+        # |R_WC*R_CJc*v - R_WP * R_PJp * R(k,(a+b)/2)*v | <= 2*sin (α / 2) in
+        # global ik code; for us, I'm assuming the joint frames are aligned with
+        # the body frames, so R_CJc and R_PJp are identitiy.
+        lorentz_bound = 2 * np.sin(alpha / 2.)
+        vector_diff = (
+            child.R_optim.dot(v_c) - 
+            parent.R_optim.dot(R_offset).dot(v_c)
+        )
+        # TODO: Linear approx?
+        prog.AddLorentzConeConstraint(np.r_[lorentz_bound, vector_diff])
+        return False
+
+    def encode_cost(self, prog, optim_params, parent, child):
+        pass
 
 class GaussianChordOffsetRule(RotationProductionRule):
     ''' Placeholder '''
@@ -581,3 +779,62 @@ class GaussianChordOffsetRule(RotationProductionRule):
         self.loc = parameters["loc"]
         self._angle_dist = dist.VonMises(loc=self.loc, concentration=self.concentration)
 
+    def encode_constraint(self, prog, optim_params, parent, child):
+        # Constrain parent/child rotations to not change the rotation axis.
+        axis = self.axis.detach().cpu().numpy()
+
+        # Child rotation should be within a relative rotation of the parent around
+        # the specified axis, and the axis should *not* be rotated between the
+        # parent and child frames. This is similar to the revolute joint constraints
+        # used by Hongkai Dai in his global IK formulation.
+        # (1): The direction of the rotation axis doesn't change between
+        # parent and child frames.
+        # The axis is the same in both the parent and child frame
+        # (see https://drake.mit.edu/doxygen_cxx/classdrake_1_1multibody_1_1_revolute_joint.html).
+        # Though there may be an additional offset according to the axis offset
+        # in the parent and child frames.
+        #axis_offset_in_parent = RigidTransform()
+        #axis_offset_in_child = RigidTransform()
+        parent_view_of_axis_in_world = parent.R_optim.dot(axis)
+        child_view_of_axis_in_world = child.R_optim.dot(axis)
+        for k in range(3):
+            prog.AddLinearEqualityConstraint(
+                parent_view_of_axis_in_world[k] == child_view_of_axis_in_world[k]
+            )
+        # Child rotation is not fully constrained.
+        return False
+
+    def encode_cost(self, prog, optim_params, parent, child):
+        # Compute chord distance between parent and child
+
+        # Same logic as in the uniform bounded constraint; see eq Eq(10) in the global IK paper.
+
+        # Generate vector normal to axis.
+        axis = self.axis.detach().cpu().numpy()
+        v_c = np.cross(axis, np.array([0., 0., 1.]))
+        if np.linalg.norm(v_c) <= np.sqrt(2)/2:
+            # Axis is too close to +z; try a different axis.
+            v_c = np.cross(axis, np.array([0., 1., 0.]))
+        v_c = v_c / np.linalg.norm(v_c)
+        # TODO: Hongkai uses multiple perpendicular vectors for tighter
+        # bound. Why does that make it tighter? Maybe worth a try?
+
+        # Use a von-Mises-Fisher distribution: project the rotated unit vector onto the
+        # unrotated vector and multiply by the density. I think this is sort of like a
+        # Normal distribution over the set of 3D unit vectors?
+        # https://en.wikipedia.org/wiki/Von_Mises%E2%80%93Fisher_distribution
+        concentration = optim_params["concentration"]
+        loc = optim_params["loc"]
+        R_offset = RotationMatrix(AngleAxis(loc, axis)).matrix()
+        target_mu = parent.R_optim.dot(R_offset).dot(v_c)
+        child_vector = child.R_optim.dot(v_c)
+        dot_product = target_mu.dot(child_vector)
+        vector_diff = (
+            target_mu - child_vector
+        ) 
+        vmf_normalizer = concentration / (2 * np.pi * (np.exp(concentration) - np.exp(-concentration)))
+        # VMF; unfortunately does not appear to lead to convex cost (not positive definite).
+        total_ll = dot_product * concentration - vmf_normalizer
+        # Instead, this happens to be?
+        total_ll = vector_diff.sum() * concentration - vmf_normalizer
+        prog.AddCost(-total_ll)
