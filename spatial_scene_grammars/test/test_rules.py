@@ -11,7 +11,8 @@ from .grammar import *
 
 from pydrake.all import (
     UniformlyRandomRotationMatrix,
-    RandomGenerator
+    RandomGenerator,
+    RigidTransform
 )
 
 torch.set_default_tensor_type(torch.DoubleTensor)
@@ -111,6 +112,35 @@ def test_AxisAlignedGaussianOffsetRule(set_seed):
     child.translation = xyz
     ll = rule.score_child(parent, child)
 
+## WorldFramePlanarGaussianOffsetRule
+def test_WorldFramePlanarGaussianOffsetRule(set_seed):
+    random_mean = torch.tensor(np.random.normal(0., 1., 2))
+    random_covar = torch.tensor(np.random.uniform(np.zeros(2)*0.1, np.ones(2)))
+    random_plane_transform = RigidTransform(
+        p=np.random.normal(0., 1., 3),
+        R=UniformlyRandomRotationMatrix(set_seed)
+    )
+    rule = WorldFramePlanarGaussianOffsetRule(
+        mean=random_mean, variance=random_covar,
+        plane_transform=random_plane_transform
+    )
+
+    params = rule.parameters
+    assert isinstance(params, dict)
+    priors = rule.get_parameter_prior()
+    for k, params in params.items():
+        assert all(torch.isfinite(priors[k].log_prob(params)))
+
+    parent = make_dummy_node()
+    parent.translation = torch.tensor([1., 1., 1.])
+
+    xyz = rule.sample_xyz(parent)
+    assert isinstance(xyz, torch.Tensor)
+
+    child = make_dummy_node()
+    child.translation = xyz
+    ll = rule.score_child(parent, child)
+
 ## SameRotationRule
 def test_SameRotationRule(set_seed):
     rule = SameRotationRule()
@@ -176,7 +206,7 @@ def test_UniformBoundedRevoluteJointRule(set_seed):
 def test_GaussianChordOffsetRule(set_seed):
     random_axis = np.random.normal(0., 1., 3)
     random_axis = torch.tensor(random_axis / np.linalg.norm(random_axis))
-    random_loc = np.random.normal(0., 1.)
+    random_loc = np.random.uniform(0., 2.*np.pi)
     random_concentration = np.random.uniform(0.01, 1.)
     rule = GaussianChordOffsetRule(axis=random_axis, loc=random_loc, concentration=random_concentration)
 
@@ -223,11 +253,16 @@ def test_AngleAxisInversion(set_seed, angle):
 
 @pytest.mark.parametrize("xyz_rule", [
     WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*3.),
-    AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*5.)
+    AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*5.),
+    AxisAlignedGaussianOffsetRule(mean=torch.zeros(3), variance=torch.ones(3)),
+    WorldFramePlanarGaussianOffsetRule(
+        mean=torch.zeros(2), variance=torch.ones(2), plane_transform=RigidTransform(p=np.array([1., 2., 3.]), rpy=RollPitchYaw(1., 2., 3.)))
 ])
 @pytest.mark.parametrize("rotation_rule", [
+    SameRotationRule(),
     UnconstrainedRotationRule(),
-    UniformBoundedRevoluteJointRule.from_bounds(axis=torch.tensor([0., 1., 0.]), lb=-np.pi/2., ub=np.pi/2.)
+    UniformBoundedRevoluteJointRule.from_bounds(axis=torch.tensor([0., 1., 0.]), lb=-np.pi/2., ub=np.pi/2.),
+    GaussianChordOffsetRule(axis=torch.tensor([0., 0., 1.]), loc=0.42, concentration=11.)
 ])
 def test_ProductionRule(set_seed, xyz_rule, rotation_rule):
     rule = ProductionRule(

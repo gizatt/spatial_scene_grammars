@@ -12,6 +12,7 @@ from pytorch3d.transforms.rotation_conversions import (
     axis_angle_to_matrix, quaternion_to_axis_angle
 )
 
+from .drake_interop import drake_tf_to_torch_tf, torch_tf_to_drake_tf
 from .distributions import UniformWithEqualityHandling
 from .torch_utils import ConstrainedParameter
 
@@ -21,6 +22,7 @@ from pydrake.all import (
     AngleAxis_,
     Expression,
     CoulombFriction,
+    RigidTransform,
     RotationMatrix,
     RotationMatrix_,
     RollPitchYaw,
@@ -28,6 +30,15 @@ from pydrake.all import (
     UnitInertia,
     Variable
 )
+
+# Add a new rule checklist:
+#  1) Make your new rule subclass.
+#    1a) Fill in required virtual methods.
+#    1b) Optionally provide encode_cost / encode_constraint if you plan on
+#        parsing scenes with this rule type in the grammar.
+#  2) Update do_fixed_structure_mcmc in sampling.py to know how to perturb
+#      your rule type. (TODO: This functionality should be rolled into the rule
+#      def'n...)
 
 class ProductionRule():
     '''
@@ -362,6 +373,71 @@ class AxisAlignedGaussianOffsetRule(XyzProductionRule):
 
         xyz_offset = child.t_optim - (parent.t_optim + mean)
         total_ll = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset)) + log_normalizer
+        prog.AddCost(-total_ll)
+
+class WorldFramePlanarGaussianOffsetRule(XyzProductionRule):
+    ''' Child xyz is diagonally-Normally distributed relative to parent in world frame
+        within a plane. Mean and variance should be 2D, and are sampled to produce a vector
+        d = [x, y, 0]. The child_xyz <- parent_xyz + plane_transform * d'''
+    def __init__(self, mean, variance, plane_transform):
+        assert isinstance(mean, torch.Tensor) and mean.shape == (2,)
+        assert isinstance(variance, torch.Tensor) and variance.shape == (2,)
+        assert isinstance(plane_transform, RigidTransform)
+        self.plane_transform = drake_tf_to_torch_tf(plane_transform)
+        self.plane_transform_inv = drake_tf_to_torch_tf(plane_transform.inverse())
+        self.parameters = {"mean": mean, "variance": variance}
+        super().__init__()
+
+    def sample_xyz(self, parent):
+        xy_offset = pyro.sample("WorldFramePlanarGaussianOffsetRule", self.xy_dist)
+        xyz_offset_homog = torch.cat([xy_offset, torch.tensor([0., 1.])])
+        return parent.translation + torch.matmul(self.plane_transform, xyz_offset_homog)[:3]
+    def score_child(self, parent, child):
+        xy_offset = list(self.get_site_values(parent, child).values())[0]
+        return self.xy_dist.log_prob(xy_offset).sum()
+
+    def get_site_values(self, parent, child):
+        offset_homog = torch.cat([child.translation - parent.translation, torch.tensor([1.])])
+        xy_offset = torch.matmul(self.plane_transform_inv, offset_homog)[:2]
+        return {"WorldFramePlanarGaussianOffsetRule": xy_offset}
+
+    @classmethod
+    def get_parameter_prior(cls):
+        return {
+            "mean": dist.Normal(torch.zeros(2), torch.ones(2)),
+            "variance": dist.Uniform(torch.zeros(2)+1E-6, torch.ones(2)*10.) # TODO: Inverse gamma is better
+        }
+    @property
+    def parameters(self):
+        return {
+            "mean": self.mean,
+            "variance": self.variance
+        }
+    @parameters.setter
+    def parameters(self, parameters):
+        self.mean = parameters["mean"]
+        self.variance = parameters["variance"]
+        self.xy_dist = dist.Normal(self.mean, torch.sqrt(self.variance))
+
+    def encode_constraint(self, prog, optim_params, parent, child):
+        # Constrain that the child pose is in the appropriate plane
+        # relative to the parent: i.e., that (child.xyz - parent.xyz)
+        # dotted with the plane normal is zero.
+        plane_tf = torch_tf_to_drake_tf(self.plane_transform)
+        plane_normal = plane_tf.multiply(np.array([0., 0., 1.])).translation()
+        dx = child.t_optim - parent.t_optim
+        prog.AddLinearConstraint(np.sum(plane_normal * dx) == 0.)
+
+    def encode_cost(self, prog, optim_params, parent, child):
+        mean = optim_params["mean"]
+        covar = np.diag(optim_params["variance"])
+        inverse_covariance = np.linalg.inv(covar)
+        covariance_det = np.linalg.det(covar)
+        log_normalizer = -np.log(np.sqrt( (2. * np.pi) ** 2 * covariance_det))
+
+        inv_tf = torch_tf_to_drake_tf(self.plane_transform_inv)
+        xy_offset = inv_tf.multiply(child.translation - parent.translation).translation()[:2] - mean
+        total_ll = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xy_offset)) + log_normalizer
         prog.AddCost(-total_ll)
 
 
@@ -730,6 +806,8 @@ class GaussianChordOffsetRule(RotationProductionRule):
             concentration = torch.tensor(concentration)
         if isinstance(loc, float):
             loc = torch.tensor(loc)
+
+        assert loc >= 0. and loc <= np.pi*2., loc
         
         # Axis is *not* a parameter; making it a parameter
         # would require implementing a prior distribution and constraints over
@@ -748,7 +826,6 @@ class GaussianChordOffsetRule(RotationProductionRule):
         R = torch.matmul(parent.rotation, R_offset)
         return R
 
-        
     def score_child(self, parent, child, allowed_axis_diff=10. * np.pi/180.):
         angle, axis = recover_relative_angle_axis(parent, child, target_axis=self.axis, allowed_axis_diff=allowed_axis_diff)
         # Fisher distribution should be able to handle arbitrary +/-2pis.
@@ -764,8 +841,8 @@ class GaussianChordOffsetRule(RotationProductionRule):
         # Default prior is a unit Normal for center,
         # and Uniform-distributed width on some reasonable range.
         return {
-            "loc": dist.Normal(torch.zeros(1), torch.ones(1)),
-            "concentration": dist.Uniform(torch.zeros(1)+1E-6, torch.ones(1)*np.pi*2.) # TODO: inverse gamma is better
+            "loc": dist.Uniform(torch.zeros(1), torch.ones(1)*np.pi*2.),
+            "concentration": dist.InverseGamma(torch.tensor([3.]), torch.tensor([5.])) # TODO: arbitrary coefficients here...q
         }
     @property
     def parameters(self):
