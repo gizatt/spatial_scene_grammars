@@ -21,6 +21,7 @@ except RuntimeError as e:
 
 import torch
 torch.set_default_tensor_type(torch.DoubleTensor)
+from torch.distributions import transform_to
 
 import pydrake
 from pydrake.all import (
@@ -347,3 +348,307 @@ def collect_posterior_sample_sets(grammar, observed_node_sets, num_workers=1, tq
         pool.close()
 
     return posterior_sample_sets
+
+
+class VariationalPosteriorTree(torch.nn.Module):
+    ''' Torch Module whose parameters encode a variational
+        posterior distribution over the poses of a scene tree with
+        structure matching a supplied base scene tree, whose parameters
+        are initialized to put a tight peak at the base tree.
+        
+        Distribution is a mean-field over the sample sites in the forward
+        sampling process for the continuous sites in this tree.'''
+    def __init__(self, base_tree, grammar):
+        super().__init__()
+        self.base_tree = base_tree
+        # Keyed by sample site name
+        self.mean_params = torch.nn.ModuleDict()
+        self.var_params = torch.nn.ModuleDict()
+        self.site_constraints = {}
+        for parent in self.base_tree.nodes:
+            children, rules = base_tree.get_children_and_rules(parent)
+            for child, rule in zip(children, rules):
+                for key, site_value in rule.get_site_values(parent, child).items():
+                    site_name = "%s/%s/%s" % (parent.name, child.name, key)
+                    self.site_constraints[site_name] = site_value.fn.support
+                    self.mean_params[site_name] = ConstrainedParameter(
+                        site_value.value, constraints.real
+                    )
+                    self.var_params[site_name] = ConstrainedParameter(
+                        torch.ones(site_value.value.shape) * 0.01,
+                        constraints.positive
+                    )
+                    
+    def forward_model(self, grammar):
+        # Resample the continuous structure of the tree into
+        # a book-keeping copy.
+        scene_tree = deepcopy(self.base_tree)
+        # Hook grammar back into tree
+        grammar.update_tree_grammar_parameters(scene_tree)
+        node_queue = [scene_tree.get_root()]
+        while len(node_queue) > 0:
+            parent = node_queue.pop(0)
+            children, rules = scene_tree.get_children_and_rules(parent)
+            for child, rule in zip(children, rules):
+                # TODO: node score children too!
+                with scope(prefix=parent.name):
+                    rule.sample_child(parent, child)
+                node_queue.append(child)
+
+        # Implement observation constraints
+        xyz_observed_variance = 1E-3
+        rot_observed_variance = 1E-3
+        for node, original_node in zip(scene_tree.nodes, self.base_tree.nodes):
+            if node.observed:
+                xyz_observed_dist = dist.Normal(original_node.translation, xyz_observed_variance)
+                rot_observed_dist = dist.Normal(original_node.rotation, rot_observed_variance)
+                pyro.sample("%s_xyz_observed" % node.name, xyz_observed_dist, obs=node.translation)
+                pyro.sample("%s_rotation_observed" % node.name, rot_observed_dist, obs=node.rotation)
+        # Implement joint axis constraints
+        axis_alignment_variance = 1E-2
+        for node in scene_tree.nodes:
+            children, rules = scene_tree.get_children_and_rules(parent)
+            for child, rule in zip(children, rules):
+                if type(rule) == GaussianChordOffsetRule or type(rule) == UniformBoundedRevoluteJointRule:
+                    # Both of these rule types require that parent/child rotation is
+                    # about an axis.
+                    axis_from_parent = torch.matmul(node.rotation, node.axis)
+                    axis_from_child = torch.matmul(child.rotation, child.axis)
+                    inner_product = (axis_from_parent*axis_from_child).sum()
+                    pyro.sample("%s_axis_error_observed" % node.name,
+                        dist.Normal(1., axis_alignment_variance),
+                        obs=inner_product
+                    )
+
+    def evaluate_elbo(self, grammar, num_samples=5, verbose=0):
+        total_elbo = torch.tensor([0.])
+        for sample_k in range(num_samples):
+            # Sample from variational posterior, and use that to condition
+            # the sample sites in the forward model.
+            total_q_ll = torch.tensor([0.])
+            conditioning = {}
+            for key in self.mean_params.keys():
+                q_density = dist.Normal(self.mean_params[key](), self.var_params[key]())
+                unconstrained_sample = q_density.rsample()
+                # Map the unconstrained sample into the contrained parameter space
+                conditioning[key] = transform_to(self.site_constraints[key])(unconstrained_sample)
+                total_q_ll = total_q_ll + q_density.log_prob(unconstrained_sample).sum()
+            
+            with pyro.condition(data=conditioning):
+                trace = pyro.poutine.trace(self.forward_model).get_trace(grammar)
+                log_p = trace.log_prob_sum()
+            
+            for key in conditioning.keys():
+                assert key in trace.nodes.keys()
+
+            # Update ELBO
+            # For now, no non-reparameterized sites in the variational
+            # posterior, so we can calculate expectation as mean of
+            # samples.
+            total_elbo = total_elbo + (log_p - total_q_ll)
+        total_elbo = total_elbo / num_samples
+        return total_elbo
+
+
+class SVIWrapper():
+    '''
+    Initialize a variational posterior $q_\phi(z_k)$ for each observation $k$,
+    where $z_k$ describes a distribution over the latent poses for each node
+    in the supertree corresponding to observation $k$.
+    Also initialize model parameters $\theta$ for any parameters in the grammar.
+
+    Repeatedly:
+    1. Find the MAP tree structure $t_k$ for all observations with the
+        MIP using the current $\theta$.
+    2. For the nodes that show up in $t_k$, set the posterior parameters
+        $\phi$ to be tightly peaked around the MAP-optimal setting.
+    3. Run a few gradient step updates on the ELBO evaluated using discrete tree
+        structure $t_k$ and continuous poses sampled from the variational posterior.
+    '''
+    def __init__(self, grammar, observed_node_sets):
+        self.grammar = grammar
+        self.observed_node_sets = observed_node_sets
+                
+    def get_map_trees(self, throw_on_failure=False, verbose=0, tqdm=None):
+        ''' Get MAP parse for each tree in dataset using our current grammar params.
+            If parsing fails for a tree, will return None for that tree and throw
+            if requsted. '''
+        refined_trees = []
+
+        iterator = enumerate(self.observed_node_sets)
+        if tqdm:
+            iterator = tqdm(iterator, desc="Getting MAP parses", total=len(self.observed_node_sets))
+            
+        for k, observed_nodes in iterator:
+            mip_results = infer_mle_tree_with_mip(
+                self.grammar, observed_nodes, verbose=verbose>1, max_scene_extent_in_any_dir=10.
+            )
+            mip_optimized_tree = get_optimized_tree_from_mip_results(mip_results)
+            if mip_optimized_tree is None:
+                error_msg = "MIP optimization failed for observed set %d" % k
+                if throw_on_failure:
+                    raise RuntimeError(error_msg)
+                else:
+                    logging.warning(error_msg)
+                    refined_trees.append(None)
+                    continue
+            
+            refinement_results = optimize_scene_tree_with_nlp(self.grammar, mip_optimized_tree, verbose=verbose>1)
+            refined_tree = refinement_results.refined_tree
+            if refined_tree is None:
+                error_msg = "Nonlinear refinement failed for observed set %d" % k
+                if throw_on_failure:
+                    raise RuntimeError(error_msg)
+                else:
+                    logging.warning(error_msg)
+                    refined_trees.append(None)
+                    continue
+            
+            refined_trees.append(refined_tree)
+
+        return refined_trees
+            
+
+    def do_iterated_vi_fitting(self, major_iterations=1, minor_iterations=50, throw_on_map_failure=False,
+                               num_elbo_samples=3, verbose=0, tqdm=None):
+        '''
+        
+            throw_on_map_failure: If there's a failure in the MAP tree optimization routine,
+                should we throw a RuntimeError? If not, that observation will be ignored
+                in the iterations where the optimization failed.
+        '''
+        
+        # Logging: each major iteration produces a ModuleList of variational_posterior 
+        # modules, along with a list of grammar state_dicts and variational_posterior_list state_dicts
+        # from the minor iterations.
+        self.elbo_history = []
+        self.grammar_major_iters = []
+        self.posterior_major_iters = []
+        
+        major_iterator = range(major_iterations)
+        if tqdm:
+            major_iterator = tqdm(major_iterator, desc="Major iteration", total=major_iterations)
+        for major_iteration in major_iterator:
+            if tqdm:
+                major_iterator.set_description("Major %03d: calculating MAP trees" % (major_iteration))
+            refined_trees = self.get_map_trees(throw_on_failure=throw_on_map_failure, verbose=verbose, tqdm=tqdm)
+            # Initialize variational posterior at the MAP tree.
+            variational_posteriors = torch.nn.ModuleList(
+                [VariationalPosteriorTree(tree, self.grammar) for tree in refined_trees]
+            )
+            
+            if tqdm:
+                major_iterator.set_description("Major %03d: doing SVI iters" % (major_iteration))
+
+            params = [*variational_posteriors.parameters(), *self.grammar.parameters()]
+            optimizer = torch.optim.Adam(params, lr=0.1)
+            scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 200], gamma=0.1)
+
+            grammar_history = []
+            variational_posterior_history = []
+            
+            minor_iterator = range(minor_iterations)
+            if tqdm:
+                minor_iterator = tqdm(minor_iterator, desc="Minor iteration", total=minor_iterations)
+            for minor_iteration in minor_iterator:
+                optimizer.zero_grad()
+                
+                grammar_history.append(deepcopy(self.grammar.state_dict()))
+                variational_posterior_history.append(deepcopy(variational_posteriors.state_dict()))
+                
+                # Evaluate ELBO and do gradient updates.
+                total_elbo = torch.mean(torch.stack([
+                    posterior.evaluate_elbo(self.grammar, num_elbo_samples, verbose=verbose)
+                    for posterior in variational_posteriors
+                ]))
+                
+                self.elbo_history.append(total_elbo.detach())
+                if tqdm:
+                    minor_iterator.set_description("Minor %05d: ELBO %f" % (minor_iteration, total_elbo.item()))
+                else:
+                    logging.info("%03d/%05d: ELBO %f" % (major_iteration, minor_iteration, total_elbo.item()))
+                
+                if minor_iteration < minor_iterations - 1:
+                    (-total_elbo).backward()
+                    optimizer.step()
+                    scheduler.step()
+                
+            self.grammar_major_iters.append(grammar_history)
+            self.posterior_major_iters.append((variational_posteriors, variational_posterior_history))
+       
+    def plot_elbo_history(self):
+        assert hasattr(self, "elbo_history") and len(self.elbo_history) > 0
+        plt.figure()
+        loss_history = -torch.stack(self.elbo_history).detach()
+        offset = torch.min(loss_history)
+        loss_history += -offset + 1.
+        plt.plot(loss_history)
+        plt.yscale('log')
+        plt.title("(Vertically shifted) ELBO history, reached min %f" % offset)
+        plt.xlabel("Iter")
+        plt.ylabel("ELBO")
+
+    def plot_grammar_parameter_history(self, node_type):
+         # Plot param history for a node type in the grammar.
+        assert hasattr(self, "grammar_major_iters") and len(self.grammar_major_iters) > 0
+        assert node_type in self.grammar.all_types
+        
+        all_state_dicts = [x for l in self.grammar_major_iters for x in l]
+        node_param_history = []
+        rule_param_history = None
+        for state_dict in all_state_dicts:
+            self.grammar.load_state_dict(state_dict)
+            possible_params = self.grammar.params_by_node_type[node_type.__name__]
+            if possible_params:
+                node_param_history.append(possible_params().detach())
+            rule_params = self.grammar.rule_params_by_node_type[node_type.__name__]
+            if rule_param_history is None:
+                rule_param_history = [[{}, {}] for k in range(len(rule_params))]
+            
+            for k, (xyz_rule_params, rot_rule_params) in enumerate(rule_params):
+                for key, value in xyz_rule_params.items():
+                    hist_dict = rule_param_history[k][0]
+                    if key not in hist_dict:
+                        hist_dict[key] = [value().detach()]
+                    else:
+                        hist_dict[key].append(value().detach())
+                for key, value in rot_rule_params.items():
+                    hist_dict = rule_param_history[k][1]
+                    if key not in hist_dict:
+                        hist_dict[key] = [value().detach()]
+                    else:
+                        hist_dict[key].append(value().detach())
+
+        if len(node_param_history) > 0:
+            node_param_history = torch.stack(node_param_history)
+        for entry in rule_param_history:
+            for k in range(2): # xyz / rot rule
+                for key, value in entry[k].items():
+                    entry[k][key] = torch.stack(value)
+
+        if len(node_param_history) > 0:
+            plt.figure()
+            plt.plot(node_param_history)
+            plt.title("%s params" % node_type.__name__)
+            print("Final params: ", node_param_history[-1, :])
+        
+        # Rules
+        plt.figure()
+        N_rules = len(rule_param_history)
+        for k, entry in enumerate(rule_param_history):
+            plt.suptitle("%s rule %d params" % (node_type.__name__, k))
+            # XYZ
+            plt.subplot(2, N_rules, k+1)
+            plt.title("XYZ Rule")
+            for key, value in entry[0].items():
+                plt.plot(value, label=key)
+                print("%d:xyz:%s final: %s" % (k, key, value[-1, :]))
+            plt.legend()
+            plt.subplot(2, N_rules, k + N_rules + 1)
+            plt.title("Rot rule")
+            for key, value in entry[1].items():
+                plt.plot(value, label=key)
+                print("%d:rot:%s final: %s" % (k, key, value[-1, :]))
+            plt.legend()
+        plt.tight_layout()
+

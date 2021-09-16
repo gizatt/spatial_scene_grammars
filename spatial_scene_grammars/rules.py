@@ -40,6 +40,8 @@ from pydrake.all import (
 #      your rule type. (TODO: This functionality should be rolled into the rule
 #      def'n...)
 
+SiteValue = namedtuple("SiteValue", ["fn", "value"])
+
 class ProductionRule():
     '''
         Rule by which a child node's pose is derived
@@ -116,11 +118,12 @@ class ProductionRule():
 
     def get_site_values(self, parent, child):
         # Given a parent and child, return a dictionary
-        # of the pyro sample sites and sampled values
+        # of the pyro sample sites and SiteValue structs
+        # (distribution + sampled values info)
         # that would lead to that parent child pair.
         # (Used for reconstructing traces for conditioning models
         # to match optimization-derived scene trees, and used
-        # for scoring.
+        # for scoring.)
         return {
             **self.xyz_rule.get_site_values(parent, child),
             **self.rotation_rule.get_site_values(parent, child)
@@ -253,7 +256,7 @@ class WorldBBoxRule(XyzProductionRule):
     def score_child(self, parent, child):
         return self.xyz_dist.log_prob(child.translation).sum()
     def get_site_values(self, parent, child):
-        return {"WorldBBoxRule_xyz": child.translation}
+        return {"WorldBBoxRule_xyz": SiteValue(self.xyz_dist, child.translation)}
 
     @classmethod
     def get_parameter_prior(cls):
@@ -315,7 +318,7 @@ class AxisAlignedBBoxRule(WorldBBoxRule):
         xyz_offset = child.translation - parent.translation
         return self.xyz_dist.log_prob(xyz_offset).sum()
     def get_site_values(self, parent, child):
-        return {"AxisAlignedBBoxRule_xyz": child.translation - parent.translation}
+        return {"AxisAlignedBBoxRule_xyz": SiteValue(self.xyz_dist, child.translation - parent.translation)}
 
     def encode_constraint(self, prog, optim_params, parent, child):
         # Child translation should be within the translation bounds in
@@ -342,7 +345,7 @@ class AxisAlignedGaussianOffsetRule(XyzProductionRule):
     def score_child(self, parent, child):
         return self.xyz_dist.log_prob(child.translation - parent.translation).sum()
     def get_site_values(self, parent, child):
-        return {"AxisAlignedGaussianOffsetRule_xyz": child.translation - parent.translation}
+        return {"AxisAlignedGaussianOffsetRule_xyz": SiteValue(self.xyz_dist, child.translation - parent.translation)}
 
     @classmethod
     def get_parameter_prior(cls):
@@ -393,13 +396,14 @@ class WorldFramePlanarGaussianOffsetRule(XyzProductionRule):
         xyz_offset_homog = torch.cat([xy_offset, torch.tensor([0., 1.])])
         return parent.translation + torch.matmul(self.plane_transform, xyz_offset_homog)[:3]
     def score_child(self, parent, child):
-        xy_offset = list(self.get_site_values(parent, child).values())[0]
+        offset_homog = torch.cat([child.translation - parent.translation, torch.tensor([1.])])
+        xy_offset = torch.matmul(self.plane_transform_inv, offset_homog)[:2]
         return self.xy_dist.log_prob(xy_offset).sum()
 
     def get_site_values(self, parent, child):
         offset_homog = torch.cat([child.translation - parent.translation, torch.tensor([1.])])
         xy_offset = torch.matmul(self.plane_transform_inv, offset_homog)[:2]
-        return {"WorldFramePlanarGaussianOffsetRule": xy_offset}
+        return {"WorldFramePlanarGaussianOffsetRule": SiteValue(self.xy_dist, xy_offset)}
 
     @classmethod
     def get_parameter_prior(cls):
@@ -424,7 +428,7 @@ class WorldFramePlanarGaussianOffsetRule(XyzProductionRule):
         # relative to the parent: i.e., that (child.xyz - parent.xyz)
         # dotted with the plane normal is zero.
         plane_tf = torch_tf_to_drake_tf(self.plane_transform)
-        plane_normal = plane_tf.multiply(np.array([0., 0., 1.])).translation()
+        plane_normal = plane_tf.multiply(np.array([0., 0., 1.]))
         dx = child.t_optim - parent.t_optim
         prog.AddLinearConstraint(np.sum(plane_normal * dx) == 0.)
 
@@ -436,8 +440,8 @@ class WorldFramePlanarGaussianOffsetRule(XyzProductionRule):
         log_normalizer = -np.log(np.sqrt( (2. * np.pi) ** 2 * covariance_det))
 
         inv_tf = torch_tf_to_drake_tf(self.plane_transform_inv)
-        xy_offset = inv_tf.multiply(child.translation - parent.translation).translation()[:2] - mean
-        total_ll = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xy_offset)) + log_normalizer
+        xy_offset = inv_tf.multiply(child.translation - parent.translation)[:2] - mean
+        total_ll = -0.5 * (xy_offset.transpose().dot(inverse_covariance).dot(xy_offset)) + log_normalizer
         prog.AddCost(-total_ll)
 
 
@@ -533,6 +537,10 @@ class UnconstrainedRotationRule(RotationProductionRule):
     '''
     def __init__(self):
         super().__init__()
+        desired_density = 1 / np.pi ** 2.
+        true_ub = torch.tensor([1., 1., 0.5])
+        self.scaling = torch.tensor([1., 1., 2.]) * np.pi ** (2. / 3)
+        self.u_dist = dist.Uniform(torch.zeros(3), true_ub * self.scaling)
 
     def sample_rotation(self, parent):
         # Sample random unit quaternion via
@@ -551,18 +559,15 @@ class UnconstrainedRotationRule(RotationProductionRule):
         # Expected density = 1 / pi^2
         # Actual density 1 / (pi * pi * .5 pi) = 2 / pi^3
         # -> Normalize should be = pi^(2/3) / 2
-        desired_density = 1 / np.pi ** 2.
-        true_ub = torch.tensor([1., 1., 0.5])
-        self.scaling = torch.tensor([1., 1., 2.]) * np.pi ** (2. / 3)
 
-        u = pyro.sample("UnconstrainedRotationRule_u", dist.Uniform(torch.zeros(3), true_ub * self.scaling))/self.scaling
+        u = pyro.sample("UnconstrainedRotationRule_u", self.u_dist)/self.scaling
         random_quat = torch.tensor([
             torch.sqrt(1. - u[0]) * torch.sin(2. * np.pi * u[1]), # [0, 2pi -> -1 -> 1]
             torch.sqrt(1. - u[0]) * torch.cos(2. * np.pi * u[1]), # [0, 2pi -> -1 -> 1]
             torch.sqrt(u[0]) * torch.sin(2. * np.pi * u[2]), # [0, pi -> 0 -> 1]
             torch.sqrt(u[0]) * torch.cos(2. * np.pi * u[2])  # [0, pi -> -1, 1]
         ])
-        assert torch.isclose(random_quat.square().sum(), torch.ones(1))
+        assert torch.isclose(random_quat.square().sum(), torch.ones(1)), (u, random_quat, random_quat.square().sum())
         R = quaternion_to_matrix(random_quat.unsqueeze(0))[0, ...]
         return R
 
@@ -595,7 +600,8 @@ class UnconstrainedRotationRule(RotationProductionRule):
         u2_1 /= (2. * np.pi)
         u3_1 /= (2. * np.pi)
 
-        return {"UnconstrainedRotationRule_u": torch.stack([u1, u2_1, u3_1]) * self.scaling}
+        scaling = torch.tensor([1., 1., 2.]) * np.pi ** (2. / 3)
+        return {"UnconstrainedRotationRule_u": SiteValue(self.u_dist, torch.stack([u1, u2_1, u3_1]) * self.scaling)}
 
     @classmethod
     def get_parameter_prior(cls):
@@ -688,7 +694,7 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
     def get_site_values(self, parent, child):
         # TODO: Not exactly reverse-engineering, but hopefully close.
         theta, _ = recover_relative_angle_axis(parent, child, target_axis=self.axis)
-        return {"UniformBoundedRevoluteJointRule_theta": theta}
+        return {"UniformBoundedRevoluteJointRule_theta": SiteValue(self._angle_dist, theta)}
 
     @classmethod
     def get_parameter_prior(cls):
@@ -834,7 +840,7 @@ class GaussianChordOffsetRule(RotationProductionRule):
     def get_site_values(self, parent, child):
         # TODO: Not exactly reverse-engineering, but hopefully close.
         theta, _ = recover_relative_angle_axis(parent, child, target_axis=self.axis)
-        return {"GaussianChordOffsetRule_theta": theta}
+        return {"GaussianChordOffsetRule_theta": SiteValue(self._angle_dist, theta)}
 
     @classmethod
     def get_parameter_prior(cls):

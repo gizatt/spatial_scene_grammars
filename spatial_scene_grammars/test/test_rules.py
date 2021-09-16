@@ -292,16 +292,17 @@ def test_ProductionRule(set_seed, xyz_rule, rotation_rule):
 
     # Reported site values should be exactly match with actual site values.
     reported_site_values = rule.get_site_values(parent, child)
-    for key, value in reported_site_values.items():
+    for key, site_value in reported_site_values.items():
         full_key = "%s/%s" % (child.name, key)
         assert full_key in trace.nodes.keys()
         trace_val = trace.nodes[full_key]["value"]
-        assert torch.allclose(trace_val, value), (trace_val, value)
+        assert torch.allclose(trace_val, site_value.value), (trace_val, site_value.value)
     for key, site in trace.nodes.items():
         if trace.nodes[key]["type"] == "sample":
             subkey = key.split("/")[-1]
             assert subkey in reported_site_values.keys()
-            assert torch.allclose(site["value"], reported_site_values[subkey]), (site["value"], reported_site_values[subkey])
+            assert torch.allclose(site["value"], reported_site_values[subkey].value), (site["value"], reported_site_values[subkey].value)
+            assert site["fn"] is reported_site_values[subkey].fn
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from pydrake.all import (
     RollPitchYaw,
     RigidTransform
 )
+
 ''' Simple grammar that flexes most of the rule
 types while keeping all objects in the XY plane for
 easy visualization.
@@ -70,14 +71,14 @@ class FoodWasteCluster(IndependentSetNode):
         Rules = [
             ProductionRule(
                 child_type=stuff,
-                xyz_rule=AxisAlignedGaussianOffsetRule(
-                        mean=torch.zeros(3),
-                        variance=torch.tensor([0.1, 0.1, eps])
-                ),
+                xyz_rule=WorldFramePlanarGaussianOffsetRule(
+                    mean=torch.tensor([0.0, 0.0]),
+                    variance=torch.tensor([0.05, 0.05]),
+                    plane_transform=RigidTransform()),
                 rotation_rule=GaussianChordOffsetRule(
                     axis=torch.tensor([0., 0., 1.]),
-                    loc=0., concentration=0.1 # Basically uniform
-                ) 
+                    loc=0., concentration=0.1 # Basically uniformly random
+                )
             ) for stuff in Stuff
         ]
         return Rules
@@ -112,10 +113,10 @@ class PaperCluster(GeometricSetNode):
     def generate_rules(cls):
         return [ProductionRule(
             child_type=Paper,
-            xyz_rule=AxisAlignedGaussianOffsetRule(
-                    mean=torch.zeros(3),
-                    variance=torch.ones(3)*0.025
-            ),
+            xyz_rule=WorldFramePlanarGaussianOffsetRule(
+                mean=torch.tensor([0.0, 0.0]),
+                variance=torch.tensor([0.05, 0.05]),
+                plane_transform=RigidTransform()),
             rotation_rule=GaussianChordOffsetRule(
                 axis=torch.tensor([0., 0., 1.]),
                 loc=0., concentration=100. # Roughly aligned
@@ -152,10 +153,10 @@ class PencilCluster(GeometricSetNode):
     def generate_rules(cls):
         return [ProductionRule(
             child_type=Pencil,
-            xyz_rule=AxisAlignedGaussianOffsetRule(
-                    mean=torch.zeros(3),
-                    variance=torch.tensor([0.025, 0.025, eps])
-            ),
+            xyz_rule=WorldFramePlanarGaussianOffsetRule(
+                mean=torch.tensor([0.0, 0.0]),
+                variance=torch.tensor([0.01, 0.005]),
+                plane_transform=RigidTransform()),
             rotation_rule=GaussianChordOffsetRule(
                 axis=torch.tensor([0., 0., 1.]),
                 loc=0., concentration=1000. # Very aligned
@@ -188,11 +189,11 @@ class ObjectCluster(OrNode):
 
 class Desk(GeometricSetNode):
     # Make geometric # of object clusters
-    desk_size=[1., 1.]
+    desk_size=[2., 2.]
     def __init__(self, tf):
         geom = PhysicsGeometryInfo()
         geom.register_geometry(
-            tf=drake_tf_to_torch_tf(RigidTransform(p=[self.desk_size[0]/2., self.desk_size[1]/2., -0.5])),
+            tf=drake_tf_to_torch_tf(RigidTransform(p=[0., 0., -0.5])),
             geometry=pydrake_geom.Box(self.desk_size[0], self.desk_size[1], 1.0),
             color=np.array([0.3, 0.2, 0.2, 1.0])
         )
@@ -209,7 +210,10 @@ class Desk(GeometricSetNode):
         ub = torch.tensor([cls.desk_size[0] - 0.2, cls.desk_size[1] - 0.2, 0.0])
         rule = ProductionRule(
             child_type=ObjectCluster,
-            xyz_rule=AxisAlignedGaussianOffsetRule(mean=torch.tensor([0.5, 0.5, eps]), variance=torch.tensor([0.25, 0.25, eps])),
+            xyz_rule=WorldFramePlanarGaussianOffsetRule(
+                mean=torch.tensor([0.0, 0.0]),
+                variance=torch.tensor([0.2, 0.2]),
+                plane_transform=RigidTransform()),
             rotation_rule=GaussianChordOffsetRule(
                 axis=torch.tensor([0., 0., 1.]),
                 loc=0.,
