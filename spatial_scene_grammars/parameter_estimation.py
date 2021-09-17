@@ -387,20 +387,20 @@ class VariationalPosteriorSuperTree(torch.nn.Module):
             for child, rule in zip(children, rules):
                 for key, site_value in rule.get_site_values(parent, child).items():
                     site_name = "%s/%s/%s" % (parent.name, child.name, key)
-                    constrained_value = site_value.value
+                    constrained_value = site_value.value.detach()
                     site_constraint = site_value.fn.support
                     unconstrained_value = transform_to(site_constraint).inv(constrained_value)
                     self.supertree_site_constraints[site_name] = site_constraint
                     self.supertree_mean_params[site_name] = ConstrainedParameter(
-                        unconstrained_value.detach(), constraints.real
+                        unconstrained_value, constraints.real
                     )
-                    self.supertree_var_params[site_name] = ConstrainedParameter(
-                        torch.ones(unconstrained_value.shape) * 0.01,
-                        constraints.positive
-                    )
+                    #self.supertree_var_params[site_name] = ConstrainedParameter(
+                    #    torch.ones(unconstrained_value.shape) * 0.01,
+                    #    constraints.positive
+                    #)
                     self.supertree_param_has_been_set[site_name] = False
 
-    def update_map_tree(self, map_tree, force_update_posterior=False):
+    def update_map_tree(self, map_tree, update_posterior):
         # Traverse map tree and supertree in lockstep, updating
         # parameter values for nodes in the map tree. This prepares
         # SVI for a minor iteration (after parsing has found a new
@@ -437,16 +437,16 @@ class VariationalPosteriorSuperTree(torch.nn.Module):
                     constrained_value = site_value.value.detach()
                     unconstrained_value = transform_to(site_constraint).inv(constrained_value)
                     supertree_mean_param = self.supertree_mean_params[supertree_site_name]
-                    supertree_var_param = self.supertree_var_params[supertree_site_name]
-                    if force_update_posterior or not self.supertree_param_has_been_set[supertree_site_name]:
+                    #supertree_var_param = self.supertree_var_params[supertree_site_name]
+                    if update_posterior: # or not self.supertree_param_has_been_set[supertree_site_name]:
                         supertree_mean_param.set(unconstrained_value)
-                        supertree_var_param.set(torch.ones(unconstrained_value.shape) * 0.001)
+                        #supertree_var_param.set(torch.ones(unconstrained_value.shape) * 0.001)
                         self.supertree_param_has_been_set[supertree_site_name] = True
 
                     # Register these parameters to correspond to this node+rule, so we can
                     # condition rerolls of the map  tree.
                     self.map_tree_mean_params[map_site_name] = supertree_mean_param
-                    self.map_tree_var_params[map_site_name] = supertree_var_param
+                    #self.map_tree_var_params[map_site_name] = supertree_var_param
                     self.map_tree_site_constraints[map_site_name] = site_constraint
 
                 node_queue.append((map_child, super_child))
@@ -477,20 +477,22 @@ class VariationalPosteriorSuperTree(torch.nn.Module):
                 pyro.sample("%s_xyz_observed" % node.name, xyz_observed_dist, obs=node.translation)
                 pyro.sample("%s_rotation_observed" % node.name, rot_observed_dist, obs=node.rotation)
         # Implement joint axis constraints
-        axis_alignment_variance = 1E-2
-        for node in scene_tree.nodes:
-            children, rules = scene_tree.get_children_and_rules(parent)
-            for child, rule in zip(children, rules):
-                if type(rule) == GaussianChordOffsetRule or type(rule) == UniformBoundedRevoluteJointRule:
-                    # Both of these rule types require that parent/child rotation is
-                    # about an axis.
-                    axis_from_parent = torch.matmul(node.rotation, node.axis)
-                    axis_from_child = torch.matmul(child.rotation, child.axis)
-                    inner_product = (axis_from_parent*axis_from_child).sum()
-                    pyro.sample("%s_axis_error_observed" % node.name,
-                        dist.Normal(1., axis_alignment_variance),
-                        obs=inner_product
-                    )
+        # Should not be necessary since we're in configuration space (random sample
+        # sites of forward model) instead of maximal coords (poses).
+        #axis_alignment_variance = 1E-2
+        #for node in scene_tree.nodes:
+        #    children, rules = scene_tree.get_children_and_rules(parent)
+        #    for child, rule in zip(children, rules):
+        #        if type(rule) == GaussianChordOffsetRule or type(rule) == UniformBoundedRevoluteJointRule:
+        #            # Both of these rule types require that parent/child rotation is
+        #            # about an axis.
+        #            axis_from_parent = torch.matmul(node.rotation, node.axis)
+        #            axis_from_child = torch.matmul(child.rotation, child.axis)
+        #            inner_product = (axis_from_parent*axis_from_child).sum()
+        #            pyro.sample("%s_axis_error_observed" % node.name,
+        #                dist.Normal(1., axis_alignment_variance),
+        #                obs=inner_product
+        #            )
 
     def evaluate_elbo(self, grammar, num_samples=5, verbose=0):
         total_elbo = torch.tensor([0.])
@@ -504,7 +506,7 @@ class VariationalPosteriorSuperTree(torch.nn.Module):
                 unconstrained_sample = q_density.rsample()
                 # Map the unconstrained sample into the contrained parameter space
                 conditioning[key] = transform_to(self.map_tree_site_constraints[key])(unconstrained_sample)
-                #total_q_ll = total_q_ll + q_density.log_prob(unconstrained_sample).sum()
+                total_q_ll = total_q_ll + q_density.log_prob(unconstrained_sample).sum()
             
             with pyro.condition(data=conditioning):
                 trace = pyro.poutine.trace(self.forward_model).get_trace(grammar)
@@ -605,8 +607,12 @@ class SVIWrapper():
         )
         
         # Set up common optimizer for the whole process.
+        param_groups = [
+         {"params": variational_posteriors.parameters(), "lr": base_lr},
+         {"params": self.grammar.parameters(), "lr": base_lr}
+        ]
         params = [*variational_posteriors.parameters(), *self.grammar.parameters()]
-        optimizer = torch.optim.Adam(params, lr=base_lr)#, betas = (0.95, 0.999))
+        optimizer = torch.optim.Adam(param_groups, lr=base_lr)#, betas = (0.95, 0.999))
         lr_schedule = PiecewisePolynomial.FirstOrderHold(
             breaks=[0., 10.],
             samples=[[0., 1.]]
@@ -624,7 +630,7 @@ class SVIWrapper():
             refined_trees = self.get_map_trees(throw_on_failure=throw_on_map_failure, verbose=verbose, tqdm=tqdm)
             # Initialize variational posterior at the MAP tree.
             for variational_posterior, tree in zip(variational_posteriors, refined_trees):
-                variational_posterior.update_map_tree(tree, force_update_posterior=True)
+                variational_posterior.update_map_tree(tree, update_posterior=False)#(major_iteration > 0))
 
             if tqdm:
                 major_iterator.set_description("Major %03d: doing SVI iters" % (major_iteration))
@@ -657,12 +663,16 @@ class SVIWrapper():
                 else:
                     logging.info("%03d/%05d: ELBO %f" % (major_iteration, minor_iteration, total_elbo.item()))
                 
+                param_of_interest = list(variational_posteriors[0].parameters())[0]
                 if minor_iteration < minor_iterations - 1:
                     (-total_elbo).backward(retain_graph=False)
                     if clip is not None:
                         torch.nn.utils.clip_grad_norm_(params, clip)
+
+                    #print("param before step: %s (grad %s)" % (param_of_interest, param_of_interest.grad))
                     optimizer.step()
                     scheduler.step()
+                    #print("param after step: %s (grad %s)" % (param_of_interest, param_of_interest.grad))
                 
             self.grammar_major_iters.append(grammar_history)
             self.posterior_major_iters.append((variational_posteriors, variational_posterior_history))
