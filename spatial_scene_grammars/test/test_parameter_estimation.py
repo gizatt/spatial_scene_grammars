@@ -30,7 +30,7 @@ def test_svi(set_seed):
     # Can't do more than 1 iter of fitting in case the parameters jump
     # to a setting that makes parsing impossible (which is likely, since
     # we're only doing a very noisy few steps here.)
-    svi.do_iterated_vi_fitting(major_iterations=1, minor_iterations=3, tqdm=None, num_elbo_samples=2)
+    svi.do_iterated_vi_fitting(major_iterations=1, minor_iterations=3, tqdm=None, num_elbo_samples=2, base_lr=0.01, clip=1.)
 
     # Make sure something happened + was logged
     assert len(svi.elbo_history) == 3

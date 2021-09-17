@@ -40,6 +40,7 @@ from pydrake.all import (
     Solve,
     SolverOptions,
     SolutionResult,
+    PiecewisePolynomial,
     VPolytope,
     MixedIntegerRotationConstraintGenerator,
     IntervalBinning,
@@ -349,40 +350,111 @@ def collect_posterior_sample_sets(grammar, observed_node_sets, num_workers=1, tq
 
     return posterior_sample_sets
 
+def get_supertree_rules_from_parent(parent_node, children):
+    ## Get child rule list. Can't use get_children_and_rules
+    # here since we're operating on a supertree, so the standard
+    # scene tree logic for getting rules isn't correct.
+    if isinstance(parent_node, GeometricSetNode):
+        rules = [parent_node.rule for k in range(len(children))]
+    elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
+        rules = parent_node.rules
+    elif isinstance(parent_node, TerminalNode):
+        rules = []
+    else:
+        raise ValueError("Unexpected node type: ", type(parent_node))
+    return rules
 
-class VariationalPosteriorTree(torch.nn.Module):
+class VariationalPosteriorSuperTree(torch.nn.Module):
     ''' Torch Module whose parameters encode a variational
-        posterior distribution over the poses of a scene tree with
-        structure matching a supplied base scene tree, whose parameters
-        are initialized to put a tight peak at the base tree.
-        
+        posterior distribution over the poses of all nodes in a
+        super tree. Enables a data update that consumes a MAP-optimized
+        tree and resets the posterior of nodes in that tree to
+        be tightly matching the poses of nodes in that MAP tree.
+
         Distribution is a mean-field over the sample sites in the forward
         sampling process for the continuous sites in this tree.'''
-    def __init__(self, base_tree, grammar):
+    def __init__(self, super_tree, grammar):
         super().__init__()
-        self.base_tree = base_tree
+        self.super_tree = deepcopy(super_tree)
         # Keyed by sample site name
-        self.mean_params = torch.nn.ModuleDict()
-        self.var_params = torch.nn.ModuleDict()
-        self.site_constraints = {}
-        for parent in self.base_tree.nodes:
-            children, rules = base_tree.get_children_and_rules(parent)
+        self.supertree_mean_params = torch.nn.ModuleDict()
+        self.supertree_var_params = torch.nn.ModuleDict()
+        self.supertree_param_has_been_set = {}
+        self.supertree_site_constraints = {}
+        for parent in self.super_tree:
+            children = self.super_tree.get_children(parent)
+            rules = get_supertree_rules_from_parent(parent, children)
             for child, rule in zip(children, rules):
                 for key, site_value in rule.get_site_values(parent, child).items():
                     site_name = "%s/%s/%s" % (parent.name, child.name, key)
-                    self.site_constraints[site_name] = site_value.fn.support
-                    self.mean_params[site_name] = ConstrainedParameter(
-                        site_value.value, constraints.real
+                    constrained_value = site_value.value
+                    site_constraint = site_value.fn.support
+                    unconstrained_value = transform_to(site_constraint).inv(constrained_value)
+                    self.supertree_site_constraints[site_name] = site_constraint
+                    self.supertree_mean_params[site_name] = ConstrainedParameter(
+                        unconstrained_value.detach(), constraints.real
                     )
-                    self.var_params[site_name] = ConstrainedParameter(
-                        torch.ones(site_value.value.shape) * 0.01,
+                    self.supertree_var_params[site_name] = ConstrainedParameter(
+                        torch.ones(unconstrained_value.shape) * 0.01,
                         constraints.positive
                     )
+                    self.supertree_param_has_been_set[site_name] = False
+
+    def update_map_tree(self, map_tree, force_update_posterior=False):
+        # Traverse map tree and supertree in lockstep, updating
+        # parameter values for nodes in the map tree. This prepares
+        # SVI for a minor iteration (after parsing has found a new
+        # good MAP tree with good discrete structure).
+        self.map_tree = deepcopy(map_tree)
+
+        self.map_tree_mean_params = {}
+        self.map_tree_var_params = {}
+        self.map_tree_site_constraints = {}
+
+        node_queue = [(map_tree.get_root(), self.super_tree.get_root())]
+        while len(node_queue) > 0:
+            map_parent, super_parent = node_queue.pop() 
+            map_children, map_rules = map_tree.get_children_and_rules(map_parent)
+            super_children = self.super_tree.get_children(super_parent)
+            super_rules = get_supertree_rules_from_parent(super_parent, super_children)
+
+            for map_child, map_rule in zip(map_children, map_rules):
+                super_child = super_children[map_child.rule_k]
+                super_rule = super_rules[map_child.rule_k]
+                super_site_values = super_rule.get_site_values(super_parent, super_child)
+                map_site_values = map_rule.get_site_values(map_parent, map_child)
+                for ((_, site_value), (key, super_site_value)) in zip(map_site_values.items(), super_site_values.items()):
+                    # Params will be addressed by supertree node names
+                    supertree_site_name = "%s/%s/%s" % (super_parent.name, super_child.name, key)
+                    # Remap to map tree node names
+                    map_site_name = "%s/%s/%s" % (map_parent.name, map_child.name, key)
                     
+                    # Constraint should not have changed
+                    site_constraint = site_value.fn.support
+                    assert type(site_constraint) is type(super_site_value.fn.support)
+
+                    # Update parameter to have the map value.
+                    constrained_value = site_value.value.detach()
+                    unconstrained_value = transform_to(site_constraint).inv(constrained_value)
+                    supertree_mean_param = self.supertree_mean_params[supertree_site_name]
+                    supertree_var_param = self.supertree_var_params[supertree_site_name]
+                    if force_update_posterior or not self.supertree_param_has_been_set[supertree_site_name]:
+                        supertree_mean_param.set(unconstrained_value)
+                        supertree_var_param.set(torch.ones(unconstrained_value.shape) * 0.001)
+                        self.supertree_param_has_been_set[supertree_site_name] = True
+
+                    # Register these parameters to correspond to this node+rule, so we can
+                    # condition rerolls of the map  tree.
+                    self.map_tree_mean_params[map_site_name] = supertree_mean_param
+                    self.map_tree_var_params[map_site_name] = supertree_var_param
+                    self.map_tree_site_constraints[map_site_name] = site_constraint
+
+                node_queue.append((map_child, super_child))
+
     def forward_model(self, grammar):
-        # Resample the continuous structure of the tree into
+        # Resample the continuous structure of this tree into
         # a book-keeping copy.
-        scene_tree = deepcopy(self.base_tree)
+        scene_tree = deepcopy(self.map_tree)
         # Hook grammar back into tree
         grammar.update_tree_grammar_parameters(scene_tree)
         node_queue = [scene_tree.get_root()]
@@ -398,7 +470,7 @@ class VariationalPosteriorTree(torch.nn.Module):
         # Implement observation constraints
         xyz_observed_variance = 1E-3
         rot_observed_variance = 1E-3
-        for node, original_node in zip(scene_tree.nodes, self.base_tree.nodes):
+        for node, original_node in zip(scene_tree.nodes, self.map_tree.nodes):
             if node.observed:
                 xyz_observed_dist = dist.Normal(original_node.translation, xyz_observed_variance)
                 rot_observed_dist = dist.Normal(original_node.rotation, rot_observed_variance)
@@ -427,12 +499,12 @@ class VariationalPosteriorTree(torch.nn.Module):
             # the sample sites in the forward model.
             total_q_ll = torch.tensor([0.])
             conditioning = {}
-            for key in self.mean_params.keys():
-                q_density = dist.Normal(self.mean_params[key](), self.var_params[key]())
+            for key in self.map_tree_mean_params.keys():
+                q_density = dist.Delta(self.map_tree_mean_params[key]()) #, self.map_tree_var_params[key]())
                 unconstrained_sample = q_density.rsample()
                 # Map the unconstrained sample into the contrained parameter space
-                conditioning[key] = transform_to(self.site_constraints[key])(unconstrained_sample)
-                total_q_ll = total_q_ll + q_density.log_prob(unconstrained_sample).sum()
+                conditioning[key] = transform_to(self.map_tree_site_constraints[key])(unconstrained_sample)
+                #total_q_ll = total_q_ll + q_density.log_prob(unconstrained_sample).sum()
             
             with pyro.condition(data=conditioning):
                 trace = pyro.poutine.trace(self.forward_model).get_trace(grammar)
@@ -509,8 +581,9 @@ class SVIWrapper():
         return refined_trees
             
 
-    def do_iterated_vi_fitting(self, major_iterations=1, minor_iterations=50, throw_on_map_failure=False,
-                               num_elbo_samples=3, verbose=0, tqdm=None):
+    def do_iterated_vi_fitting(self, major_iterations=1, minor_iterations=50, subsample=None, base_lr=0.1,
+                               throw_on_map_failure=False, num_elbo_samples=3, verbose=0, tqdm=None, max_recursion_depth=10,
+                               clip=None):
         '''
         
             throw_on_map_failure: If there's a failure in the MAP tree optimization routine,
@@ -525,6 +598,23 @@ class SVIWrapper():
         self.grammar_major_iters = []
         self.posterior_major_iters = []
         
+        # Initialize VariationalPosteriorSuperTree for each observation.
+        super_tree = self.grammar.make_super_tree(max_recursion_depth=max_recursion_depth, detach=True)
+        variational_posteriors = torch.nn.ModuleList(
+            [VariationalPosteriorSuperTree(super_tree, self.grammar) for k in range(len(self.observed_node_sets))]
+        )
+        
+        # Set up common optimizer for the whole process.
+        params = [*variational_posteriors.parameters(), *self.grammar.parameters()]
+        optimizer = torch.optim.Adam(params, lr=base_lr)#, betas = (0.95, 0.999))
+        lr_schedule = PiecewisePolynomial.FirstOrderHold(
+            breaks=[0., 10.],
+            samples=[[0., 1.]]
+        )
+        def get_lr(epoch):
+            return lr_schedule.value(epoch)[0, 0] * 0.999**epoch
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, get_lr)
+
         major_iterator = range(major_iterations)
         if tqdm:
             major_iterator = tqdm(major_iterator, desc="Major iteration", total=major_iterations)
@@ -533,16 +623,11 @@ class SVIWrapper():
                 major_iterator.set_description("Major %03d: calculating MAP trees" % (major_iteration))
             refined_trees = self.get_map_trees(throw_on_failure=throw_on_map_failure, verbose=verbose, tqdm=tqdm)
             # Initialize variational posterior at the MAP tree.
-            variational_posteriors = torch.nn.ModuleList(
-                [VariationalPosteriorTree(tree, self.grammar) for tree in refined_trees]
-            )
-            
+            for variational_posterior, tree in zip(variational_posteriors, refined_trees):
+                variational_posterior.update_map_tree(tree, force_update_posterior=True)
+
             if tqdm:
                 major_iterator.set_description("Major %03d: doing SVI iters" % (major_iteration))
-
-            params = [*variational_posteriors.parameters(), *self.grammar.parameters()]
-            optimizer = torch.optim.Adam(params, lr=0.1)
-            scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 200], gamma=0.1)
 
             grammar_history = []
             variational_posterior_history = []
@@ -557,9 +642,13 @@ class SVIWrapper():
                 variational_posterior_history.append(deepcopy(variational_posteriors.state_dict()))
                 
                 # Evaluate ELBO and do gradient updates.
+                if subsample:
+                    posteriors = np.random.choice(variational_posteriors, size=subsample, replace=False)
+                else:
+                    posteriors = variational_posteriors
                 total_elbo = torch.mean(torch.stack([
                     posterior.evaluate_elbo(self.grammar, num_elbo_samples, verbose=verbose)
-                    for posterior in variational_posteriors
+                    for posterior in posteriors
                 ]))
                 
                 self.elbo_history.append(total_elbo.detach())
@@ -569,7 +658,9 @@ class SVIWrapper():
                     logging.info("%03d/%05d: ELBO %f" % (major_iteration, minor_iteration, total_elbo.item()))
                 
                 if minor_iteration < minor_iterations - 1:
-                    (-total_elbo).backward()
+                    (-total_elbo).backward(retain_graph=False)
+                    if clip is not None:
+                        torch.nn.utils.clip_grad_norm_(params, clip)
                     optimizer.step()
                     scheduler.step()
                 

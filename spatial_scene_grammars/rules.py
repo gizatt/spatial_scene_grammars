@@ -439,8 +439,8 @@ class WorldFramePlanarGaussianOffsetRule(XyzProductionRule):
         covariance_det = np.linalg.det(covar)
         log_normalizer = -np.log(np.sqrt( (2. * np.pi) ** 2 * covariance_det))
 
-        inv_tf = torch_tf_to_drake_tf(self.plane_transform_inv)
-        xy_offset = inv_tf.multiply(child.translation - parent.translation)[:2] - mean
+        inv_tf = torch_tf_to_drake_tf(self.plane_transform_inv).cast[Expression]()
+        xy_offset = inv_tf.multiply(child.t_optim - parent.t_optim)[:2] - mean
         total_ll = -0.5 * (xy_offset.transpose().dot(inverse_covariance).dot(xy_offset)) + log_normalizer
         prog.AddCost(-total_ll)
 

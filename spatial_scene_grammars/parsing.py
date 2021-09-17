@@ -281,7 +281,7 @@ def add_mle_tree_parsing_to_prog(
                     prog.AddLinearConstraint(node.R_optim[i, j] >= obs_R[i, j] - 1E-6 - (1. - source_actives[k]) * M)
 
     # Go back and make sure no node in the super tree is being used
-    # to explain more than one observed node, and that the "observed"
+    # to explain more than one observed node, that the "observed"
     # nodes are only active if they are explaining something.
     # TODO(gizatt) These constraints are a little frustrating: without
     # them, the parsing likes to hallucinate unnecessary hidden nodes
