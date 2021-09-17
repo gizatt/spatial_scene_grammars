@@ -41,6 +41,20 @@ def test_constrained_param():
     do_tests(torch.ones(10), constraint=constraints.real)
     do_tests(torch.ones(10)/10., constraint=constraints.simplex)
 
+    # Test that gradient propagate correctly after changing param value
+    p = ConstrainedParameter(torch.ones(3), constraint=constraints.real)
+    loss = p().square().sum()
+    # grad = 2. * val
+    loss.backward()
+    assert torch.allclose(p.get_unconstrained_value().grad, 2.*torch.ones(3)), p.get_unconstrained_value().grad
+
+    p.get_unconstrained_value().grad = None
+    p.set(torch.ones(3)*2.)
+    loss = p().square().sum()
+    loss.backward()
+    assert torch.allclose(p.get_unconstrained_value().grad, 2.*2.*torch.ones(3)), p.get_unconstrained_value().grad
+
+
 def test_interpolate_translation():
     t1 = torch.tensor([0., 0., 0.])
     t2 = torch.tensor([1., 1., 1])
