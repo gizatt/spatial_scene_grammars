@@ -462,7 +462,6 @@ class VariationalPosteriorSuperTree(torch.nn.Module):
             parent = node_queue.pop(0)
             children, rules = scene_tree.get_children_and_rules(parent)
             for child, rule in zip(children, rules):
-                # TODO: node score children too!
                 with scope(prefix=parent.name):
                     rule.sample_child(parent, child)
                 node_queue.append(child)
@@ -493,6 +492,7 @@ class VariationalPosteriorSuperTree(torch.nn.Module):
         #                dist.Normal(1., axis_alignment_variance),
         #                obs=inner_product
         #            )
+        return scene_tree
 
     def evaluate_elbo(self, grammar, num_samples=5, verbose=0):
         total_elbo = torch.tensor([0.])
@@ -510,8 +510,18 @@ class VariationalPosteriorSuperTree(torch.nn.Module):
             
             with pyro.condition(data=conditioning):
                 trace = pyro.poutine.trace(self.forward_model).get_trace(grammar)
-                log_p = trace.log_prob_sum()
-            
+                log_p_continuous = trace.log_prob_sum()
+                assert torch.isfinite(log_p_continuous)
+                scoring_tree = trace.nodes["_RETURN"]["value"]
+                # Add score for the discrete decisions in the tree, which isn't captured in
+                # our continuous-only forward model.
+                log_p_discrete = torch.zeros(1)
+                for node in scoring_tree.nodes:
+                    children = scoring_tree.get_children(node)
+                    log_p_discrete = log_p_discrete + node.score_child_set(children)
+                assert torch.isfinite(log_p_discrete)
+
+
             for key in conditioning.keys():
                 assert key in trace.nodes.keys()
 
@@ -519,7 +529,7 @@ class VariationalPosteriorSuperTree(torch.nn.Module):
             # For now, no non-reparameterized sites in the variational
             # posterior, so we can calculate expectation as mean of
             # samples.
-            total_elbo = total_elbo + (log_p - total_q_ll)
+            total_elbo = total_elbo + (log_p_continuous + log_p_discrete - total_q_ll)
         total_elbo = total_elbo / num_samples
         return total_elbo
 
@@ -630,7 +640,7 @@ class SVIWrapper():
             refined_trees = self.get_map_trees(throw_on_failure=throw_on_map_failure, verbose=verbose, tqdm=tqdm)
             # Initialize variational posterior at the MAP tree.
             for variational_posterior, tree in zip(variational_posteriors, refined_trees):
-                variational_posterior.update_map_tree(tree, update_posterior=False)#(major_iteration > 0))
+                variational_posterior.update_map_tree(tree, update_posterior=False)
 
             if tqdm:
                 major_iterator.set_description("Major %03d: doing SVI iters" % (major_iteration))
