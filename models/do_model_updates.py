@@ -112,7 +112,7 @@ def do_collision_mesh_simplification(input_obj_path, show=False):
     out_dir = os.path.join(dirname, piece_dirname)
     os.makedirs(out_dir, exist_ok=True)
 
-    mesh = trimesh.load(input_obj_path)
+    mesh = trimesh.load(input_obj_path, skip_materials=True)
     if show:
         mesh.show()
     try:
@@ -268,12 +268,12 @@ if __name__ == "__main__":
     # <my data dir>/<model name>/model.sdf
     # <my data dir>/<other>/model.sdf
 
-    data_folder = "/home/gizatt/projects/scene_grammar/models/"
+    data_folder = "./plates_cups_and_bowls/"
     # Update a specific model by name.
-    to_update = glob.glob(data_folder + "/*/Chefmate_8_Frypan/model.sdf")
+    #to_update = glob.glob(data_folder + "/*/Chefmate_8_Frypan/model.sdf")
     # Update all models.
-    to_update = glob.glob(data_folder + "/*/*/model.sdf")
+    to_update = glob.glob(data_folder + "/**/model.sdf", recursive=True)
     print(to_update)
     for file in to_update:
         print("Processing %s" % file)
-        update_sdf_with_convex_decomp(file)
+        update_sdf_with_convex_decomp(os.path.abspath(file))

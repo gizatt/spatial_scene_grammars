@@ -12,11 +12,14 @@ structure exactly:
 <model_folder_name>
 ├── model.sdf
 ├── meshes
-│   ├── model.obj
+│       ├── model.obj
 ├── materials
-│   ├── textures
-│       ├── texture.png
+│       ├── textures
+│              ├── texture.png
 ```
+
+If the model has an mtl, it's ignored; it's assumed that the model UVs are set up
+such that `texture.png` is a good baked texture for that object.
 
 Running the `do_model_updates.py` script (you can change its target model folders
 by editing the script at the bottom) will open each `model.sdf` and create a new
@@ -29,7 +32,7 @@ created assets with the originals.
 
 # Software prereqs
 
-Install trimesh with `pip install trimesh`.
+Install deps with `pip install trimesh open3d opencv-python imutils`.
 
 You'll need a backend that can do convex decomposition, too -- IIRC, having
 `blender` on your path *might* be enough. But I usually copy the code out of
