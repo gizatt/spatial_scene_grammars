@@ -53,7 +53,7 @@ class HiddenNode(AndNode):
                 child_type=VisibleNode,
                 xyz_rule=AxisAlignedGaussianOffsetRule(
                     mean=torch.zeros(3),
-                    variance=torch.tensor([1.0, 1.0, eps])),
+                    variance=torch.tensor([1.0, 2.0, eps])),
                 rotation_rule=SameRotationRule() 
             )
         ]
