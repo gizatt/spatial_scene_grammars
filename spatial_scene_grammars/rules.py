@@ -586,6 +586,9 @@ class UnconstrainedRotationRule(RotationProductionRule):
         quaternion = matrix_to_quaternion(child.rotation)
         if quaternion[2] < 0:
             quaternion = -quaternion
+        if quaternion[2] == 0:
+            # Got a weird negative-zero error once; squashing...
+            quaternion[2] = torch.abs(quaternion[2])
         u1 = quaternion[2]**2 + quaternion[3]**2
         # Sanity-check that my inversion is reasonable
         assert torch.isclose(quaternion[0]**2. + quaternion[1]**2, 1. - u1)
