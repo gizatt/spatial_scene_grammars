@@ -558,6 +558,154 @@ class VariationalPosteriorSuperTree(torch.nn.Module):
         return log_p_continuous, log_p_discrete
 
 
+def get_map_trees_for_observed_node_sets(grammar, observed_node_sets,
+        throw_on_failure=False, verbose=0, tqdm=None, N_solutions=1):
+    ''' Get MAP parse list for each tree in dataset using our current grammar params.
+        If parsing fails for a tree, will return None for that tree and throw
+        if requsted. '''
+    refined_tree_sets = []
+
+    iterator = enumerate(observed_node_sets)
+    if tqdm:
+        iterator = tqdm(iterator, desc="Getting MAP parses", total=len(observed_node_sets))
+        
+    for k, observed_nodes in iterator:
+        mip_results = infer_mle_tree_with_mip(
+            grammar, observed_nodes, verbose=verbose>1, max_scene_extent_in_any_dir=10.,
+            N_solutions=N_solutions
+        )
+        mip_optimized_trees = get_optimized_trees_from_mip_results(mip_results)
+        refined_trees = []
+        for mip_optimized_tree in mip_optimized_trees:
+            if mip_optimized_tree is None:
+                error_msg = "MIP optimization failed for observed set %d" % k
+                if throw_on_failure:
+                    raise RuntimeError(error_msg)
+                else:
+                    logging.warning(error_msg)
+                    refined_trees = None
+                    break
+            
+            refinement_results = optimize_scene_tree_with_nlp(grammar, mip_optimized_tree, verbose=verbose>1)
+            refined_tree = refinement_results.refined_tree
+            if refined_tree is None:
+                error_msg = "Nonlinear refinement failed for observed set %d" % k
+                if throw_on_failure:
+                    raise RuntimeError(error_msg)
+                else:
+                    logging.warning(error_msg)
+                    refined_trees = None
+                    break
+            
+            refined_trees.append(refined_tree)
+        refined_tree_sets.append(refined_trees)
+
+    return refined_tree_sets
+
+class EMWrapper():
+    '''
+        Given a grammar with params \theta, repeatedly:
+            1) For each observed environment, produce the `N_solutions` best parses
+            (i.e. trees sampled from the posterior) using the MIPMAP parser.
+            Compute a weight for each posterior tree based on its tree
+            joint probability (discrete + continuous), normalized across the N_solutions
+            for that observed environment.
+
+            2) Update the parameters in closed form given that set of solutions for
+            each observed environment.
+                - For each node type in the grammar, collect all parent/child set pairs with
+                the parent of the right type. Count how often each child type appears, weighting
+                by the tree weight of the tree that the parent/child pair came from. Update
+                parameters accordingly.
+                - For each rule type in the grammar, collect all parent/child pairs related
+                by that rule. Fit the parameters of the rule to the parent/child observations,
+                weighting by the tree weight of the tree that the parent/child pair came from.
+    '''
+    def __init__(self, grammar, observed_node_sets):
+        self.grammar = grammar
+        self.observed_node_sets = observed_node_sets
+
+    def do_iterated_em_fitting(self, em_iterations=5, throw_on_map_failure=False,
+                               verbose=0, tqdm=None, max_recursion_depth=10, N_solutions=1):
+        self.grammar_iters = [deepcopy(self.grammar.state_dict())]
+        if tqdm is None:
+            iterator = range(em_iterations)
+        else:
+            iterator = tqdm(range(em_iterations), desc="EM Iteration", total=em_iterations)
+        for iter_k in iterator:
+            refined_tree_sets = get_map_trees_for_observed_node_sets(
+                self.grammar, self.observed_node_sets, N_solutions=N_solutions, tqdm=tqdm
+            )
+            self.grammar = fit_grammar_params_to_sample_sets_with_uninformative_prior(
+                self.grammar, refined_tree_sets, weight_by_sample_prob=True
+            )
+            self.grammar_iters.append(deepcopy(self.grammar.state_dict()))
+        return self.grammar
+
+    def plot_grammar_parameter_history(self, node_type):
+         # Plot param history for a node type in the grammar.
+        assert hasattr(self, "grammar_iters") and len(self.grammar_iters) > 0
+        assert node_type in self.grammar.all_types
+        
+        node_param_history = []
+        rule_param_history = None
+        for state_dict in self.grammar_iters:
+            self.grammar.load_state_dict(state_dict)
+            possible_params = self.grammar.params_by_node_type[node_type.__name__]
+            if possible_params:
+                node_param_history.append(possible_params().detach())
+            rule_params = self.grammar.rule_params_by_node_type[node_type.__name__]
+            if rule_param_history is None:
+                rule_param_history = [[{}, {}] for k in range(len(rule_params))]
+            
+            for k, (xyz_rule_params, rot_rule_params) in enumerate(rule_params):
+                for key, value in xyz_rule_params.items():
+                    hist_dict = rule_param_history[k][0]
+                    if key not in hist_dict:
+                        hist_dict[key] = [value().detach()]
+                    else:
+                        hist_dict[key].append(value().detach())
+                for key, value in rot_rule_params.items():
+                    hist_dict = rule_param_history[k][1]
+                    if key not in hist_dict:
+                        hist_dict[key] = [value().detach()]
+                    else:
+                        hist_dict[key].append(value().detach())
+
+        if len(node_param_history) > 0:
+            node_param_history = torch.stack(node_param_history)
+        for entry in rule_param_history:
+            for k in range(2): # xyz / rot rule
+                for key, value in entry[k].items():
+                    entry[k][key] = torch.stack(value)
+
+        if len(node_param_history) > 0:
+            plt.figure()
+            plt.plot(node_param_history)
+            plt.title("%s params" % node_type.__name__)
+            print("Final params: ", node_param_history[-1, :])
+        
+        # Rules
+        N_rules = len(rule_param_history)
+        plt.figure()
+        for k, entry in enumerate(rule_param_history):
+            plt.suptitle("%s rule %d params" % (node_type.__name__, k))
+            # XYZ
+            plt.subplot(2, N_rules, k+1)
+            plt.title("XYZ Rule")
+            for key, value in entry[0].items():
+                plt.plot(value, label=key)
+                print("%d:xyz:%s final: %s" % (k, key, value[-1, :]))
+            plt.legend()
+            plt.subplot(2, N_rules, k + N_rules + 1)
+            plt.title("Rot rule")
+            for key, value in entry[1].items():
+                plt.plot(value, label=key)
+                print("%d:rot:%s final: %s" % (k, key, value[-1, :]))
+            plt.legend()
+        plt.tight_layout()
+
+
 class SVIWrapper():
     '''
     Initialize a variational posterior $q_\phi(z_k)$ for each observation $k$,
@@ -572,54 +720,21 @@ class SVIWrapper():
         $\phi$ to be tightly peaked around the MAP-optimal setting.
     3. Run a few gradient step updates on the ELBO evaluated using discrete tree
         structure $t_k$ and continuous poses sampled from the variational posterior.
+
+    TODO: This *was* an SVI implementation, but the constraints are so stiff that
+    the posteriors tended to be very tight. So I've swapped it out to Delta-distribution
+    posteriors, i.e. this is just simultaneous MLE estimation of params + latent variables.
+
+    This seems to conceptually work pretty well; however, it is really numerically unstable, especially
+    when it's seeded with a MAP solution out of the MIP process. So it tends to do better when run
+    with very small learning rates (~0.01) and lots of minor iterations (~200-500?). But that is *very*
+    slow right now, because it evaluates the score for each tree sequentially. Vectorizing this would require
+    vectoring Rule.score_child and Node.score_child_set; if I can do that, I can vectorize this cleanly
+    and hopefully get a huge speedup.
     '''
     def __init__(self, grammar, observed_node_sets):
         self.grammar = grammar
         self.observed_node_sets = observed_node_sets
-                
-    def get_map_trees(self, throw_on_failure=False, verbose=0, tqdm=None, N_solutions=1):
-        ''' Get MAP parse list for each tree in dataset using our current grammar params.
-            If parsing fails for a tree, will return None for that tree and throw
-            if requsted. '''
-        refined_tree_sets = []
-
-        iterator = enumerate(self.observed_node_sets)
-        if tqdm:
-            iterator = tqdm(iterator, desc="Getting MAP parses", total=len(self.observed_node_sets))
-            
-        for k, observed_nodes in iterator:
-            mip_results = infer_mle_tree_with_mip(
-                self.grammar, observed_nodes, verbose=verbose>1, max_scene_extent_in_any_dir=10.,
-                N_solutions=N_solutions
-            )
-            mip_optimized_trees = get_optimized_trees_from_mip_results(mip_results)
-            refined_trees = []
-            for mip_optimized_tree in mip_optimized_trees:
-                if mip_optimized_tree is None:
-                    error_msg = "MIP optimization failed for observed set %d" % k
-                    if throw_on_failure:
-                        raise RuntimeError(error_msg)
-                    else:
-                        logging.warning(error_msg)
-                        refined_trees = None
-                        break
-                
-                refinement_results = optimize_scene_tree_with_nlp(self.grammar, mip_optimized_tree, verbose=verbose>1)
-                refined_tree = refinement_results.refined_tree
-                if refined_tree is None:
-                    error_msg = "Nonlinear refinement failed for observed set %d" % k
-                    if throw_on_failure:
-                        raise RuntimeError(error_msg)
-                    else:
-                        logging.warning(error_msg)
-                        refined_trees = None
-                        break
-                
-                refined_trees.append(refined_tree)
-            refined_tree_sets.append(refined_trees)
-
-        return refined_tree_sets
-            
 
     def do_iterated_vi_fitting(self, major_iterations=1, minor_iterations=50, subsample=None, base_lr=0.1,
                                throw_on_map_failure=False, verbose=0, tqdm=None, max_recursion_depth=10,
@@ -675,7 +790,10 @@ class SVIWrapper():
         for major_iteration in major_iterator:
             if tqdm:
                 major_iterator.set_description("Major %03d: calculating MAP trees" % (major_iteration))
-            refined_tree_sets = self.get_map_trees(throw_on_failure=throw_on_map_failure, verbose=verbose, tqdm=tqdm, N_solutions=N_solutions)
+            refined_tree_sets = get_map_trees_for_observed_node_sets(
+                self.grammar, self.observed_node_sets, throw_on_failure=throw_on_map_failure,
+                verbose=verbose, tqdm=tqdm, N_solutions=N_solutions
+            )
             # Initialize variational posterior at the MAP tree.
             for variational_posterior_set, trees in zip(variational_posterior_sets, refined_tree_sets):
                 for k, variational_posterior in enumerate(variational_posterior_set):
