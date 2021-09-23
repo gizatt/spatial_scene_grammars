@@ -376,6 +376,7 @@ class VariationalPosteriorSuperTree(torch.nn.Module):
     def __init__(self, super_tree, grammar):
         super().__init__()
         self.super_tree = deepcopy(super_tree)
+        self.grammar_in_list = [grammar] # Hide in list so params don't slip into the posterior super tree
         # Keyed by sample site name
         self.supertree_mean_params = torch.nn.ModuleDict()
         self.supertree_var_params = torch.nn.ModuleDict()
@@ -399,6 +400,12 @@ class VariationalPosteriorSuperTree(torch.nn.Module):
                     #    constraints.positive
                     #)
                     self.supertree_param_has_been_set[site_name] = False
+
+    def make_shallow_copy(self):
+        new_copy = VariationalPosteriorSuperTree(self.super_tree, self.grammar_in_list[0])
+        new_copy.supertree_mean_params = self.supertree_mean_params
+        new_copy.supertree_var_params = self.supertree_var_params
+        return new_copy
 
     def update_map_tree(self, map_tree, update_posterior):
         # Traverse map tree and supertree in lockstep, updating
@@ -494,44 +501,35 @@ class VariationalPosteriorSuperTree(torch.nn.Module):
         #            )
         return scene_tree
 
-    def evaluate_elbo(self, grammar, num_samples=5, verbose=0):
-        total_elbo = torch.tensor([0.])
-        for sample_k in range(num_samples):
-            # Sample from variational posterior, and use that to condition
-            # the sample sites in the forward model.
-            total_q_ll = torch.tensor([0.])
-            conditioning = {}
-            for key in self.map_tree_mean_params.keys():
-                q_density = dist.Delta(self.map_tree_mean_params[key]()) #, self.map_tree_var_params[key]())
-                unconstrained_sample = q_density.rsample()
-                # Map the unconstrained sample into the contrained parameter space
-                conditioning[key] = transform_to(self.map_tree_site_constraints[key])(unconstrained_sample)
-                total_q_ll = total_q_ll + q_density.log_prob(unconstrained_sample).sum()
-            
-            with pyro.condition(data=conditioning):
-                trace = pyro.poutine.trace(self.forward_model).get_trace(grammar)
-                log_p_continuous = trace.log_prob_sum()
-                assert torch.isfinite(log_p_continuous)
-                scoring_tree = trace.nodes["_RETURN"]["value"]
-                # Add score for the discrete decisions in the tree, which isn't captured in
-                # our continuous-only forward model.
-                log_p_discrete = torch.zeros(1)
-                for node in scoring_tree.nodes:
-                    children = scoring_tree.get_children(node)
-                    log_p_discrete = log_p_discrete + node.score_child_set(children)
-                assert torch.isfinite(log_p_discrete)
+    def evaluate_log_density(self, grammar, verbose=0):
+        # Sample from variational posterior, and use that to condition
+        # the sample sites in the forward model.
+        
+        conditioning = {}
+        for key in self.map_tree_mean_params.keys():
+            q_density = dist.Delta(self.map_tree_mean_params[key]()) #, self.map_tree_var_params[key]())
+            unconstrained_sample = q_density.rsample()
+            # Map the unconstrained sample into the contrained parameter space
+            conditioning[key] = transform_to(self.map_tree_site_constraints[key])(unconstrained_sample)
+        
+        with pyro.condition(data=conditioning):
+            trace = pyro.poutine.trace(self.forward_model).get_trace(grammar)
+        log_p_continuous = trace.log_prob_sum()
+        assert torch.isfinite(log_p_continuous)
+        scoring_tree = trace.nodes["_RETURN"]["value"]
+        # Add score for the discrete decisions in the tree, which isn't captured in
+        # our continuous-only forward model.
+        log_p_discrete = torch.zeros(1)
+        for node in scoring_tree.nodes:
+            children = scoring_tree.get_children(node)
+            log_p_discrete = log_p_discrete + node.score_child_set(children)
+        assert torch.isfinite(log_p_discrete)
 
+        # Sanity-check conditioning matched out tree
+        for key in conditioning.keys():
+            assert key in trace.nodes.keys()
 
-            for key in conditioning.keys():
-                assert key in trace.nodes.keys()
-
-            # Update ELBO
-            # For now, no non-reparameterized sites in the variational
-            # posterior, so we can calculate expectation as mean of
-            # samples.
-            total_elbo = total_elbo + (log_p_continuous + log_p_discrete - total_q_ll)
-        total_elbo = total_elbo / num_samples
-        return total_elbo
+        return log_p_continuous, log_p_discrete
 
 
 class SVIWrapper():
@@ -553,11 +551,11 @@ class SVIWrapper():
         self.grammar = grammar
         self.observed_node_sets = observed_node_sets
                 
-    def get_map_trees(self, throw_on_failure=False, verbose=0, tqdm=None):
-        ''' Get MAP parse for each tree in dataset using our current grammar params.
+    def get_map_trees(self, throw_on_failure=False, verbose=0, tqdm=None, N_solutions=1):
+        ''' Get MAP parse list for each tree in dataset using our current grammar params.
             If parsing fails for a tree, will return None for that tree and throw
             if requsted. '''
-        refined_trees = []
+        refined_tree_sets = []
 
         iterator = enumerate(self.observed_node_sets)
         if tqdm:
@@ -565,37 +563,41 @@ class SVIWrapper():
             
         for k, observed_nodes in iterator:
             mip_results = infer_mle_tree_with_mip(
-                self.grammar, observed_nodes, verbose=verbose>1, max_scene_extent_in_any_dir=10.
+                self.grammar, observed_nodes, verbose=verbose>1, max_scene_extent_in_any_dir=10.,
+                N_solutions=N_solutions
             )
-            mip_optimized_tree = get_optimized_tree_from_mip_results(mip_results)
-            if mip_optimized_tree is None:
-                error_msg = "MIP optimization failed for observed set %d" % k
-                if throw_on_failure:
-                    raise RuntimeError(error_msg)
-                else:
-                    logging.warning(error_msg)
-                    refined_trees.append(None)
-                    continue
-            
-            refinement_results = optimize_scene_tree_with_nlp(self.grammar, mip_optimized_tree, verbose=verbose>1)
-            refined_tree = refinement_results.refined_tree
-            if refined_tree is None:
-                error_msg = "Nonlinear refinement failed for observed set %d" % k
-                if throw_on_failure:
-                    raise RuntimeError(error_msg)
-                else:
-                    logging.warning(error_msg)
-                    refined_trees.append(None)
-                    continue
-            
-            refined_trees.append(refined_tree)
+            mip_optimized_trees = get_optimized_trees_from_mip_results(mip_results)
+            refined_trees = []
+            for mip_optimized_tree in mip_optimized_trees:
+                if mip_optimized_tree is None:
+                    error_msg = "MIP optimization failed for observed set %d" % k
+                    if throw_on_failure:
+                        raise RuntimeError(error_msg)
+                    else:
+                        logging.warning(error_msg)
+                        refined_trees = None
+                        break
+                
+                refinement_results = optimize_scene_tree_with_nlp(self.grammar, mip_optimized_tree, verbose=verbose>1)
+                refined_tree = refinement_results.refined_tree
+                if refined_tree is None:
+                    error_msg = "Nonlinear refinement failed for observed set %d" % k
+                    if throw_on_failure:
+                        raise RuntimeError(error_msg)
+                    else:
+                        logging.warning(error_msg)
+                        refined_trees = None
+                        break
+                
+                refined_trees.append(refined_tree)
+            refined_tree_sets.append(refined_trees)
 
-        return refined_trees
+        return refined_tree_sets
             
 
     def do_iterated_vi_fitting(self, major_iterations=1, minor_iterations=50, subsample=None, base_lr=0.1,
-                               throw_on_map_failure=False, num_elbo_samples=3, verbose=0, tqdm=None, max_recursion_depth=10,
-                               clip=None):
+                               throw_on_map_failure=False, verbose=0, tqdm=None, max_recursion_depth=10,
+                               clip=None, N_solutions=1):
         '''
         
             throw_on_map_failure: If there's a failure in the MAP tree optimization routine,
@@ -610,18 +612,28 @@ class SVIWrapper():
         self.grammar_major_iters = []
         self.posterior_major_iters = []
         
-        # Initialize VariationalPosteriorSuperTree for each observation.
+        # Initialize a list of VariationalPosteriorSuperTrees for each observation -- one for each distinct
+        # integer solution we expect.
         super_tree = self.grammar.make_super_tree(max_recursion_depth=max_recursion_depth, detach=True)
-        variational_posteriors = torch.nn.ModuleList(
-            [VariationalPosteriorSuperTree(super_tree, self.grammar) for k in range(len(self.observed_node_sets))]
-        )
+
+        variational_posterior_sets = []
+        for k in range(len(self.observed_node_sets)):
+            variational_posterior_set = []
+            # Make one variational posterior, and then shallow-copy it so that they
+            # all reference the same underlying supertree params. (I'm thinking of these
+            # as being different "views" into the params, with the view changed by calling
+            # update_map_tree.)
+            orig_posterior = VariationalPosteriorSuperTree(super_tree, self.grammar)
+            variational_posterior_set = [orig_posterior.make_shallow_copy() for k in range(N_solutions)]
+            variational_posterior_sets.append(torch.nn.ModuleList(variational_posterior_set))
+        variational_posterior_sets = torch.nn.ModuleList(variational_posterior_sets)
         
         # Set up common optimizer for the whole process.
         param_groups = [
-         {"params": variational_posteriors.parameters(), "lr": base_lr},
+         {"params": variational_posterior_sets.parameters(), "lr": base_lr},
          {"params": self.grammar.parameters(), "lr": base_lr}
         ]
-        params = [*variational_posteriors.parameters(), *self.grammar.parameters()]
+        params = [*variational_posterior_sets.parameters(), *self.grammar.parameters()]
         optimizer = torch.optim.Adam(param_groups, lr=base_lr)#, betas = (0.95, 0.999))
         lr_schedule = PiecewisePolynomial.FirstOrderHold(
             breaks=[0., 10.],
@@ -637,10 +649,15 @@ class SVIWrapper():
         for major_iteration in major_iterator:
             if tqdm:
                 major_iterator.set_description("Major %03d: calculating MAP trees" % (major_iteration))
-            refined_trees = self.get_map_trees(throw_on_failure=throw_on_map_failure, verbose=verbose, tqdm=tqdm)
+            refined_tree_sets = self.get_map_trees(throw_on_failure=throw_on_map_failure, verbose=verbose, tqdm=tqdm, N_solutions=N_solutions)
             # Initialize variational posterior at the MAP tree.
-            for variational_posterior, tree in zip(variational_posteriors, refined_trees):
-                variational_posterior.update_map_tree(tree, update_posterior=False)
+            for variational_posterior_set, trees in zip(variational_posterior_sets, refined_tree_sets):
+                for k, variational_posterior in enumerate(variational_posterior_set):
+                    if k < len(trees):
+                        variational_posterior.update_map_tree(trees[k], update_posterior=True)
+                    else:
+                        logging.warn("# of trees less than expected: ", len(trees))
+                        variational_posterior.map_tree = None # No solution corresponds to this posterior, so don't update it.
 
             if tqdm:
                 major_iterator.set_description("Major %03d: doing SVI iters" % (major_iteration))
@@ -655,37 +672,52 @@ class SVIWrapper():
                 optimizer.zero_grad()
                 
                 grammar_history.append(deepcopy(self.grammar.state_dict()))
-                variational_posterior_history.append(deepcopy(variational_posteriors.state_dict()))
+                variational_posterior_history.append(deepcopy(variational_posterior_sets.state_dict()))
                 
                 # Evaluate ELBO and do gradient updates.
                 if subsample:
-                    posteriors = np.random.choice(variational_posteriors, size=subsample, replace=False)
+                    posterior_set_inds = np.random.choice(range(len(variational_posterior_sets)), size=subsample, replace=False)
+                    posterior_sets = [variational_posterior_sets[k] for k in posterior_set_inds]
                 else:
-                    posteriors = variational_posteriors
-                total_elbo = torch.mean(torch.stack([
-                    posterior.evaluate_elbo(self.grammar, num_elbo_samples, verbose=verbose)
-                    for posterior in posteriors
-                ]))
-                
-                self.elbo_history.append(total_elbo.detach())
+                    posterior_sets = variational_posterior_sets
+
+                total_log_prob = torch.zeros(1)
+                for posterior_set in posterior_sets:
+                    all_continuous = []
+                    all_discrete = []
+                    for posterior in posterior_set:
+                        if posterior.map_tree is not None:
+                            log_p_continuous, log_p_discrete = posterior.evaluate_log_density(
+                                self.grammar, verbose=verbose
+                            )
+                            all_continuous.append(log_p_continuous)
+                            all_discrete.append(log_p_discrete)
+                    if len(all_continuous) == 0:
+                        continue
+                    # p = sum_{discrete}[p(discrete) * p(continuous | discrete)] / sum_{discrete}[p(discrete)]
+                    all_continuous = torch.stack(all_continuous).flatten()
+                    all_discrete = torch.stack(all_discrete).flatten()
+                    assert all_continuous.shape == all_discrete.shape
+                    mode_probs = all_discrete + all_continuous
+                    normalizer = torch.logsumexp(all_discrete, dim=0)
+                    total_log_prob = total_log_prob + torch.logsumexp(mode_probs, dim=0) - normalizer
+                mean_log_prob = total_log_prob / len(posterior_sets)
+                self.elbo_history.append(mean_log_prob.detach())
                 if tqdm:
-                    minor_iterator.set_description("Minor %05d: ELBO %f" % (minor_iteration, total_elbo.item()))
+                    minor_iterator.set_description("Minor %05d: ELBO %f" % (minor_iteration, mean_log_prob.item()))
                 else:
-                    logging.info("%03d/%05d: ELBO %f" % (major_iteration, minor_iteration, total_elbo.item()))
+                    logging.info("%03d/%05d: ELBO %f" % (major_iteration, minor_iteration, mean_log_prob.item()))
                 
-                param_of_interest = list(variational_posteriors[0].parameters())[0]
                 if minor_iteration < minor_iterations - 1:
-                    (-total_elbo).backward(retain_graph=False)
+                    (-mean_log_prob).backward(retain_graph=False)
                     if clip is not None:
                         torch.nn.utils.clip_grad_norm_(params, clip)
 
-                    #print("param before step: %s (grad %s)" % (param_of_interest, param_of_interest.grad))
                     optimizer.step()
                     scheduler.step()
-                    #print("param after step: %s (grad %s)" % (param_of_interest, param_of_interest.grad))
                 
             self.grammar_major_iters.append(grammar_history)
-            self.posterior_major_iters.append((variational_posteriors, variational_posterior_history))
+            self.posterior_major_iters.append((variational_posterior_sets, variational_posterior_history))
        
     def plot_elbo_history(self):
         assert hasattr(self, "elbo_history") and len(self.elbo_history) > 0
