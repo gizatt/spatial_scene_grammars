@@ -56,9 +56,23 @@ from .parsing import *
 from .visualization import *
 
 
-def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterior_sample_sets):
+def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterior_sample_sets, weight_by_sample_prob=False):
     ## Fit node and rule parameters using closed-form solutions, assuming
     # an uninformative prior.
+
+    # Annotate trees with weights.
+    for posterior_set in posterior_sample_sets:
+        log_weights = []
+        for posterior_tree in posterior_set:
+            if weight_by_sample_prob:
+                log_weights.append(posterior_tree.score(include_discrete=True, include_continuous=True).detach())
+            else:
+                log_weights.append(torch.tensor(0.))
+        # Normalize log weights across this sample batch
+        log_weights = torch.tensor(log_weights)
+        log_weights = log_weights - torch.logsumexp(log_weights, dim=0)
+        for log_weight, tree in zip(log_weights, posterior_set):
+            tree.__log_weight = log_weight
 
     # Collect parent/child sets for each node type.
     observed_child_sets_per_node_type = {}
@@ -69,48 +83,55 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             for node in tree:
                 if isinstance(node, TerminalNode):
                     pass
-                observed_child_sets_per_node_type[type(node).__name__].append( (node, tree.get_children(node)) )
+                observed_child_sets_per_node_type[type(node).__name__].append( (node, tree.get_children(node), tree.__log_weight) )
 
     for node_type in grammar.all_types:
         # Fit the child weights for the node type.
         observed_child_sets = observed_child_sets_per_node_type[node_type.__name__]
+        # Pre-normalize child set weights to head off any numeric issues
+        observed_child_sets_weights = torch.stack([weight for (_, _, weight) in observed_child_sets])
+        observed_child_sets_weights = torch.exp(observed_child_sets_weights - torch.logsumexp(observed_child_sets_weights, dim=0)).flatten()
         if len(observed_child_sets) == 0:
             # Don't try to update if we didn't get any observations of
             # this node type.
             continue
         if issubclass(node_type, AndNode):
-            continue
+            # We might have child rules to update, so don't continue;
+            # but we don't have any discrete-choice params to update. 
+            pass
         elif issubclass(node_type, OrNode):
             # Sum up the rule_k weights, and set
             # the new weighting to the average.
             count = torch.zeros(len(node_type.generate_rules()))
-            for (_, children) in observed_child_sets:
+            for (_, children, _), weight in zip(observed_child_sets, observed_child_sets_weights):
                 for child in children:
-                    count[child.rule_k] += 1
+                    # Maybe precision problems here? Need more bookkeeping
+                    # to do proper logspace a
+                    count[child.rule_k] += weight
             avg_count = count / torch.sum(count)
             # Bound the avg count so we don't make nodes absolutely
             # impossible to see.
             avg_count = torch.clip(avg_count, 1E-4, 1.-1E-4)
             grammar.params_by_node_type[node_type.__name__].set(avg_count)
         elif issubclass(node_type, GeometricSetNode):
-            # Record average count of children, whose inverse
+            # Record weighted-average count of children, whose inverse
             # is a maximum likelihood estimate of p.
             # https://en.wikipedia.org/wiki/Geometric_distribution#Statistical_inference
-            n_children = [len(children) for (_, children) in observed_child_sets]
+
+            n_children = [len(children) for (_, children, _) in observed_child_sets]
             # TODO: Pretty sure this isn't right because the underlying geometric
             # set node has capped # of outputs. Maybe I should change its parameter
             # space to be the # of outputs probabilities, and call it a "repeating item"
             # node?
-            p = 1./torch.mean(torch.tensor(n_children, dtype=torch.double))
+            p = 1./torch.sum(torch.tensor(n_children, dtype=torch.double) * weights)
             p = torch.clip(p, 1E-4, 1.-1E-4)
             grammar.params_by_node_type[node_type.__name__].set(p)
         elif issubclass(node_type, IndependentSetNode):
-            # For each child, record how often it's active.
+            # For each child, record weighted average of how often it's active.
             count = torch.zeros(len(node_type.generate_rules()))
-            for (_, children) in observed_child_sets:
+            for (_, children, _), weight in zip(observed_child_sets, observed_child_sets_weights):
                 for child in children:
-                    count[child.rule_k] += 1.
-            count /= len(observed_child_sets)
+                    count[child.rule_k] += weight
             count = torch.clip(count, 1E-4, 1.-1E-4)
             grammar.params_by_node_type[node_type.__name__].set(count)
         elif issubclass(node_type, TerminalNode):
@@ -127,13 +148,13 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             # Special case: only one rule that all children
             # correspond to.
             assert len(rules) == 1
-            for parent, children in observed_child_sets:
+            for (parent, children, _), weight in zip(observed_child_sets, observed_child_sets_weights):
                 for child in children:
-                    parent_child_pairs_for_rules[0].append((parent, child))
+                    parent_child_pairs_for_rules[0].append((parent, child, weight))
         else:
-            for parent, children in observed_child_sets:
+            for (parent, children, _), weight in zip(observed_child_sets, observed_child_sets_weights):
                 for child in children:
-                    parent_child_pairs_for_rules[child.rule_k].append((parent, child))
+                    parent_child_pairs_for_rules[child.rule_k].append((parent, child, weight))
 
         for rule_k, (xyz_param_dict, rot_param_dict) in enumerate(
                 grammar.rule_params_by_node_type[node_type.__name__]):
@@ -145,16 +166,16 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             ## XYZ Rules
             if type(xyz_rule) == WorldBBoxRule:
                 # The inferred lb/ub (from which we'll derive center/width)
-                # will be the biggest deviation between parent and child.
-                offsets = torch.stack([child.translation for (_, child) in parent_child_pairs])
+                # will be the biggest deviation between parent and child, irrespective of weights.
+                offsets = torch.stack([child.translation for (_, child, _) in parent_child_pairs])
                 lb = torch.min(offsets, axis=0)[0]
                 ub = torch.max(offsets, axis=0)[0]
                 xyz_param_dict["center"].set((lb + ub) / 2.)
                 xyz_param_dict["width"].set(ub - lb)
             elif type(xyz_rule) == AxisAlignedBBoxRule:
                 # The inferred lb/ub (from which we'll derive center/width)
-                # will be the biggest deviation between parent and child.
-                offsets = torch.stack([child.translation - parent.translation for (parent, child) in parent_child_pairs])
+                # will be the biggest deviation between parent and child, irrespective of weights.
+                offsets = torch.stack([child.translation - parent.translation for (parent, child, _) in parent_child_pairs])
                 lb = torch.min(offsets, axis=0)[0]
                 ub = torch.max(offsets, axis=0)[0]
                 xyz_param_dict["center"].set((lb + ub) / 2.)
@@ -162,9 +183,11 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             elif type(xyz_rule) == AxisAlignedGaussianOffsetRule:
                 # The inferred mean and variance are fit from deviations
                 # between parent and child.
-                offsets = torch.stack([child.translation - parent.translation for (parent, child) in parent_child_pairs])
-                mean = torch.mean(offsets, axis=0)
-                variance = torch.var(offsets, dim=0, unbiased=True)
+                offsets = torch.stack([child.translation - parent.translation for (parent, child, _) in parent_child_pairs]) # Nx3
+                weights = torch.stack([weight for (_, _, weight) in parent_child_pairs]) # N
+                mean = torch.sum(offsets.T * weights, axis=1) # 3
+                # Weighted average of squared deviations as variance estimate
+                variance = torch.sum( torch.square((offsets - mean)).T * weights, axis=1 )
                 xyz_param_dict["mean"].set(mean)
                 xyz_param_dict["variance"].set(variance)
             elif type(xyz_rule) == SamePositionRule:
@@ -173,15 +196,15 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             else:
                 raise NotImplementedError("type %s under node %s" % (type(xyz_rule), node_type))
             ## Rotation rules
-            if type(rot_rule) == (SameRotationRule, UnconstrainedRotationRule):
+            if type(rot_rule) == SameRotationRule or type(rot_rule) == UnconstrainedRotationRule:
                 # No parameters
                 pass
             elif type(rot_rule) == UniformBoundedRevoluteJointRule:
                 # The inferred lb/ub (from which we'll derive center/width)
                 # will be the biggest deviation between parent and child in terms
-                # of axis/angle rotation.
+                # of axis/angle rotation, irrespective of weights.
                 offsets = []
-                for parent, child in parent_child_pairs:
+                for parent, child, _ in parent_child_pairs:
                     angle, _ = recover_relative_angle_axis(parent, child, rot_rule.axis)
                     offsets.append(angle)
                 offsets = torch.stack(offsets)
@@ -193,6 +216,7 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
                 # Infer concentration and variance by gathering parent/child
                 # angles around axis, and apply parameter estimates from
                 # https://en.wikipedia.org/wiki/Von_Mises%E2%80%93Fisher_distribution
+                raise NotImplementedError("Need to update this to work with weights.")
                 offsets = []
                 for parent, child in parent_child_pairs:
                     angle, _ = recover_relative_angle_axis(parent, child, rot_rule.axis)
@@ -208,6 +232,8 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
                 # The concentration is approximately 
                 concentration = (x_norm * (2 - x_norm**2)) / (1 - x_norm**2)
                 rot_param_dict["loc"].set(loc)
+            else:
+                raise NotImplementedError("type %s under node %s" % (type(rot_rule), node_type))
 
     return grammar
 
