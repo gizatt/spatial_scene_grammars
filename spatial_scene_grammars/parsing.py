@@ -338,7 +338,8 @@ def add_mle_tree_parsing_to_prog(
 TreeInferenceResults = namedtuple("TreeInferenceResults", ["solver", "optim_result", "super_tree", "observed_nodes"])
 # TODO(gizatt) Remote max_scene_extent_in_any_dir and calculate from grammar.
 def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, solver="gurobi", verbose=False,
-                            num_intervals_per_half_axis=2, max_scene_extent_in_any_dir=10.):
+                            num_intervals_per_half_axis=2, max_scene_extent_in_any_dir=10.,
+                            N_solutions=1):
     ''' Given a grammar and an observed node set, find the MLE tree induced
     by that grammar (up to a maximum recursion depth) that reproduces the
     observed node set, or report that it's infeasible. '''
@@ -368,6 +369,10 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
         logfile = "/tmp/gurobi.log"
         os.system("rm %s" % logfile)
         options.SetOption(solver.id(), "LogFile", logfile)
+        if N_solutions > 1:
+            options.SetOption(solver.id(), "PoolSolutions", N_solutions)
+            options.SetOption(solver.id(), "PoolSearchMode", 2)
+
         result = solver.Solve(prog, None, options)
         if verbose:
             print("Optimization success?: ", result.is_success())
@@ -394,9 +399,10 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
 
     return TreeInferenceResults(solver, result, super_tree, observed_nodes)
 
-def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=False):
-    ''' From the specified inference results, extract the scene tree. '''
-    # Grab that supertree from optimization
+
+def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=False, solution_k=0):
+    ''' From the specified inference results, extract the k^th suboptimal scene tree. For k=0,
+    returns the optimal solution. '''
     
     #TODO packing of TreeInferenceResults should handle this complexity
     if isinstance(inference_results.solver,  MixedIntegerBranchAndBound):
@@ -404,11 +410,18 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
             inference_results.solver,
             inference_results.optim_result
         )
+        assert solution_k == 0, "MIBnB doesn't support suboptimal sols."
+        def get_sol(var):
+            return optim_result.GetSolution(var)
+
     elif isinstance(inference_results.solver, GurobiSolver):
         optim_result, success = (
             inference_results.optim_result,
             inference_results.optim_result.is_success()
         )
+        def get_sol(var):
+            return optim_result.GetSuboptimalSolution(var, solution_k)
+
     else:
         raise ValueError(inference_results.solver)
     super_tree = inference_results.super_tree
@@ -416,7 +429,7 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
 
     # Sanity-check observed nodes are explained properly.
     for observed_node in observed_nodes:
-        if not np.isclose(np.sum(optim_result.GetSolution(observed_node.source_actives)), 1.):
+        if not np.isclose(np.sum(get_sol(observed_node.source_actives)), 1.):
             if assert_on_failure:
                 raise ValueError("observed node %s not explained by MLE sol." % str(observed_node))
             else:
@@ -426,12 +439,12 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
         logging.warning("MIP structure finding unsuccessful.")
     optimized_tree = SceneTree()
     for node in super_tree:
-        if optim_result.GetSolution(node.active) > 0.5:
+        if get_sol(node.active) > 0.5:
             optimized_tree.add_node(node)
             # May have to post-process R to closest good R?
             node.tf = drake_tf_to_torch_tf(RigidTransform(
-                p=optim_result.GetSolution(node.t_optim),
-                R=RotationMatrix(optim_result.GetSolution(node.R_optim))
+                p=get_sol(node.t_optim),
+                R=RotationMatrix(get_sol(node.R_optim))
             ))
             parents = list(super_tree.predecessors(node))
             assert len(parents) <= 1
@@ -441,6 +454,14 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
                 optimized_tree.add_edge(parent, node)
     return optimized_tree
 
+def get_optimized_trees_from_mip_results(inference_results, assert_on_failure=False):
+    if isinstance(inference_results.solver, MixedIntegerBranchAndBound):
+        return [get_optimized_tree_from_mip_results(inference_results, assert_on_failure)]
+    # Hacky method getter because `num_suboptimal_solution()` was bound with () in its
+    # method name. Should fix this upstream!
+    N_solutions = getattr(inference_results.optim_result, "num_suboptimal_solution()")()
+    assert N_solutions >= 1
+    return [get_optimized_tree_from_mip_results(inference_results, assert_on_failure, k) for k in range(N_solutions)]
 
 TreeRefinementResults = namedtuple("TreeRefinementResults", ["optim_result", "refined_tree", "unrefined_tree"])
 def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, objective="mle", verbose=False, max_scene_extent_in_any_dir=10.):

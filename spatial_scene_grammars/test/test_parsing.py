@@ -60,7 +60,9 @@ def test_parsing_simple(set_seed):
     print("Parsing took %f secs." % elapsed)
     assert inference_results.optim_result[1]
 
-    mip_optimized_tree = get_optimized_tree_from_mip_results(inference_results)
+    mip_optimized_trees = get_optimized_trees_from_mip_results(inference_results)
+    assert len(mip_optimized_trees) == 1
+    mip_optimized_tree = mip_optimized_trees[0]
     assert_explains_observeds(tree, mip_optimized_tree), "MIP parsing failed."
     
     start_time = time.time()
@@ -88,13 +90,16 @@ def test_parsing_complex(set_seed):
 
     start_time = time.time()
     inference_results = infer_mle_tree_with_mip(
-        grammar, observed_nodes, verbose=True,
+        grammar, observed_nodes, verbose=True, N_solutions=2
     )
     elapsed = time.time() - start_time
     print("Parsing took %f secs." % elapsed)
     assert inference_results.optim_result.is_success(), "MIP parsing failed."
 
-    mip_optimized_tree = get_optimized_tree_from_mip_results(inference_results)
+    mip_optimized_trees = get_optimized_trees_from_mip_results(inference_results)
+    assert len(mip_optimized_trees) == 2
+    mip_optimized_tree = mip_optimized_trees[0]
+
     assert_explains_observeds(tree, mip_optimized_tree)
 
     start_time = time.time()
