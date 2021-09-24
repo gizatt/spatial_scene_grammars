@@ -37,6 +37,7 @@ from pydrake.all import (
     MathematicalProgram,
     MakeSolver,
     MixedIntegerBranchAndBound,
+    RandomGenerator,
     RigidTransform,
     RollPitchYaw,
     RotationMatrix,
@@ -50,6 +51,7 @@ from pydrake.all import (
     VPolytope,
     MixedIntegerRotationConstraintGenerator,
     IntervalBinning,
+    UniformlyRandomRotationMatrix,
     Variable
 )
 
@@ -110,14 +112,26 @@ def prepare_grammar_for_parsing(prog, grammar, optimize_parameters=False, inequa
 def add_mle_tree_parsing_to_prog(
         prog, grammar, observed_nodes, max_recursion_depth=10,
         num_intervals_per_half_axis=2, max_scene_extent_in_any_dir=10.,
-        verbose=False):
+        verbose=False, use_random_rotation_offset=True):
     # The grammar should be pre-processed by `prepare_grammar_for_parsing`,
     # which creates decision variables or placeholders for the grammar parameters,
     # which we access from here.
-    
     super_tree = grammar.make_super_tree(max_recursion_depth=max_recursion_depth, detach=True)
     # Copy observed node set -- we'll be annotating the nodes with decision variables.
     observed_nodes = deepcopy(observed_nodes)
+
+    # Support using a random rotation offset. For a random offset R_o, when a rotation matrix
+    # encoded in decision variables R_dec is used, it's first (left) multiplied with R_o. Since many
+    # optimal node poses may be axis-aligned (i.e. have zeros in the rotation matrix),
+    # this means R_dec usually *won't* have zeros. Not having zeros in R_dec is important
+    # to minimize the number of equivalent binary variable settings that represent the
+    # same rotation; zeros in the rotation matrix are at the overlap of the piecewise
+    # McCormick envelope setup used to approximate the rotation constraint.
+    # (see sandbox/mip_rotation_constraint_solution_uniqueness).
+    if use_random_rotation_offset:
+        R_random_offset = UniformlyRandomRotationMatrix(RandomGenerator(42))
+    else:
+        R_random_offset = RotationMatrix(np.eye(3))
 
     # Every node gets a binary variable to indicate
     # whether it's active or node. This is equivalent to a
@@ -136,10 +150,11 @@ def add_mle_tree_parsing_to_prog(
         interval_binning = IntervalBinning.kLogarithmic
     )
     for node_k, node in enumerate(super_tree.nodes):
-        node.R_optim = prog.NewContinuousVariables(3, 3, "%s_%03d_R" % (node.__class__.__name__, node_k))
+        node.R_optim_pre_offset = prog.NewContinuousVariables(3, 3, "%s_%03d_R" % (node.__class__.__name__, node_k))
+        node.R_optim = R_random_offset.matrix().dot(node.R_optim_pre_offset)
         node.t_optim = prog.NewContinuousVariables(3, "%s_%03d_t" % (node.__class__.__name__, node_k))
         # Trivial constraint: elements of R bounded in [-1, 1].
-        prog.AddBoundingBoxConstraint(-np.ones(9), np.ones(9), node.R_optim.flatten())
+        prog.AddBoundingBoxConstraint(-np.ones(9), np.ones(9), node.R_optim_pre_offset.flatten())
         # We'll need to constrain some R's to be in SO(3), but
         # many R's are directly constrained and don't actually need
         # this (very expensive to create) constraint. So we delay
@@ -165,13 +180,10 @@ def add_mle_tree_parsing_to_prog(
         root_tf.translation(), root_tf.translation(),
         root_node.t_optim
     )
-    R_target = root_tf.rotation().matrix()
-    for i in range(3):
-        for j in range(3):
-            prog.AddBoundingBoxConstraint(
-                R_target[i, j], R_target[i, j],
-                root_node.R_optim[i, j]
-            )
+    # R_optim = R_offset * R_optim_pre_offset = R_target
+    # R_optim_pre_offset = R_offset.T * R_target
+    R_target_pre_offset = R_random_offset.matrix().T.dot(root_tf.rotation().matrix())
+    prog.AddBoundingBoxConstraint(R_target_pre_offset.flatten(), R_target_pre_offset.flatten(), root_node.R_optim_pre_offset.flatten())
 
     ## For each node in the super tree, add relationships between the parent
     ## and that node.
@@ -242,7 +254,7 @@ def add_mle_tree_parsing_to_prog(
             if not child_node.observed and not rotation_was_fully_constrained:
                 # In this case, and only this case, we need to make sure R_optim
                 # is in SO(3).
-                mip_rot_gen.AddToProgram(child_node.R_optim, prog)
+                mip_rot_gen.AddToProgram(child_node.R_optim_pre_offset, prog)
 
 
     # For each observed node, add a binary variable for each possible
@@ -332,14 +344,14 @@ def add_mle_tree_parsing_to_prog(
             rule.encode_cost(
                 prog, rule.xyz_optim_params, rule.rot_optim_params, parent_node, child_node
             )
-    return super_tree, observed_nodes
+    return super_tree, observed_nodes, R_random_offset
 
 # Return type of infer_mle_tree_with_mip
-TreeInferenceResults = namedtuple("TreeInferenceResults", ["solver", "optim_result", "super_tree", "observed_nodes"])
+TreeInferenceResults = namedtuple("TreeInferenceResults", ["solver", "optim_result", "super_tree", "observed_nodes", "R_random_offset"])
 # TODO(gizatt) Remote max_scene_extent_in_any_dir and calculate from grammar.
 def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, solver="gurobi", verbose=False,
                             num_intervals_per_half_axis=2, max_scene_extent_in_any_dir=10.,
-                            N_solutions=1):
+                            N_solutions=1, use_random_rotation_offset=True):
     ''' Given a grammar and an observed node set, find the MLE tree induced
     by that grammar (up to a maximum recursion depth) that reproduces the
     observed node set, or report that it's infeasible. '''
@@ -350,10 +362,11 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
     prog = MathematicalProgram()
 
     grammar = prepare_grammar_for_parsing(prog, grammar, optimize_parameters=False)
-    super_tree, observed_nodes = add_mle_tree_parsing_to_prog(
+    super_tree, observed_nodes, R_random_offset = add_mle_tree_parsing_to_prog(
         prog, grammar, observed_nodes, max_recursion_depth=max_recursion_depth,
         verbose=verbose, num_intervals_per_half_axis=num_intervals_per_half_axis,
-        max_scene_extent_in_any_dir=max_scene_extent_in_any_dir
+        max_scene_extent_in_any_dir=max_scene_extent_in_any_dir,
+        use_random_rotation_offset=use_random_rotation_offset
     )
     
     setup_time = time.time()
@@ -374,6 +387,11 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
             options.SetOption(solver.id(), "PoolSearchMode", 2)
 
         result = solver.Solve(prog, None, options)
+        # Hacky method getter because `num_suboptimal_solution()` was bound with () in its
+        # method name. Should fix this upstream!
+        actual_N_solutions = getattr(result, "num_suboptimal_solution()")()
+        if actual_N_solutions != N_solutions:
+            logging.warning("MIP got %d solutions, but requested %d. ", actual_N_solutions, N_solutions)
         if verbose:
             print("Optimization success?: ", result.is_success())
             print("Logfile: ")
@@ -397,7 +415,7 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
             print("Solve time: ", solve_time-setup_time)
             print("Total time: ", solve_time - start_time)
 
-    return TreeInferenceResults(solver, result, super_tree, observed_nodes)
+    return TreeInferenceResults(solver, result, super_tree, observed_nodes, R_random_offset)
 
 
 def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=False, solution_k=0):
@@ -438,20 +456,27 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
     if not success:
         logging.warning("MIP structure finding unsuccessful.")
     optimized_tree = SceneTree()
-    for node in super_tree:
+    # Build tree top-down so we know parent is already in new tree.
+    potential_node_queue = [(super_tree.get_root(), None)]
+    while len(potential_node_queue) > 0:
+        node, parent = potential_node_queue.pop(0)
         if get_sol(node.active) > 0.5:
-            optimized_tree.add_node(node)
-            # May have to post-process R to closest good R?
-            node.tf = drake_tf_to_torch_tf(RigidTransform(
-                p=get_sol(node.t_optim),
-                R=RotationMatrix(get_sol(node.R_optim))
+            t_sol = get_sol(node.t_optim)
+            R_sol = RotationMatrix(
+                inference_results.R_random_offset.matrix().dot(
+                    get_sol(node.R_optim_pre_offset))
+            )
+            new_tf = drake_tf_to_torch_tf(RigidTransform(
+                p=t_sol, R=R_sol
             ))
-            parents = list(super_tree.predecessors(node))
-            assert len(parents) <= 1
-            if len(parents) == 1:
-                parent = parents[0]
-                assert parent.active
-                optimized_tree.add_edge(parent, node)
+            new_node = deepcopy(node)
+            new_node.tf = new_tf
+            optimized_tree.add_node(new_node)
+            if parent is not None:
+                optimized_tree.add_edge(parent, new_node)
+            children = list(super_tree.successors(node))
+            for child in children:
+                potential_node_queue.append((child, new_node))
     return optimized_tree
 
 def get_optimized_trees_from_mip_results(inference_results, assert_on_failure=False):

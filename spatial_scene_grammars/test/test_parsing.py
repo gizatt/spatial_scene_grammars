@@ -97,7 +97,6 @@ def test_parsing_complex(set_seed):
     assert inference_results.optim_result.is_success(), "MIP parsing failed."
 
     mip_optimized_trees = get_optimized_trees_from_mip_results(inference_results)
-    assert len(mip_optimized_trees) == 2
     mip_optimized_tree = mip_optimized_trees[0]
 
     assert_explains_observeds(tree, mip_optimized_tree)
@@ -144,3 +143,59 @@ def test_parsing_complex(set_seed):
     assert_explains_observeds(tree, refined_tree)
     assert_feasible(refined_tree)
     assert torch.allclose(C_refined.translation, C_expected), "%s vs %s" % (C_refined.translation, C_expected)
+
+
+@pytest.mark.skipif(os.environ.get('GUROBI_PATH') is None or not SnoptSolver().available(),
+                    reason='This test relies on Gurobi and SNOPT.')
+def test_parsing_n_solutions():
+    # Make a custom trivial grammar A->B(hidden)->C
+
+    class C(TerminalNode):
+        def __init__(self, tf):
+            super().__init__(observed=True, physics_geometry_info=None, tf=tf)
+
+    class B(AndNode):
+        def __init__(self, tf):
+            super().__init__(observed=False, physics_geometry_info=None, tf=tf)
+        @classmethod
+        def generate_rules(cls):
+            return [ProductionRule(child_type=C, xyz_rule=SamePositionRule(), rotation_rule=SameRotationRule())]
+
+    class A(AndNode):
+        def __init__(self, tf):
+            super().__init__(observed=False, physics_geometry_info=None, tf=tf)
+        @classmethod
+        def generate_rules(cls):
+            return [ProductionRule(child_type=B, xyz_rule=SamePositionRule(), rotation_rule=UnconstrainedRotationRule())]
+
+    grammar = SpatialSceneGrammar(
+        root_node_type = A,
+        root_node_tf = torch.eye(4)
+    )
+    observed_nodes = [C(torch.eye(4))]
+
+    inference_results = infer_mle_tree_with_mip(
+        grammar, observed_nodes, verbose=True, N_solutions=50,
+        use_random_rotation_offset=False
+    )
+    assert inference_results.optim_result.is_success(), "MIP parsing failed."
+
+    mip_optimized_trees = get_optimized_trees_from_mip_results(inference_results)
+
+    # Single rotation matrix constraint has a certain number unique solutions when
+    # R=identity matrix. (I've seen this empirically, but not dug in to
+    # exactly what these modes are... but I'm pretty sure they have to do
+    # with overlapping piecewise McCormick regions on those rotation matrix
+    # elements. It's not the full exponential number of combinations due to
+    # constraints between the binaries?)
+    assert len(mip_optimized_trees) == 20
+
+    inference_results = infer_mle_tree_with_mip(
+        grammar, observed_nodes, verbose=True, N_solutions=10,
+        use_random_rotation_offset=True
+    )
+    assert inference_results.optim_result.is_success(), "MIP parsing failed."
+
+    mip_optimized_trees = get_optimized_trees_from_mip_results(inference_results)
+    # Should be a unique solution now, as NodeD need 
+    assert len(mip_optimized_trees) == 1
