@@ -48,7 +48,7 @@ class NodeD(IndependentSetNode):
             ProductionRule(
                 child_type=NodeG,
                 xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
-                rotation_rule=UnconstrainedRotationRule()
+                rotation_rule=SameRotationRule()
             )
         ]
 

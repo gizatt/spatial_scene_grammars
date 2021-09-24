@@ -123,7 +123,7 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             # set node has capped # of outputs. Maybe I should change its parameter
             # space to be the # of outputs probabilities, and call it a "repeating item"
             # node?
-            p = 1./torch.sum(torch.tensor(n_children, dtype=torch.double) * weights)
+            p = 1./torch.sum(torch.tensor(n_children, dtype=torch.double) * observed_child_sets_weights)
             p = torch.clip(p, 1E-4, 1.-1E-4)
             grammar.params_by_node_type[node_type.__name__].set(p)
         elif issubclass(node_type, IndependentSetNode):
@@ -185,6 +185,7 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
                 # between parent and child.
                 offsets = torch.stack([child.translation - parent.translation for (parent, child, _) in parent_child_pairs]) # Nx3
                 weights = torch.stack([weight for (_, _, weight) in parent_child_pairs]) # N
+                weights = weights / torch.sum(weights) # Renormalize, as we may not have one-to-one parent-child pair to rules.
                 mean = torch.sum(offsets.T * weights, axis=1) # 3
                 # Weighted average of squared deviations as variance estimate
                 variance = torch.sum( torch.square((offsets - mean)).T * weights, axis=1 )

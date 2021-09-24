@@ -159,6 +159,7 @@ def add_mle_tree_parsing_to_prog(
         # many R's are directly constrained and don't actually need
         # this (very expensive to create) constraint. So we delay
         # setup until we know the rotation is unconstrained.
+        node.rotation_was_fully_constrained = False
 
         # For rules, annotate them with their parameter set for
         # convenience later. (This saves some effort, since the
@@ -248,13 +249,33 @@ def add_mle_tree_parsing_to_prog(
         
         ## Child location constraints relative to parent.
         for rule, child_node in zip(rules, children):
-            rotation_was_fully_constrained = rule.encode_constraint(
+            child_node.rotation_was_fully_constrained = rule.encode_constraint(
                 prog, rule.xyz_optim_params, rule.rot_optim_params, parent_node, child_node
             )
-            if not child_node.observed and not rotation_was_fully_constrained:
-                # In this case, and only this case, we need to make sure R_optim
-                # is in SO(3).
-                mip_rot_gen.AddToProgram(child_node.R_optim_pre_offset, prog)
+
+            # If child was observed and rotation was fully constrained, then
+            # parent rotation is fully constrained too, and we should label as such
+            if child_node.observed and child_node.rotation_was_fully_constrained:
+                parent_node.rotation_was_fully_constrained = True
+
+    for node in super_tree:
+        if not node.observed and not node.rotation_was_fully_constrained:
+            # In this case, and only this case, we need to make sure R_optim
+            # is in SO(3).
+            mip_rot_gen.AddToProgram(node.R_optim_pre_offset, prog)
+
+            # If the node is inactive, give it a preference for a single
+            # rotation to reduce the number of equivalent solutions.
+            # Be close to the random offset since it's not on a piecewise
+            # boundary of the McCormick envelopes.
+            # This should not change optimal solution, since inactive node
+            # rotations don't appear in the cost.
+            #err = child_node.R_optim_pre_offset - R_random_offset.matrix()
+            #for i in range(3):
+            #    for j in range(3):
+            #        # This isn't generally true. 
+            #        prog.AddLinearConstraint(err[i, j] <= 2. * child_node.active)
+            #        prog.AddLinearConstraint(err[i, j] >= -2. * child_node.active)
 
 
     # For each observed node, add a binary variable for each possible
