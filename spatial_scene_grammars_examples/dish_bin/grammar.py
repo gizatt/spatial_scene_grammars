@@ -24,7 +24,22 @@ additional indeterminant object at an offset distribution, or nothing.
 
 eps = 1E-2
 
-class Plate(TerminalNode):
+class ConcreteObject(IndependentSetNode):
+    # Partial implementation of object that allows
+    # the object to specialize into 
+    @classmethod
+    def generate_rules(cls):
+        return [
+            ProductionRule(
+                child_type=ChildObjectTypes[cls.__name__],
+                xyz_rule=AxisAlignedGaussianOffsetRule(
+                    mean=torch.tensor([0.05, 0.05, 0.05]),
+                    variance=torch.tensor([0.01, 0.01, 0.01])),
+                rotation_rule=UnconstrainedRotationRule()
+            )
+        ]
+
+class Plate(ConcreteObject):
     def __init__(self, tf):
         geom = PhysicsGeometryInfo()
         geom.register_model_file(
@@ -32,12 +47,13 @@ class Plate(TerminalNode):
             "sink/plates_cups_and_bowls/plates/Ecoforms_Plant_Plate_S11Turquoise/model_simplified.sdf"
         )
         super().__init__(
+            rule_probs=torch.tensor([0.5]),
             tf=tf,
             physics_geometry_info=geom,
             observed=True
         )
 
-class Cup(TerminalNode):
+class Cup(ConcreteObject):
     def __init__(self, tf):
         geom = PhysicsGeometryInfo()
         geom.register_model_file(
@@ -45,12 +61,13 @@ class Cup(TerminalNode):
             "sink/plates_cups_and_bowls/cups/Cole_Hardware_Mug_Classic_Blue/model_simplified.sdf"
         )
         super().__init__(
+            rule_probs=torch.tensor([0.5]),
             tf=tf,
             physics_geometry_info=geom,
             observed=True
         )
 
-class Bowl(TerminalNode):
+class Bowl(ConcreteObject):
     def __init__(self, tf):
         geom = PhysicsGeometryInfo()
         geom.register_model_file(
@@ -58,6 +75,7 @@ class Bowl(TerminalNode):
             "sink/plates_cups_and_bowls/bowls/Room_Essentials_Bowl_Turquiose/model_simplified.sdf"
         )
         super().__init__(
+            rule_probs=torch.tensor([0.5]),
             tf=tf,
             physics_geometry_info=geom,
             observed=True
@@ -83,6 +101,19 @@ class Object(OrNode):
             ) for cluster_type in ObjectTypes
         ]
         return ClusterRules
+
+# Dynamically generate ChildObject types
+# for each concrete object type.
+ChildObjectTypes = {}
+for object_type in [Bowl, Cup, Plate]:
+    class_name = object_type.__name__ + "ChildObject"
+    new_class = type(class_name, (Object,), {})
+    ChildObjectTypes[object_type.__name__] = new_class
+    # Register class name in globals so we can
+    # pickle these types.
+    # https://stackoverflow.com/questions/11658511/pickling-dynamically-generated-classes
+    globals()[class_name] = new_class
+
 
 class DishBin(GeometricSetNode):
     bin_size = []

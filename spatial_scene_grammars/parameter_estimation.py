@@ -559,49 +559,88 @@ class VariationalPosteriorSuperTree(torch.nn.Module):
         return log_p_continuous, log_p_discrete
 
 
+def _get_map_trees(grammar, observed_nodes, verbose, max_scene_extent_in_any_dir, N_solutions, throw_on_failure):
+    mip_results = infer_mle_tree_with_mip(
+        grammar, observed_nodes, verbose=verbose>1, max_scene_extent_in_any_dir=10.,
+        N_solutions=N_solutions
+    )
+    mip_optimized_trees = get_optimized_trees_from_mip_results(mip_results)
+    refined_trees = []
+    for mip_optimized_tree in mip_optimized_trees:
+        if mip_optimized_tree is None:
+            error_msg = "MIP optimization failed for observed set %d" % k
+            if throw_on_failure:
+                raise RuntimeError(error_msg)
+            else:
+                logging.warning(error_msg)
+                refined_trees = None
+                break
+        
+        refinement_results = optimize_scene_tree_with_nlp(grammar, mip_optimized_tree, verbose=verbose>1)
+        refined_tree = refinement_results.refined_tree
+        if refined_tree is None:
+            error_msg = "Nonlinear refinement failed for observed set %d" % k
+            if throw_on_failure:
+                raise RuntimeError(error_msg)
+            else:
+                logging.warning(error_msg)
+                refined_trees = None
+                break
+        
+        refined_trees.append(refined_tree)
+    return refined_trees
+
+def _get_map_trees_thread_wrapper(arg_dict):
+    try:
+        refined_trees = _get_map_trees(**arg_dict)
+        return [_cleanup_tree_for_pickling(tree) for tree in refined_trees]
+    except Exception as e:
+        logging.error("Error in thread: ", e)
+        return []
+    
 def get_map_trees_for_observed_node_sets(grammar, observed_node_sets,
-        throw_on_failure=False, verbose=0, tqdm=None, N_solutions=1):
+        throw_on_failure=False, verbose=0, tqdm=None, N_solutions=1,
+        num_workers=1, max_scene_extent_in_any_dir=10.):
     ''' Get MAP parse list for each tree in dataset using our current grammar params.
         If parsing fails for a tree, will return None for that tree and throw
         if requsted. '''
     refined_tree_sets = []
 
-    iterator = enumerate(observed_node_sets)
-    if tqdm:
-        iterator = tqdm(iterator, desc="Getting MAP parses", total=len(observed_node_sets))
-        
-    for k, observed_nodes in iterator:
-        mip_results = infer_mle_tree_with_mip(
-            grammar, observed_nodes, verbose=verbose>1, max_scene_extent_in_any_dir=10.,
-            N_solutions=N_solutions
-        )
-        mip_optimized_trees = get_optimized_trees_from_mip_results(mip_results)
-        refined_trees = []
-        for mip_optimized_tree in mip_optimized_trees:
-            if mip_optimized_tree is None:
-                error_msg = "MIP optimization failed for observed set %d" % k
-                if throw_on_failure:
-                    raise RuntimeError(error_msg)
-                else:
-                    logging.warning(error_msg)
-                    refined_trees = None
-                    break
-            
-            refinement_results = optimize_scene_tree_with_nlp(grammar, mip_optimized_tree, verbose=verbose>1)
-            refined_tree = refinement_results.refined_tree
-            if refined_tree is None:
-                error_msg = "Nonlinear refinement failed for observed set %d" % k
-                if throw_on_failure:
-                    raise RuntimeError(error_msg)
-                else:
-                    logging.warning(error_msg)
-                    refined_trees = None
-                    break
-            
-            refined_trees.append(refined_tree)
-        refined_tree_sets.append(refined_trees)
+    def make_arg_dict(k):
+        return {
+            "grammar": grammar,
+            "observed_nodes": observed_node_sets[k],
+            "verbose": verbose,
+            "max_scene_extent_in_any_dir": max_scene_extent_in_any_dir,
+            "N_solutions": N_solutions,
+            "throw_on_failure": throw_on_failure
+        }
+    
+    if num_workers == 1:
+        # Single-threaded case.
+        iterator = enumerate(observed_node_sets)
+        if tqdm:
+            iterator = tqdm(iterator, desc="Getting MAP parses", total=len(observed_node_sets))
 
+        for k, observed_nodes in iterator:
+            refined_tree_sets.append(
+                _get_map_trees(**make_arg_dict(k))
+            )
+    else:
+        # Multi-processing case.
+        pool = mp.Pool(min(num_workers, mp.cpu_count()))
+
+        args = [ make_arg_dict(k) for k in range(len(observed_node_sets)) ]
+
+        imap = pool.imap(func=_get_map_trees_thread_wrapper, iterable=args)
+        if tqdm is not None:
+            imap = tqdm(imap, total=len(args))
+        refined_tree_sets = []
+        for refined_trees in imap:
+            refined_tree_sets.append(refined_trees)
+        pool.close()
     return refined_tree_sets
+
 
 class EMWrapper():
     '''
@@ -627,7 +666,8 @@ class EMWrapper():
         self.observed_node_sets = observed_node_sets
 
     def do_iterated_em_fitting(self, em_iterations=5, throw_on_map_failure=False,
-                               verbose=0, tqdm=None, max_recursion_depth=10, N_solutions=1):
+                               verbose=0, tqdm=None, max_recursion_depth=10, N_solutions=1,
+                               num_workers=1):
         self.grammar_iters = [deepcopy(self.grammar.state_dict())]
         if tqdm is None:
             iterator = range(em_iterations)
@@ -635,7 +675,8 @@ class EMWrapper():
             iterator = tqdm(range(em_iterations), desc="EM Iteration", total=em_iterations)
         for iter_k in iterator:
             refined_tree_sets = get_map_trees_for_observed_node_sets(
-                self.grammar, self.observed_node_sets, N_solutions=N_solutions, tqdm=tqdm
+                self.grammar, self.observed_node_sets, N_solutions=N_solutions, tqdm=tqdm,
+                num_workers=num_workers
             )
             self.grammar = fit_grammar_params_to_sample_sets_with_uninformative_prior(
                 self.grammar, refined_tree_sets, weight_by_sample_prob=True

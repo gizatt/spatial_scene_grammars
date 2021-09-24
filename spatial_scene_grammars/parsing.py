@@ -401,7 +401,7 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
         solver = GurobiSolver()
         options = SolverOptions()
         logfile = "/tmp/gurobi.log"
-        os.system("rm %s" % logfile)
+        os.system("rm -f %s" % logfile)
         options.SetOption(solver.id(), "LogFile", logfile)
         if N_solutions > 1:
             options.SetOption(solver.id(), "PoolSolutions", N_solutions)

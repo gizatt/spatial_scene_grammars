@@ -51,6 +51,11 @@ Modes = tuple([
     type("GaussianMode_%d" % k, (GaussianMode,), {})
     for k in range(3)
 ])
+# Register class name in globals so we can
+# pickle these types.
+# https://stackoverflow.com/questions/11658511/pickling-dynamically-generated-classes
+for mode in Modes:
+    globals()[mode.__name__] = mode
 
 class Root(OrNode):
     def __init__(self, tf):
