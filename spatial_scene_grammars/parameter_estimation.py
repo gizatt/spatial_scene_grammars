@@ -702,17 +702,19 @@ class EMWrapper():
             
             for k, (xyz_rule_params, rot_rule_params) in enumerate(rule_params):
                 for key, value in xyz_rule_params.items():
+                    value = deepcopy(value().detach())
                     hist_dict = rule_param_history[k][0]
                     if key not in hist_dict:
-                        hist_dict[key] = [value().detach()]
+                        hist_dict[key] = [value]
                     else:
-                        hist_dict[key].append(value().detach())
+                        hist_dict[key].append(value)
                 for key, value in rot_rule_params.items():
+                    value = deepcopy(value().detach())
                     hist_dict = rule_param_history[k][1]
                     if key not in hist_dict:
-                        hist_dict[key] = [value().detach()]
+                        hist_dict[key] = [value]
                     else:
-                        hist_dict[key].append(value().detach())
+                        hist_dict[key].append(value)
 
         if len(node_param_history) > 0:
             node_param_history = torch.stack(node_param_history)
@@ -723,8 +725,10 @@ class EMWrapper():
 
         if len(node_param_history) > 0:
             plt.figure()
-            plt.plot(node_param_history)
+            for k in range(node_param_history.shape[1]):
+                plt.plot(node_param_history[:, k], label="%d" % k)
             plt.title("%s params" % node_type.__name__)
+            plt.legend()
             print("Final params: ", node_param_history[-1, :])
         
         # Rules
@@ -736,13 +740,16 @@ class EMWrapper():
             plt.subplot(2, N_rules, k+1)
             plt.title("XYZ Rule")
             for key, value in entry[0].items():
-                plt.plot(value, label=key)
+                print(key, value)
+                for col in range(value.shape[1]):
+                    plt.plot(value[:, col], label=key + "%d" % col)
                 print("%d:xyz:%s final: %s" % (k, key, value[-1, :]))
             plt.legend()
             plt.subplot(2, N_rules, k + N_rules + 1)
             plt.title("Rot rule")
             for key, value in entry[1].items():
-                plt.plot(value, label=key)
+                for col in range(value.shape[1]):
+                    plt.plot(value[:, col], label=key + "%d" % col)
                 print("%d:rot:%s final: %s" % (k, key, value[-1, :]))
             plt.legend()
         plt.tight_layout()
