@@ -125,6 +125,14 @@ def test_LeftSidedRepeatingOnesDist():
         target_ll = torch.log(weights[k])
         assert np.allclose(ll, target_ll), "ll %f vs %f" % (ll, target_ll)
 
+def test_Bingham(set_seed):
+    param_m = torch.eye(4)
+    param_z = torch.tensor([-100., -10., -1., 0.])
+    dist = BinghamDistribution(param_m, param_z)
+    samples = dist.sample(sample_shape=(100,))
+    assert samples.shape == (100, 4)
+    sample_prob = dist.log_prob(samples)
+    assert all(torch.isfinite(sample_prob)) and sample_prob.shape == (100,)
 
 if __name__ == "__main__":
     pytest.main()
