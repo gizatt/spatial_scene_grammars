@@ -213,6 +213,8 @@ class BinghamDistribution(TorchDistribution):
 
     # Constant indicating which dimensions are implemented.
     IMPLEMENTED_DIMENSIONS = [2, 4]
+    
+    arg_constraints = {}
 
     has_rsample = False
 
@@ -235,6 +237,11 @@ class BinghamDistribution(TorchDistribution):
                 param_z.numpy(), mode=options["norm_const_mode"], options=nc_options))
         else:
             self._norm_const = torch.tensor(self.normalization_constant(param_z.numpy()))
+
+        if "flip_to_positive_z_quaternions" in options.keys():
+            self._flip_output = options["flip_to_positive_z_quaternions"]
+        else:
+            self._flip_output = False
 
         #self._norm_const_deriv \
         #    = BinghamDistribution.normalization_constant_deriv(self._param_z)
@@ -364,6 +371,14 @@ class BinghamDistribution(TorchDistribution):
             candidate = np.random.multivariate_normal(
                 np.zeros(self._dim), np.linalg.inv(omega), 1)
             candidate = candidate / np.linalg.norm(candidate)
+            # Flip so the last element is positive if requested;
+            # useful if the output is being converted into 3D rotations
+            # but wants to be able to unambiguously recover the sample
+            # that generated it. This is like always sampling from one of the
+            # antipodally symmetric modes.
+            if self._flip_output:
+                if candidate[0, -1] < 0:
+                    candidate = -candidate
 
             w = np.random.uniform()
             if w < fb_likelihood(candidate) / (mbstar *
@@ -371,6 +386,8 @@ class BinghamDistribution(TorchDistribution):
                 samples[current_sample] = candidate
                 current_sample += 1
 
+        if sample_shape == torch.Size([]):
+            return torch.tensor(samples[0])
         return torch.tensor(samples)
 
     ##################

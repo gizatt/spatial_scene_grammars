@@ -1,5 +1,6 @@
 from copy import deepcopy
 from collections import namedtuple
+import logging
 import numpy as np
 import pyro
 import pyro.distributions as dist
@@ -13,7 +14,7 @@ from pytorch3d.transforms.rotation_conversions import (
 )
 
 from .drake_interop import drake_tf_to_torch_tf, torch_tf_to_drake_tf
-from .distributions import UniformWithEqualityHandling
+from .distributions import UniformWithEqualityHandling, BinghamDistribution
 from .torch_utils import ConstrainedParameter
 
 import pydrake
@@ -924,3 +925,193 @@ class GaussianChordOffsetRule(RotationProductionRule):
         # Instead, this happens to be?
         total_ll = vector_diff.sum() * concentration - vmf_normalizer
         prog.AddCost(-total_ll)
+
+
+class WorldFrameBinghamRotationRule(RotationProductionRule):
+    '''
+    Child rotation is chosen randomly from a Bingham distribution
+    describing a distribution over rotations in world frame.
+
+    M: 4x4 "orientation" matrix. The last column is the mode (as a quaternion).
+    Z: 4-element tensor of concentrations in ascending order with the last
+    being 0.
+
+    Recommended to use a helper function to assemble these from target rotation
+    and RPY concentrations.
+    '''
+    @staticmethod
+    def from_rotation_and_rpy_variances(rotation_mode, rpy_concentration):
+        ''' Construct this rule to distribute the child rotation
+        around the given RotationMatrix, with specified concentrations
+        around each rotation axis. '''
+        assert isinstance(rotation_mode, RotationMatrix)
+        assert len(rpy_concentration) == 3 and [x > 0 for x in rpy_concentration]
+        # Last column of M should be the mode, as a quaternion.
+        # Construct the rest of M to be orthogonal.
+        mode = rotation_mode.ToQuaternion()
+        rot_around_x = RollPitchYaw([np.pi, 0., 0.]).ToQuaternion()
+        rot_around_y = RollPitchYaw([0., np.pi, 0.]).ToQuaternion()
+        rot_around_z = RollPitchYaw([0., 0., np.pi]).ToQuaternion()
+        m = np.stack([
+            rot_around_x.multiply(mode).wxyz(),
+            rot_around_y.multiply(mode).wxyz(),
+            rot_around_z.multiply(mode).wxyz(),
+            mode.wxyz()
+        ], axis=1)
+        z = np.array(
+            [-rpy_concentration[0],
+             -rpy_concentration[1],
+             -rpy_concentration[2],
+             0.
+            ]
+        )
+        # Reorder Z to be ascending, with M in lockstep.
+        reorder_inds = np.argsort(z)
+        z = z[reorder_inds]
+        m = m[:, reorder_inds]
+        return WorldFrameBinghamRotationRule(
+            torch.tensor(m), torch.tensor(z)
+        )
+
+
+    def __init__(self, M, Z):
+        assert isinstance(M, torch.Tensor) and M.shape == (4, 4)
+        assert isinstance(Z, torch.Tensor) and Z.shape == (4,)
+        # More detailed checks on contents of M and Z will be done
+        # by the distribution type.
+
+        self.parameters = {
+            "M": M,
+            "Z": Z
+        }
+    
+    def sample_rotation(self, parent):
+        quat = pyro.sample("WorldFrameBinghamRotationRule_quat", self._bingham_dist)
+        R = quaternion_to_matrix(quat)
+        return R
+
+    def score_child(self, parent, child):
+        quat = matrix_to_quaternion(child.rotation)
+        # Flip the quaternion if its last element is negative, by convention of our
+        # implementation of BinghamDistribution.
+        if quat[-1] < 0:
+            quat = quat * -1
+        return self._bingham_dist.log_prob(quat)
+
+    def get_site_values(self, parent, child):
+        quat = matrix_to_quaternion(child.rotation)
+        # Flip the quaternion if its last element is negative, by convention of our
+        # implementation of BinghamDistribution.
+        if quat[-1] < 0:
+            quat = quat * -1
+        return {"WorldFrameBinghamRotationRule_quat": SiteValue(self._bingham_dist, quat)}
+
+    @classmethod
+    def get_parameter_prior(cls):
+        # TODO(gizatt) Putting priors on these parameters will be really hard;
+        # M needs to be 4x4 orthogonal, and Z needs to be nonpositive in ascending
+        # order with the last term 0. I don't currently consume priors for anything,
+        # so I'm skipping implementing this in a nice way, and just initializing these
+        # parameters "reasonably".
+        logging.warning("Prior over parameters of WorldFrameBinghamRotationRule are Deltas.")
+        return {
+            "M": dist.Delta(torch.eye(4)),
+            "Z": dist.Delta(torch.tensor([-1, -1, -1, 0.]))
+        }
+    @property
+    def parameters(self):
+        return {
+            "M": self.M,
+            "Z": self.Z
+        }
+    @parameters.setter
+    def parameters(self, parameters):
+        self.M = parameters["M"]
+        self.Z = parameters["Z"]
+        logging.warning("Detaching BinghamDistribution parameters.")
+        self._bingham_dist = BinghamDistribution(
+            param_m=self.M.detach(), param_z=self.Z.detach(),
+            options={"flip_to_positive_z_quaternions": True}
+        )
+
+    def encode_constraint(self, prog, optim_params, parent, child):
+        # Child rotation is not fully constrained.
+        return False
+
+    def encode_cost(self, prog, optim_params, parent, child):
+        '''
+        Use the reinterpretation of the Bingham distribution objective as
+        1/C(Z) * exp[ tr(Z M^T q q^T M) ] for quaternion q.
+        The relevant part of the log-likelihood is tr(Z M^T q q^T M).
+
+        q = [w x y z]
+        q q^T = [
+         ww wx wy wz
+         wx xx xy xz
+         wy xy yy yz
+         wz xz yz zz
+        ]
+
+        We'll introduce intermediate variables for each term in that
+        outer product, and constrain them to match the rotation matrix
+        variables of the child node, which can be recovered from them
+        via the standard quaternion-to-rotation-matrix conversion formula:
+
+        R = [
+            1 - 2yy - 2zz,   2xy - 2zw,      2xz + 2yw,
+            2xy + 2zw,       1 - 2xx - 2zz,  2yz - 2xw,
+            2xz - 2yw,       2yz + 2xw,      1 - 2xx - 2yy
+        ]
+        
+        Then we can write that cost as linear function of the intermediate
+        quaternion outer product terms.
+        '''
+
+        qqt_terms = prog.NewContinuousVariables(
+            10, "%s_bingham_quat_outer_prod" % child.name)
+        ww, wx, wy, wz, xx, xy, xz, yy, yz, zz = qqt_terms
+        # w,x,y,z all in [-1, 1], so their products are as well.
+        prog.AddBoundingBoxConstraint(-np.ones(10), np.ones(10), qqt_terms)
+        # Build qqt matrix
+        qqt = np.array([
+            [ww, wx, wy, wz],
+            [wx, xx, xy, xz],
+            [wy, xy, yy, yz],
+            [wz, xz, yz, zz]
+        ])
+        M = optim_params["M"]
+        Z = optim_params["Z"]
+        R = child.R_optim
+
+        # Enforce quaternion-bilinear-term-to-rotmat correspondence.
+        prog.AddLinearConstraint(
+            R[0, 0] == 1 - 2*yy - 2*zz
+        )
+        prog.AddLinearConstraint(
+            R[0, 1] == 2*xy - 2*zw
+        )
+        prog.AddLinearConstraint(
+            R[0, 2] == 2*xz + 2*yw
+        )
+        prog.AddLinearConstraint(
+            R[1, 0] == 2*xy + 2*zw
+        )
+        prog.AddLinearConstraint(
+            R[1, 1] == 1 - 2*xx - 2*zz
+        )
+        prog.AddLinearConstraint(
+            R[1, 2] == 2*yz - 2*xw
+        )
+        prog.AddLinearConstraint(
+            R[2, 0] == 2*xz - 2*yw
+        )
+        prog.AddLinearConstraint(
+            R[2, 1] == 2*yz + 2*xw
+        )
+        prog.AddLinearConstraint(
+            R[2, 2] == 1 - 2*xx - 2*yy
+        )
+
+        # Add cost based on quaternion terms.
+        cost = np.trace(Z.dot(M.T.dot(qqt.dot(M))))
+        prog.AddLinearCost(cost)

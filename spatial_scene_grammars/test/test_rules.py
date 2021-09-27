@@ -251,6 +251,36 @@ def test_AngleAxisInversion(set_seed, angle):
     if torch.abs(angle) > 0:
         assert torch.allclose(recovered_axis, random_axis, atol=1E-4, rtol=1E-4)
 
+
+def test_WorldFrameBinghamRotationRule(set_seed):
+    # Construct from random quaternion mode + tight RPY variances
+    mode_R = UniformlyRandomRotationMatrix(set_seed)
+    rpy_concentration = np.random.uniform([100, 100, 100], [1000, 1000., 1000.])
+    rule = WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
+        mode_R, rpy_concentration
+    )
+
+    parent = make_dummy_node()
+
+    sampled_Rs = [
+        RotationMatrix(
+            rule.sample_rotation(parent).detach().numpy()
+        ) for k in range(100)
+    ]
+
+    # Do a fast-and-dirty check that those rotations are close to the mean: rotate
+    # the +x vector, and make sure the dist of rotated vecs has mean close to the
+    # mode.
+    px = np.array([1., 0., 0.])
+    rotated_pxs = [R.multiply(px) for R in sampled_Rs]
+    mean_rotated_px = np.mean(np.stack(rotated_pxs, axis=0), axis=0)
+    expected_rotated_px = mode_R.multiply(px)
+    err = np.abs(mean_rotated_px - expected_rotated_px)
+    assert all(err < 0.25), (mean_rotated_px, expected_rotated_px)
+
+
+
+
 @pytest.mark.parametrize("xyz_rule", [
     WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*3.),
     AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*5.),
@@ -262,7 +292,8 @@ def test_AngleAxisInversion(set_seed, angle):
     SameRotationRule(),
     UnconstrainedRotationRule(),
     UniformBoundedRevoluteJointRule.from_bounds(axis=torch.tensor([0., 1., 0.]), lb=-np.pi/2., ub=np.pi/2.),
-    GaussianChordOffsetRule(axis=torch.tensor([0., 0., 1.]), loc=0.42, concentration=11.)
+    GaussianChordOffsetRule(axis=torch.tensor([0., 0., 1.]), loc=0.42, concentration=11.),
+    WorldFrameBinghamRotationRule(M=torch.eye(4), Z=torch.tensor([-1., -1., -1., 0.]))
 ])
 def test_ProductionRule(set_seed, xyz_rule, rotation_rule):
     rule = ProductionRule(
@@ -280,7 +311,7 @@ def test_ProductionRule(set_seed, xyz_rule, rotation_rule):
     assert isinstance(params, tuple) and len(params) == 2
     for prior_set, param_set in zip(priors, params):
         for k in prior_set.keys():
-            assert all(torch.isfinite(prior_set[k].log_prob(param_set[k])))
+            assert all(torch.isfinite(prior_set[k].log_prob(param_set[k])).flatten())
     rule.parameters = params
 
     trace = pyro.poutine.trace(rule.sample_child).get_trace(parent)
