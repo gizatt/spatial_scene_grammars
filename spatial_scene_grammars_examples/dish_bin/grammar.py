@@ -1,3 +1,7 @@
+import glob
+import os
+from functools import lru_cache
+
 import torch
 from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
@@ -24,62 +28,117 @@ additional indeterminant object at an offset distribution, or nothing.
 
 eps = 1E-2
 
-class ConcreteObject(IndependentSetNode):
-    # Partial implementation of object that allows
-    # the object to specialize into 
+class ObjectModel(TerminalNode):
+    sdf = None
+    def __init__(self, tf):
+        assert self.sdf is not None, "Don't instantiate ObjectModel itself; use a reified version."
+        geom = PhysicsGeometryInfo()
+        geom.register_model_file(
+            drake_tf_to_torch_tf(RigidTransform(p=[0.0, 0., 0.])),
+            self.sdf
+        )
+        super().__init__(
+            tf=tf,
+            physics_geometry_info=geom,
+            observed=True
+        )
+
+# Use caching to try to avoid re-generating objects, which messes with pickling
+# and node identity checking.
+@lru_cache(maxsize=None)
+def reify_models_from_folder_to_object_types(folder):
+    print("Generating from folder ", folder)
+    sdfs = glob.glob(os.path.join(folder, "*/model_simplified.sdf"))
+    new_types = []
+    for sdf in sdfs:
+        new_types.append(
+            type(
+                "%s" % os.path.split(sdf)[0].replace("/", ":"),
+                (ObjectModel,),
+                {"sdf": sdf}
+            )
+        )
+    # Make these dynamically generated types pickle-able
+    # by registering them globally. Dangerous -- make sure
+    # their names are unique!
+    # https://stackoverflow.com/questions/11658511/pickling-dynamically-generated-classes
+    for new_type in new_types:
+        print(new_type.__name__, ": ", new_type)
+        globals()[new_type.__name__] = new_type
+
+    return new_types
+
+
+PlateModels = reify_models_from_folder_to_object_types(
+    "sink/plates_cups_and_bowls/plates"
+)
+class Plate(OrNode):
+    # One of any available plate model.
+    def __init__(self, tf):
+        super().__init__(
+            rule_probs=torch.ones(len(PlateModels)),
+            tf=tf,
+            physics_geometry_info=None,
+            observed=False
+        )
     @classmethod
     def generate_rules(cls):
-        return [
+        ModelRules = [
             ProductionRule(
-                child_type=ChildObjectTypes[cls.__name__],
-                xyz_rule=AxisAlignedGaussianOffsetRule(
-                    mean=torch.tensor([0.05, 0.05, 0.05]),
-                    variance=torch.tensor([0.01, 0.01, 0.01])),
-                rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-1, -1, -1, 0.]))
-            )
+                child_type=model_type,
+                xyz_rule=SamePositionRule(),
+                rotation_rule=SameRotationRule()
+            ) for model_type in PlateModels
         ]
+        return ModelRules
 
-class Plate(ConcreteObject):
-    def __init__(self, tf):
-        geom = PhysicsGeometryInfo()
-        geom.register_model_file(
-            drake_tf_to_torch_tf(RigidTransform(p=[0.0, 0., 0.])),
-            "sink/plates_cups_and_bowls/plates/Ecoforms_Plant_Plate_S11Turquoise/model_simplified.sdf"
-        )
-        super().__init__(
-            rule_probs=torch.tensor([0.5]),
-            tf=tf,
-            physics_geometry_info=geom,
-            observed=True
-        )
 
-class Cup(ConcreteObject):
+CupModels = reify_models_from_folder_to_object_types(
+    "sink/plates_cups_and_bowls/cups"
+)
+class Cup(OrNode):
+    # One of any available plate model.
     def __init__(self, tf):
-        geom = PhysicsGeometryInfo()
-        geom.register_model_file(
-            drake_tf_to_torch_tf(RigidTransform(p=[0.0, 0., 0.])),
-            "sink/plates_cups_and_bowls/cups/Cole_Hardware_Mug_Classic_Blue/model_simplified.sdf"
-        )
         super().__init__(
-            rule_probs=torch.tensor([0.5]),
+            rule_probs=torch.ones(len(CupModels)),
             tf=tf,
-            physics_geometry_info=geom,
-            observed=True
+            physics_geometry_info=None,
+            observed=False
         )
+    @classmethod
+    def generate_rules(cls):
+        ModelRules = [
+            ProductionRule(
+                child_type=model_type,
+                xyz_rule=SamePositionRule(),
+                rotation_rule=SameRotationRule()
+            ) for model_type in CupModels
+        ]
+        return ModelRules
 
-class Bowl(ConcreteObject):
+BowlModels = reify_models_from_folder_to_object_types(
+    "sink/plates_cups_and_bowls/bowls"
+)
+class Bowl(OrNode):
+    # One of any available plate model.
     def __init__(self, tf):
-        geom = PhysicsGeometryInfo()
-        geom.register_model_file(
-            drake_tf_to_torch_tf(RigidTransform(p=[0.0, 0., 0.])),
-            "sink/plates_cups_and_bowls/bowls/Room_Essentials_Bowl_Turquiose/model_simplified.sdf"
-        )
         super().__init__(
-            rule_probs=torch.tensor([0.5]),
+            rule_probs=torch.ones(len(BowlModels)),
             tf=tf,
-            physics_geometry_info=geom,
-            observed=True
+            physics_geometry_info=None,
+            observed=False
         )
+    @classmethod
+    def generate_rules(cls):
+        ModelRules = [
+            ProductionRule(
+                child_type=model_type,
+                xyz_rule=SamePositionRule(),
+                rotation_rule=SameRotationRule()
+            ) for model_type in BowlModels
+        ]
+        return ModelRules
+
 
 class Object(OrNode):
     def __init__(self, tf):
@@ -93,26 +152,14 @@ class Object(OrNode):
     @classmethod
     def generate_rules(cls):
         ObjectTypes = [Plate, Bowl, Cup]
-        ClusterRules = [
+        ObjectRules = [
             ProductionRule(
-                child_type=cluster_type,
+                child_type=object_type,
                 xyz_rule=SamePositionRule(),
                 rotation_rule=SameRotationRule()
-            ) for cluster_type in ObjectTypes
+            ) for object_type in ObjectTypes
         ]
-        return ClusterRules
-
-# Dynamically generate ChildObject types
-# for each concrete object type.
-ChildObjectTypes = {}
-for object_type in [Bowl, Cup, Plate]:
-    class_name = object_type.__name__ + "ChildObject"
-    new_class = type(class_name, (Object,), {})
-    ChildObjectTypes[object_type.__name__] = new_class
-    # Register class name in globals so we can
-    # pickle these types.
-    # https://stackoverflow.com/questions/11658511/pickling-dynamically-generated-classes
-    globals()[class_name] = new_class
+        return ObjectRules
 
 
 class DishBin(GeometricSetNode):
