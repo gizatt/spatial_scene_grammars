@@ -92,6 +92,31 @@ class Plate(OrNode):
         ]
         return ModelRules
 
+class PlateStack(GeometricSetNode):
+    def __init__(self, tf):
+        super().__init__(
+            p=torch.tensor(0.5),
+            max_children=3,
+            tf=tf,
+            physics_geometry_info=None,
+            observed=False
+        )
+
+    @classmethod
+    def generate_rules(cls):
+        rules = [
+            ProductionRule(
+                child_type=Plate,
+                xyz_rule=AxisAlignedGaussianOffsetRule(
+                    mean=torch.tensor([0.0, 0.0, 0.0]),
+                    variance=torch.tensor([0.01, 0.01, 0.05])),
+                # Assume world-frame vertically-oriented plate stacks
+                rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
+                    RotationMatrix(), [100., 100., 0.1]
+                )
+            )
+        ]
+        return rules
 
 CupModels = reify_models_from_folder_to_object_types(
     "sink/plates_cups_and_bowls/cups"
@@ -161,18 +186,14 @@ class Object(OrNode):
         ]
         return ObjectRules
 
-
-class DishBin(GeometricSetNode):
-    bin_size = []
+class AssortedObjects(GeometricSetNode):
     def __init__(self, tf):
-        geom = PhysicsGeometryInfo()
-        geom.register_model_file(torch.eye(4), "sink/bin.sdf")
         super().__init__(
             tf=tf,
             p=0.2,
             max_children=6,
-            physics_geometry_info=geom,
-            observed=True
+            physics_geometry_info=None,
+            observed=False
         )
     @classmethod
     def generate_rules(cls):
@@ -180,7 +201,52 @@ class DishBin(GeometricSetNode):
             child_type=Object,
             xyz_rule=AxisAlignedGaussianOffsetRule(
                 mean=torch.tensor([0.0, 0.0, 0.]),
-                variance=torch.tensor([0.2, 0.2, 0.2])),
+                variance=torch.tensor([0.1, 0.1, 0.05])),
             rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-1, -1, -1, 0.]))
         )
         return [rule]
+
+class AssortedPlateStacks(GeometricSetNode):
+    def __init__(self, tf):
+        super().__init__(
+            tf=tf,
+            p=0.5,
+            max_children=2,
+            physics_geometry_info=None,
+            observed=False
+        )
+    @classmethod
+    def generate_rules(cls):
+        rule = ProductionRule(
+            child_type=PlateStack,
+            xyz_rule=AxisAlignedGaussianOffsetRule(
+                mean=torch.tensor([0.0, 0.0, 0.]),
+                variance=torch.tensor([0.1, 0.1, 0.05])),
+            rotation_rule=SameRotationRule() # Upright
+        )
+        return [rule]
+
+class DishBin(IndependentSetNode):
+    def __init__(self, tf):
+        geom = PhysicsGeometryInfo()
+        geom.register_model_file(torch.eye(4), "sink/bin.sdf")
+        super().__init__(
+            tf=tf,
+            rule_probs=torch.tensor([0.5, 0.5]),
+            physics_geometry_info=geom,
+            observed=True
+        )
+    @classmethod
+    def generate_rules(cls):
+        return [
+            ProductionRule(
+                child_type=AssortedObjects,
+                xyz_rule=SamePositionRule(),
+                rotation_rule=SameRotationRule()
+            ),
+            ProductionRule(
+                child_type=AssortedPlateStacks,
+                xyz_rule=SamePositionRule(),
+                rotation_rule=SameRotationRule()
+            )
+        ]
