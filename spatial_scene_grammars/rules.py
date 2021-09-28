@@ -926,6 +926,8 @@ class GaussianChordOffsetRule(RotationProductionRule):
         total_ll = vector_diff.sum() * concentration - vmf_normalizer
         prog.AddCost(-total_ll)
 
+wfbrr_warned_prior_detached = False
+wfbrr_warned_params_detached = False
 
 class WorldFrameBinghamRotationRule(RotationProductionRule):
     '''
@@ -970,7 +972,7 @@ class WorldFrameBinghamRotationRule(RotationProductionRule):
         z = z[reorder_inds]
         m = m[:, reorder_inds]
         return WorldFrameBinghamRotationRule(
-            torch.tensor(m), torch.tensor(z)
+            torch.tensor(deepcopy(m)), torch.tensor(deepcopy(z))
         )
 
 
@@ -979,7 +981,6 @@ class WorldFrameBinghamRotationRule(RotationProductionRule):
         assert isinstance(Z, torch.Tensor) and Z.shape == (4,)
         # More detailed checks on contents of M and Z will be done
         # by the distribution type.
-
         self.parameters = {
             "M": M,
             "Z": Z
@@ -1013,7 +1014,10 @@ class WorldFrameBinghamRotationRule(RotationProductionRule):
         # order with the last term 0. I don't currently consume priors for anything,
         # so I'm skipping implementing this in a nice way, and just initializing these
         # parameters "reasonably".
-        logging.warning("Prior over parameters of WorldFrameBinghamRotationRule are Deltas.")
+        global wfbrr_warned_prior_detached
+        if not wfbrr_warned_prior_detached:
+            logging.warning("Prior over parameters of WorldFrameBinghamRotationRule are Deltas.")
+            wfbrr_warned_prior_detached = True
         return {
             "M": dist.Delta(torch.eye(4)),
             "Z": dist.Delta(torch.tensor([-1, -1, -1, 0.]))
@@ -1028,7 +1032,11 @@ class WorldFrameBinghamRotationRule(RotationProductionRule):
     def parameters(self, parameters):
         self.M = parameters["M"]
         self.Z = parameters["Z"]
-        logging.warning("Detaching BinghamDistribution parameters.")
+        global wfbrr_warned_params_detached
+        if not wfbrr_warned_params_detached:
+            logging.warning("Detaching BinghamDistribution parameters.")
+            wfbrr_warned_params_detached = True
+
         self._bingham_dist = BinghamDistribution(
             param_m=self.M.detach(), param_z=self.Z.detach(),
             options={"flip_to_positive_z_quaternions": True}
@@ -1080,38 +1088,42 @@ class WorldFrameBinghamRotationRule(RotationProductionRule):
             [wz, xz, yz, zz]
         ])
         M = optim_params["M"]
-        Z = optim_params["Z"]
+        Z = np.diag(optim_params["Z"])
         R = child.R_optim
+
+        prog.AddLinearConstraint(ww + xx + yy + zz == 1.)
 
         # Enforce quaternion-bilinear-term-to-rotmat correspondence.
         prog.AddLinearConstraint(
             R[0, 0] == 1 - 2*yy - 2*zz
         )
         prog.AddLinearConstraint(
-            R[0, 1] == 2*xy - 2*zw
+            R[0, 1] == 2*xy - 2*wz
         )
         prog.AddLinearConstraint(
-            R[0, 2] == 2*xz + 2*yw
+            R[0, 2] == 2*xz + 2*wy
         )
         prog.AddLinearConstraint(
-            R[1, 0] == 2*xy + 2*zw
+            R[1, 0] == 2*xy + 2*wz
         )
         prog.AddLinearConstraint(
             R[1, 1] == 1 - 2*xx - 2*zz
         )
         prog.AddLinearConstraint(
-            R[1, 2] == 2*yz - 2*xw
+            R[1, 2] == 2*yz - 2*wx
         )
         prog.AddLinearConstraint(
-            R[2, 0] == 2*xz - 2*yw
+            R[2, 0] == 2*xz - 2*wy
         )
         prog.AddLinearConstraint(
-            R[2, 1] == 2*yz + 2*xw
+            R[2, 1] == 2*yz + 2*wx
         )
         prog.AddLinearConstraint(
             R[2, 2] == 1 - 2*xx - 2*yy
         )
 
         # Add cost based on quaternion terms.
-        cost = np.trace(Z.dot(M.T.dot(qqt.dot(M))))
+        # Negate since we're maximizing log prob (i.e.
+        # minimizing -ll.)
+        cost = -np.trace(Z.dot(M.T.dot(qqt.dot(M))))
         prog.AddLinearCost(cost)

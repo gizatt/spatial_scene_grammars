@@ -35,7 +35,7 @@ class ConcreteObject(IndependentSetNode):
                 xyz_rule=AxisAlignedGaussianOffsetRule(
                     mean=torch.tensor([0.05, 0.05, 0.05]),
                     variance=torch.tensor([0.01, 0.01, 0.01])),
-                rotation_rule=UnconstrainedRotationRule()
+                rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-1, -1, -1, 0.]))
             )
         ]
 
@@ -134,6 +134,6 @@ class DishBin(GeometricSetNode):
             xyz_rule=AxisAlignedGaussianOffsetRule(
                 mean=torch.tensor([0.0, 0.0, 0.]),
                 variance=torch.tensor([0.2, 0.2, 0.2])),
-            rotation_rule=UnconstrainedRotationRule()
+            rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-1, -1, -1, 0.]))
         )
         return [rule]

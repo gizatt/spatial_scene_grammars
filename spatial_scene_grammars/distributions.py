@@ -245,8 +245,6 @@ class BinghamDistribution(TorchDistribution):
 
         #self._norm_const_deriv \
         #    = BinghamDistribution.normalization_constant_deriv(self._param_z)
-
-        self._logger = logging.getLogger(__name__)
         
         super().__init__(batch_shape, event_shape, validate_args=validate_args)
 
@@ -354,7 +352,6 @@ class BinghamDistribution(TorchDistribution):
             lambda x: np.sum(1. / (x - 2. * param_z_np)) - 1,
             1.0
         )[0]
-        self._logger.debug("b=%g", b)
 
         omega = np.eye(self._dim) + 2. * a / b
         mbstar = np.exp(-(self._dim - b) / 2.) \
@@ -429,7 +426,7 @@ class BinghamDistribution(TorchDistribution):
             "param_m is not orthogonal."
 
     @staticmethod
-    def fit(data):
+    def fit(data, weights=None):
         """Fits a bingham distribution to given data.
         The implemented fitting procedure is based on the method of moments,
         i.e. we compute the empirical second moment of the data and numerically
@@ -442,9 +439,7 @@ class BinghamDistribution(TorchDistribution):
         -------
         result : Bingham distribution object
         """
-        raise NotImplementedError("Needs to be adapted")
-
-        assert isinstance(data, np.ndarray), \
+        assert isinstance(data, torch.Tensor), \
             "data needs to be a np.ndarray"
 
         bd_dim = data.shape[1]
@@ -453,7 +448,12 @@ class BinghamDistribution(TorchDistribution):
             "Not supported Bingham distribution dimensionality."
 
         n_samples = data.shape[0]
-        second_moment = np.dot(data.T, data)/n_samples
+        if weights is None:
+            weights = torch.ones(n_samples) / n_samples
+        else:
+            assert weights.shape == (n_samples,), weights.shape
+            weights = weights / torch.sum(weights)
+        second_moment = torch.matmul(data.T*weights, data)
         return BinghamDistribution.fit_to_moment(second_moment)
 
     @staticmethod
@@ -469,11 +469,13 @@ class BinghamDistribution(TorchDistribution):
             the MLE estimate for a Bingham distribution given the
             scatter matrix S
         """
-        raise NotImplementedError("Needs to be adapted")
-
-        assert np.allclose(second_moment, second_moment.transpose()), \
+        assert torch.allclose(second_moment, second_moment.T), \
             "second moment must be symmetric"
         bd_dim = second_moment.shape[1]
+
+        # Break into numpy land during fitting process
+
+        second_moment = second_moment.detach().numpy()
 
         (moment_eigval, bingham_location) = np.linalg.eig(second_moment)
 
@@ -481,13 +483,6 @@ class BinghamDistribution(TorchDistribution):
         eigval_order = np.argsort(moment_eigval)
         bingham_location = bingham_location[:, eigval_order]
         moment_eigval = moment_eigval[eigval_order]
-
-        logger = logging.getLogger(__name__)
-        if logger.getEffectiveLevel() == logging.DEBUG:
-            logger.debug("second_moment=\n%s", second_moment)
-            logger.debug("moment_eigval=%s", moment_eigval)
-            logger.debug("eigval_order=%s", eigval_order)
-            logger.debug("bingham_location=\n%s", bingham_location)
 
         def mle_goal_fun(z, rhs):
             """Goal function for MLE optimizer."""
@@ -504,10 +499,8 @@ class BinghamDistribution(TorchDistribution):
         bingham_dispersion = scipy.optimize.fsolve(
             lambda x: mle_goal_fun(x, moment_eigval), np.ones([(bd_dim-1)]))
         bingham_dispersion = np.append(bingham_dispersion, 0)
-        bingham_dist = BinghamDistribution(bingham_location, bingham_dispersion)
 
-        # Remove this bloat code.
-        return bingham_dist
+        return torch.tensor(bingham_location), torch.tensor(bingham_dispersion)
 
     @staticmethod
     def normalization_constant(param_z, mode="default", options=dict()):

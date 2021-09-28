@@ -88,6 +88,9 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
     for node_type in grammar.all_types:
         # Fit the child weights for the node type.
         observed_child_sets = observed_child_sets_per_node_type[node_type.__name__]
+        if len(observed_child_sets) == 0:
+            logging.warning("%s had zero observed child sets. Skipping..." % node_type.__name__)
+            continue
         # Pre-normalize child set weights to head off any numeric issues
         observed_child_sets_weights = torch.stack([weight for (_, _, weight) in observed_child_sets])
         observed_child_sets_weights = torch.exp(observed_child_sets_weights - torch.logsumexp(observed_child_sets_weights, dim=0)).flatten()
@@ -233,6 +236,15 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
                 # The concentration is approximately 
                 concentration = (x_norm * (2 - x_norm**2)) / (1 - x_norm**2)
                 rot_param_dict["loc"].set(loc)
+            elif type(rot_rule) == WorldFrameBinghamRotationRule:
+                child_quats = [matrix_to_quaternion(child.rotation) for _, child, _ in parent_child_pairs]
+                child_quats = torch.stack(child_quats)
+                weights = torch.stack([weight for (_, _, weight) in parent_child_pairs]) 
+                weights = weights / torch.sum(weights) # Renormalize, as we may not have one-to-one parent-child pair to rules.
+                new_m, new_z = BinghamDistribution.fit(child_quats, weights)
+                rot_param_dict["M"].set(new_m)
+                rot_param_dict["Z"].set(new_z)
+
             else:
                 raise NotImplementedError("type %s under node %s" % (type(rot_rule), node_type))
 
