@@ -302,6 +302,8 @@ def add_mle_tree_parsing_to_prog(
     for observed_node in observed_nodes:
         obs_tf = torch_tf_to_drake_tf(observed_node.tf)
         possible_sources = [n for n in super_tree if type(n) == type(observed_node)]
+        if len(possible_sources) == 0:
+            raise ValueError("Grammar invalid for observation: can't explain observed node ", observed_node)
         source_actives = prog.NewBinaryVariables(len(possible_sources), observed_node.__class__.__name__ + "_sources")
 
         # Store these variables
