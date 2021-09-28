@@ -298,7 +298,7 @@ class GeometricSetNode(Node):
         if len(children) == 0 or len(children) > self.max_children:
             return torch.tensor(-np.inf)
         if set([child.rule_k for child in children]) != set(range(len(children))):
-            print("Set mismatch: ", [child.rule_k for child in children])
+            logging.error("Set mismatch: ", [child.rule_k for child in children])
             return torch.tensor(-np.inf)
         for child in children:
             if type(child) != self.rule.child_type:

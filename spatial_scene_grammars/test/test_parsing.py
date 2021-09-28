@@ -159,7 +159,7 @@ def test_parsing_n_solutions():
             super().__init__(observed=False, physics_geometry_info=None, tf=tf)
         @classmethod
         def generate_rules(cls):
-            return [ProductionRule(child_type=C, xyz_rule=SamePositionRule(), rotation_rule=SameRotationRule())]
+            return [ProductionRule(child_type=C, xyz_rule=SamePositionRule(), rotation_rule=UnconstrainedRotationRule())]
 
     class A(AndNode):
         def __init__(self, tf):
@@ -175,27 +175,12 @@ def test_parsing_n_solutions():
     observed_nodes = [C(torch.eye(4))]
 
     inference_results = infer_mle_tree_with_mip(
-        grammar, observed_nodes, verbose=True, N_solutions=50,
+        grammar, observed_nodes, verbose=True, N_solutions=20,
         use_random_rotation_offset=False
     )
     assert inference_results.optim_result.is_success(), "MIP parsing failed."
 
     mip_optimized_trees = get_optimized_trees_from_mip_results(inference_results)
 
-    # Single rotation matrix constraint has a certain number unique solutions when
-    # R=identity matrix. (I've seen this empirically, but not dug in to
-    # exactly what these modes are... but I'm pretty sure they have to do
-    # with overlapping piecewise McCormick regions on those rotation matrix
-    # elements. It's not the full exponential number of combinations due to
-    # constraints between the binaries?)
+    # Should find a diversity of unconstrained solutions.
     assert len(mip_optimized_trees) == 20
-
-    inference_results = infer_mle_tree_with_mip(
-        grammar, observed_nodes, verbose=True, N_solutions=10,
-        use_random_rotation_offset=True
-    )
-    assert inference_results.optim_result.is_success(), "MIP parsing failed."
-
-    mip_optimized_trees = get_optimized_trees_from_mip_results(inference_results)
-    # Should be a unique solution now, as NodeD need 
-    assert len(mip_optimized_trees) == 1

@@ -117,6 +117,7 @@ def add_mle_tree_parsing_to_prog(
     # which creates decision variables or placeholders for the grammar parameters,
     # which we access from here.
     super_tree = grammar.make_super_tree(max_recursion_depth=max_recursion_depth, detach=True)
+    root_node = super_tree.get_root()
     # Copy observed node set -- we'll be annotating the nodes with decision variables.
     observed_nodes = deepcopy(observed_nodes)
 
@@ -158,8 +159,18 @@ def add_mle_tree_parsing_to_prog(
         # We'll need to constrain some R's to be in SO(3), but
         # many R's are directly constrained and don't actually need
         # this (very expensive to create) constraint. So we delay
-        # setup until we know the rotation is unconstrained.
-        node.rotation_was_fully_constrained = False
+        # setup until we know the rotation is unconstrained. These
+        # vars track if
+        #  1) The node rotation will constrained by correspondence to
+        #     an observation or root-node tf.
+        #  2) The parent/child rotation relationship is fully constrained
+        #     (i.e. equality or fixed offset).
+        if node.observed or node is root_node:
+            node.rotation_is_fully_constrained = True
+        else:
+            node.rotation_is_fully_constrained = False
+        # Default to not constrained; encoded rules may update this value.
+        node.rotation_fully_constrained_relative_to_parent = False
 
         # For rules, annotate them with their parameter set for
         # convenience later. (This saves some effort, since the
@@ -175,7 +186,6 @@ def add_mle_tree_parsing_to_prog(
         print("Continuous variables allocated.")
 
     # Constraint root node to have the grammar's root position.
-    root_node = super_tree.get_root()
     root_tf = torch_tf_to_drake_tf(grammar.root_node_tf)
     prog.AddBoundingBoxConstraint(
         root_tf.translation(), root_tf.translation(),
@@ -249,33 +259,38 @@ def add_mle_tree_parsing_to_prog(
         
         ## Child location constraints relative to parent.
         for rule, child_node in zip(rules, children):
-            child_node.rotation_was_fully_constrained = rule.encode_constraint(
+            child_node.rotation_fully_constrained_relative_to_parent = rule.encode_constraint(
                 prog, rule.xyz_optim_params, rule.rot_optim_params, parent_node, child_node
             )
 
-            # If child was observed and rotation was fully constrained, then
-            # parent rotation is fully constrained too, and we should label as such
-            if child_node.observed and child_node.rotation_was_fully_constrained:
-                parent_node.rotation_was_fully_constrained = True
+    # Propagate rotations being fully constrained up and down the tree to be sure
+    # we really only add rotation constraints where they're necessary. This is done
+    # in a two-step, inside-out process: first pass constraints up the tree as far
+    # as possible, then pass back down to any children that aren't already constrained.
+    # Step 1: For every node that is already fully constrained, if its parent/child
+    # relationship is fully constrained, fully constrain the parent.
+    fully_constrained_nodes = [node for node in super_tree if node.rotation_is_fully_constrained]
+    while len(fully_constrained_nodes) > 0:
+        node = fully_constrained_nodes.pop()
+        parent = super_tree.get_parent(node)
+        if parent and not parent.rotation_is_fully_constrained and node.rotation_fully_constrained_relative_to_parent:
+            parent.rotation_is_fully_constrained = True
+            fully_constrained_nodes.append(parent)
+    # Step 2: Same thing, but go downwards instead of upwards.
+    fully_constrained_nodes = [node for node in super_tree if node.rotation_is_fully_constrained]
+    while len(fully_constrained_nodes) > 0:
+        node = fully_constrained_nodes.pop()
+        children = super_tree.get_children(node)
+        for child in children:
+            if not child.rotation_is_fully_constrained and child.rotation_fully_constrained_relative_to_parent:
+                child.rotation_is_fully_constrained = True
+                fully_constrained_nodes.append(child)
 
     for node in super_tree:
-        if not node.observed and not node.rotation_was_fully_constrained:
+        if not node.rotation_is_fully_constrained:
             # In this case, and only this case, we need to make sure R_optim
             # is in SO(3).
             mip_rot_gen.AddToProgram(node.R_optim_pre_offset, prog)
-
-            # If the node is inactive, give it a preference for a single
-            # rotation to reduce the number of equivalent solutions.
-            # Be close to the random offset since it's not on a piecewise
-            # boundary of the McCormick envelopes.
-            # This should not change optimal solution, since inactive node
-            # rotations don't appear in the cost.
-            #err = child_node.R_optim_pre_offset - R_random_offset.matrix()
-            #for i in range(3):
-            #    for j in range(3):
-            #        # This isn't generally true. 
-            #        prog.AddLinearConstraint(err[i, j] <= 2. * child_node.active)
-            #        prog.AddLinearConstraint(err[i, j] >= -2. * child_node.active)
 
 
     # For each observed node, add a binary variable for each possible
@@ -583,7 +598,7 @@ def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, o
         ## Child location constraints relative to parent.
         optim_params_by_rule = grammar.rule_params_by_node_type_optim[type(parent_node).__name__]
         for rule, child_node, (xyz_optim_params, rot_optim_params) in zip(rules, children, optim_params_by_rule):
-            rotation_was_fully_constrained = rule.encode_constraint(
+            rule.encode_constraint(
                 prog, xyz_optim_params, rot_optim_params, parent_node, child_node
             )
 
