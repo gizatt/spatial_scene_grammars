@@ -15,15 +15,16 @@ from pydrake.all import (
     RigidTransform
 )
 
-''' Grammar describing how mugs, plates, and cups appear
-in a dish bin.
+''' 
+Grammar describing small piles and clusters of packages.
 
-The dish bin places a random number of indeterminate objects
-within the bin. Each indeterminate object specializes into
-one of the three object types.
+Simple structure -- mostly here to prototype sampling code.
 
-A concrete object type is observed, and can produce one
-additional indeterminant object at an offset distribution, or nothing.
+Root -> [AssortedStacks, AssortedBoxes]
+AssortedStacks -> Stacks x N
+Stack -> Boxes x N, vertically
+AssortedBoxes -> Boxes x N
+Box -> Reified Box Geometry
 '''
 
 eps = 1E-2
@@ -48,7 +49,7 @@ class ObjectModel(TerminalNode):
 @lru_cache(maxsize=None)
 def reify_models_from_folder_to_object_types(folder):
     print("Generating from folder ", folder)
-    sdfs = glob.glob(os.path.join(folder, "*/model_simplified.sdf"))
+    sdfs = glob.glob(os.path.join(folder, "*/box.sdf"))
     new_types = []
     for sdf in sdfs:
         new_types.append(
@@ -69,14 +70,14 @@ def reify_models_from_folder_to_object_types(folder):
     return new_types
 
 
-PlateModels = reify_models_from_folder_to_object_types(
-    "sink/plates_cups_and_bowls/plates"
+BoxModels = reify_models_from_folder_to_object_types(
+    "boxes"
 )
-class Plate(OrNode):
-    # One of any available plate model.
+class Box(OrNode):
+    # One of any available box model.
     def __init__(self, tf):
         super().__init__(
-            rule_probs=torch.ones(len(PlateModels)),
+            rule_probs=torch.ones(len(BoxModels)),
             tf=tf,
             physics_geometry_info=None,
             observed=False
@@ -88,27 +89,26 @@ class Plate(OrNode):
                 child_type=model_type,
                 xyz_rule=SamePositionRule(),
                 rotation_rule=SameRotationRule()
-            ) for model_type in PlateModels
+            ) for model_type in BoxModels
         ]
         return ModelRules
 
-class PlateStack(GeometricSetNode):
+
+class MaybeStackBox(IndependentSetNode):
     def __init__(self, tf):
         super().__init__(
-            p=torch.tensor(0.5),
-            max_children=3,
+            rule_probs=torch.tensor([0.5]),
             tf=tf,
             physics_geometry_info=None,
             observed=False
         )
-
     @classmethod
     def generate_rules(cls):
-        rules = [
+        ModelRules = [
             ProductionRule(
-                child_type=Plate,
+                child_type=BoxAndStackBox,
                 xyz_rule=AxisAlignedGaussianOffsetRule(
-                    mean=torch.tensor([0.0, 0.0, 0.0]),
+                    mean=torch.tensor([0.0, 0.0, 0.2]),
                     variance=torch.tensor([0.01, 0.01, 0.05])),
                 # Assume world-frame vertically-oriented plate stacks
                 rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
@@ -116,16 +116,11 @@ class PlateStack(GeometricSetNode):
                 )
             )
         ]
-        return rules
+        return ModelRules
 
-CupModels = reify_models_from_folder_to_object_types(
-    "sink/plates_cups_and_bowls/cups"
-)
-class Cup(OrNode):
-    # One of any available plate model.
+class BoxAndStackBox(AndNode):
     def __init__(self, tf):
         super().__init__(
-            rule_probs=torch.ones(len(CupModels)),
             tf=tf,
             physics_geometry_info=None,
             observed=False
@@ -134,63 +129,23 @@ class Cup(OrNode):
     def generate_rules(cls):
         ModelRules = [
             ProductionRule(
-                child_type=model_type,
+                child_type=Box,
                 xyz_rule=SamePositionRule(),
                 rotation_rule=SameRotationRule()
-            ) for model_type in CupModels
+            ),
+            ProductionRule(
+                child_type=MaybeStackBox,
+                xyz_rule=SamePositionRule(),
+                rotation_rule=SameRotationRule()
+            )
         ]
         return ModelRules
 
-BowlModels = reify_models_from_folder_to_object_types(
-    "sink/plates_cups_and_bowls/bowls"
-)
-class Bowl(OrNode):
-    # One of any available plate model.
-    def __init__(self, tf):
-        super().__init__(
-            rule_probs=torch.ones(len(BowlModels)),
-            tf=tf,
-            physics_geometry_info=None,
-            observed=False
-        )
-    @classmethod
-    def generate_rules(cls):
-        ModelRules = [
-            ProductionRule(
-                child_type=model_type,
-                xyz_rule=SamePositionRule(),
-                rotation_rule=SameRotationRule()
-            ) for model_type in BowlModels
-        ]
-        return ModelRules
-
-
-class Object(OrNode):
-    def __init__(self, tf):
-        super().__init__(
-            rule_probs=torch.tensor([1., 1., 1.]),
-            tf=tf,
-            physics_geometry_info=None,
-            observed=False
-        )
-
-    @classmethod
-    def generate_rules(cls):
-        ObjectTypes = [Plate, Bowl, Cup]
-        ObjectRules = [
-            ProductionRule(
-                child_type=object_type,
-                xyz_rule=SamePositionRule(),
-                rotation_rule=SameRotationRule()
-            ) for object_type in ObjectTypes
-        ]
-        return ObjectRules
-
-class AssortedObjects(GeometricSetNode):
+class AssortedBoxes(GeometricSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            p=0.2,
+            p=0.3,
             max_children=6,
             physics_geometry_info=None,
             observed=False
@@ -198,41 +153,23 @@ class AssortedObjects(GeometricSetNode):
     @classmethod
     def generate_rules(cls):
         rule = ProductionRule(
-            child_type=Object,
+            child_type=BoxAndStackBox,
             xyz_rule=AxisAlignedGaussianOffsetRule(
-                mean=torch.tensor([0.0, 0.0, 0.]),
-                variance=torch.tensor([0.1, 0.1, 0.05])),
+                mean=torch.tensor([0.0, 0.0, 0.1]),
+                variance=torch.tensor([0.25, 0.25, 0.001])),
             rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-1, -1, -1, 0.]))
         )
         return [rule]
 
-class AssortedPlateStacks(GeometricSetNode):
-    def __init__(self, tf):
-        super().__init__(
-            tf=tf,
-            p=0.5,
-            max_children=2,
-            physics_geometry_info=None,
-            observed=False
-        )
-    @classmethod
-    def generate_rules(cls):
-        rule = ProductionRule(
-            child_type=PlateStack,
-            xyz_rule=AxisAlignedGaussianOffsetRule(
-                mean=torch.tensor([0.0, 0.0, 0.]),
-                variance=torch.tensor([0.1, 0.1, 0.05])),
-            rotation_rule=SameRotationRule() # Upright
-        )
-        return [rule]
-
-class DishBin(IndependentSetNode):
+class BoxGroup(AndNode):
     def __init__(self, tf):
         geom = PhysicsGeometryInfo(fixed=True)
-        geom.register_model_file(torch.eye(4), "sink/bin.sdf")
+        geom.register_geometry(
+            drake_tf_to_torch_tf(RigidTransform(p=[0.0, 0., -1.0])),
+            pydrake_geom.Box(20., 20., 2.)
+        )
         super().__init__(
             tf=tf,
-            rule_probs=torch.tensor([0.5, 0.5]),
             physics_geometry_info=geom,
             observed=True
         )
@@ -240,12 +177,7 @@ class DishBin(IndependentSetNode):
     def generate_rules(cls):
         return [
             ProductionRule(
-                child_type=AssortedObjects,
-                xyz_rule=SamePositionRule(),
-                rotation_rule=SameRotationRule()
-            ),
-            ProductionRule(
-                child_type=AssortedPlateStacks,
+                child_type=AssortedBoxes,
                 xyz_rule=SamePositionRule(),
                 rotation_rule=SameRotationRule()
             )

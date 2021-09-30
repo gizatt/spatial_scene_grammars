@@ -12,8 +12,9 @@ from torch.distributions.geometric import Geometric
 from torch.distributions.categorical import Categorical
 from torch.distributions.utils import broadcast_all
 import pyro
+import pyro.distributions.transforms
 from pyro.distributions.torch_distribution import TorchDistribution
-
+import pyro.distributions.constraints as pyro_constraints
 
 class LeftSidedConstraint(constraints.Constraint):
     """
@@ -29,6 +30,60 @@ class LeftSidedConstraint(constraints.Constraint):
         is_boolean = (value == 0) | (value == 1)
         neighbor_diff = value[..., -1:] - value[..., :-1]
         return is_boolean.all(-1) & (neighbor_diff <= 0) .all(-1)
+
+
+from pyro.ops.tensor_utils import safe_normalize
+normalize_logabsdet_warned = False
+class NormalizeWithPseudoInverse(torch.distributions.transforms.Transform):
+    """
+    Safely project a vector onto the sphere wrt the ``p`` norm. This avoids
+    the singularity at zero by mapping to the vector ``[1, 0, 0, ..., 0]``.
+
+    Inverse transform is not well defined as this transformation
+    loses radius information; in inverse transform, we set radius to 1
+    and compute log-det-Jac at that value.
+    https://mc-stan.org/docs/2_27/reference-manual/unit-vector-section.html
+    """
+
+    domain = pyro_constraints.real_vector
+    codomain = pyro_constraints.sphere
+    bijective = True
+
+    def __init__(self, p=2, cache_size=0):
+        assert isinstance(p, Number)
+        assert p >= 0
+        self.p = p
+        super().__init__(cache_size=cache_size)
+
+    def __eq__(self, other):
+        return type(self) == type(other) and self.p == other.p
+
+    def _call(self, x):
+        return safe_normalize(x, p=self.p)
+
+    def _inverse(self, y):
+        return y
+
+    def log_abs_det_jacobian(self, x, y, intermediates=None):
+        global normalize_logabsdet_warned
+        if not normalize_logabsdet_warned:
+            logging.warning("NormalizeWithPseudoInverse LogAbsDet is super sketchy")
+            normalize_logabsdet_warned = True
+        return -(x*x).sum()
+
+    def with_cache(self, cache_size=1):
+        if self._cache_size == cache_size:
+            return self
+        return Normalize(self.p, cache_size=cache_size)
+
+
+@torch.distributions.transform_to.register(pyro_constraints.sphere)
+def _transform_to_sphere(constraint):
+    return NormalizeWithPseudoInverse()
+@torch.distributions.biject_to.register(pyro_constraints.sphere)
+def _biject_to_sphere(constraint):
+    return NormalizeWithPseudoInverse()
+
 
 
 class UniformWithEqualityHandling(pyro.distributions.Uniform):
@@ -215,6 +270,7 @@ class BinghamDistribution(TorchDistribution):
     IMPLEMENTED_DIMENSIONS = [2, 4]
     
     arg_constraints = {}
+    support = pyro_constraints.sphere
 
     has_rsample = False
 

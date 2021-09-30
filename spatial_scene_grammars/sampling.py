@@ -1,5 +1,6 @@
 from copy import deepcopy
 import logging
+import time
 
 import torch
 import pyro
@@ -8,14 +9,108 @@ import pyro.poutine as poutine
 from pyro.infer import MCMC, NUTS, HMC
 from pyro.contrib.autoname import scope
 
+from pydrake.all import (
+    ConnectMeshcatVisualizer
+)
 from .random_walk_kernel import RandomWalkKernel
 from .rules import *
+from .constraints import ContinuousVariableConstraint
 from .parsing import optimize_scene_tree_with_nlp
 from .torch_utils import interp_translation, interp_rotation
-
+from .drake_interop import (
+    compile_scene_tree_to_mbp_and_sg,
+    build_nonpenetration_constraint,
+    resolve_sg_proximity_id_to_mbp_id
+)
 from pytorch3d.transforms.rotation_conversions import (
     euler_angles_to_matrix, axis_angle_to_matrix
 )
+
+class NonpenetrationConstraint(ContinuousVariableConstraint):
+    def __init__(self, allowed_penetration_margin=0.0):
+        ''' penetration_margin > 0, specifies penetration amounts we'll allow. '''
+        self.allowed_penetration_margin = allowed_penetration_margin
+        self.cached_scene_tree = None
+        super().__init__(lower_bound=torch.tensor(-np.inf),
+                         upper_bound=torch.tensor(0.0))
+
+    def eval(self, scene_tree):
+        # Convert into MBP/SceneGraph and find penetrating point pairs
+        # using that machinery. For each penetrating pair, get the
+        # penetrating points and normal in body frame, and then recompute
+        # the penalty score using (pb - pa)^n directly, applying transformation
+        # into world frame using torch tensors from the scene tree to get
+        # the continuous parameters (partially) autodiffable from torch.
+
+        # This will NOT work for dynamically sized objects, since
+        # only the transform gradients make it through.
+
+        if self.cached_scene_tree is None or scene_tree is not self.cached_scene_tree:
+            self.cached_scene_tree = scene_tree
+            builder, mbp, sg, node_to_free_body_ids_map, body_id_to_node_map = \
+                compile_scene_tree_to_mbp_and_sg(scene_tree)
+            mbp.Finalize()
+            diagram = builder.Build()
+            diagram_context = diagram.CreateDefaultContext()
+            mbp_context = diagram.GetMutableSubsystemContext(mbp, diagram_context)
+            sg_context = diagram.GetMutableSubsystemContext(sg, diagram_context)
+            self.mbp = mbp
+            self.sg = sg
+            self.mbp_context = mbp_context
+            self.sg_context = sg_context
+            self.node_to_free_body_ids_map = node_to_free_body_ids_map
+            self.body_id_to_node_map = body_id_to_node_map
+        else:
+            # Update node tf for every node in the tree
+            for node in scene_tree:
+                for body_id in self.node_to_free_body_ids_map[node]:
+                    self.mbp.SetFreeBodyPose(
+                        self.mbp_context, self.mbp.get_body(body_id),
+                        torch_tf_to_drake_tf(node.tf)
+                    )
+
+        # Get colliding point pairs and their normal info
+        # using the SceneGraph.
+        query_object = self.sg.get_query_output_port().Eval(self.sg_context)
+        point_pairs = query_object.ComputePointPairPenetration()
+        total_score = torch.tensor([0.])
+        for point_pair in point_pairs:
+            assert point_pair.depth > 0
+            if point_pair.depth <= self.allowed_penetration_margin:
+                continue
+            model_id_A, body_id_A = resolve_sg_proximity_id_to_mbp_id(
+                self.sg, self.mbp, point_pair.id_A)
+            model_id_B, body_id_B = resolve_sg_proximity_id_to_mbp_id(
+                self.sg, self.mbp, point_pair.id_B)
+
+            # Transform the points on the objects and the normal vector
+            # into the object frames
+            tf_WA = self.mbp.CalcRelativeTransform(
+                self.mbp_context, frame_A=self.mbp.world_frame(),
+                frame_B=self.mbp.get_body(body_id_A).body_frame())
+            tf_WB = self.mbp.CalcRelativeTransform(
+                self.mbp_context, frame_A=self.mbp.world_frame(),
+                frame_B=self.mbp.get_body(body_id_B).body_frame())
+            p_ACa = torch.tensor(tf_WA.inverse().multiply(point_pair.p_WCa))
+            p_BCb = torch.tensor(tf_WB.inverse().multiply(point_pair.p_WCb))
+            nhat_BA_B = torch.tensor(tf_WB.inverse().rotation().multiply(point_pair.nhat_BA_W))
+            
+            # Retrieve their corresponding node TFs and compute error term
+            tf_WA_torch = self.body_id_to_node_map[body_id_A].tf
+            p_WCa_torch = torch.matmul(tf_WA_torch[:3, :3], p_ACa) + tf_WA_torch[:3, 3]
+            tf_WB_torch = self.body_id_to_node_map[body_id_B].tf
+            p_WCb_torch = torch.matmul(tf_WB_torch[:3, :3], p_BCb) + tf_WB_torch[:3, 3]
+            nhat_BA_W_torch = torch.matmul(tf_WB_torch[:3, :3], nhat_BA_B)
+            depth = torch.sum((p_WCb_torch - p_WCa_torch) * nhat_BA_W_torch)
+
+            # Sanity-check that we did things right.
+            assert np.abs(point_pair.depth - depth.item()) < 1E-6
+            total_score += depth*10.0 # TODO Why the scaling? It's tied to my factor definition
+                                      # for evaluation constraints with HMC -- currently errors
+                                      # on the ~0.01 scale get reasonable probability. This
+                                      # makes sure contact is actually really tightly handled.
+
+        return total_score
 
 def is_discrete_distribution(fn):
     # Returns whether the distribution type ("fn" from
@@ -216,7 +311,9 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
 
 
 def do_fixed_structure_hmc_with_constraint_penalties(
-        grammar, original_tree, num_samples=100, subsample_step=5, verbose=0, kernel_type="NUTS", **kwargs):
+        grammar, original_tree, num_samples=100, subsample_step=5, verbose=0, kernel_type="NUTS",
+        fix_observeds=False, with_nonpenetration=False, with_static_stability=False, 
+        zmq_url=None, prefix="hmc_sample", constraints=[], **kwargs):
     ''' Given a scene tree, resample its continuous variables
     (i.e. the node poses) while keeping the root and observed
     node poses fixed, and trying to keep the constraints implied
@@ -242,6 +339,9 @@ def do_fixed_structure_hmc_with_constraint_penalties(
     initial_score = scene_tree.score()
     assert torch.isfinite(initial_score), "Bad initialization for MCMC."
 
+    if with_nonpenetration:
+        constraints.append(NonpenetrationConstraint(0.00))
+
     # Form probabilistic model
     root = scene_tree.get_root()
     def model():
@@ -256,29 +356,22 @@ def do_fixed_structure_hmc_with_constraint_penalties(
                 node_queue.append(child)
 
         # Implement observation constraints
-        xyz_observed_variance = 1E-2
-        rot_observed_variance = 1E-2
-        for node, original_node in zip(scene_tree.nodes, original_tree.nodes):
-            if node.observed:
-                xyz_observed_dist = dist.Normal(original_node.translation, xyz_observed_variance)
-                rot_observed_dist = dist.Normal(original_node.rotation, rot_observed_variance)
-                pyro.sample("%s_xyz_observed" % node.name, xyz_observed_dist, obs=node.translation)
-                pyro.sample("%s_rotation_observed" % node.name, rot_observed_dist, obs=node.rotation)
-        # Implement joint axis constraints
-        axis_alignment_variance = 1E-2
-        for node, original_node in zip(scene_tree.nodes, original_tree.nodes):
-            children, rules = scene_tree.get_children_and_rules(parent)
-            for child, rule in zip(children, rules):
-                if type(rule) == GaussianChordOffsetRule or type(rule) == UniformBoundedRevoluteJointRule:
-                    # Both of these rule types require that parent/child rotation is
-                    # about an axis.
-                    axis_from_parent = torch.matmul(node.rotation, node.axis)
-                    axis_from_child = torch.matmul(child.rotation, child.axis)
-                    inner_product = (axis_from_parent*axis_from_child).sum()
-                    pyro.sample("%s_axis_error_observed" % node.name,
-                        dist.Normal(1., axis_alignment_variance),
-                        obs=inner_product
-                    )
+        if fix_observeds:
+            xyz_observed_variance = 1E-2
+            rot_observed_variance = 1E-2
+            for node, original_node in zip(scene_tree.nodes, original_tree.nodes):
+                if node.observed:
+                    xyz_observed_dist = dist.Normal(original_node.translation, xyz_observed_variance)
+                    rot_observed_dist = dist.Normal(original_node.rotation, rot_observed_variance)
+                    pyro.sample("%s_xyz_observed" % node.name, xyz_observed_dist, obs=node.translation)
+                    pyro.sample("%s_rotation_observed" % node.name, rot_observed_dist, obs=node.rotation)
+
+        for k, constraint in enumerate(constraints):
+            clamped_error_distribution = dist.Normal(0., 0.01)
+            violation, _, _ = constraint.eval_violation(scene_tree)
+            positive_violations = torch.clamp(violation, 0., np.inf)
+            pyro.sample("%s_%d_err" % (type(constraint).__name__, k), clamped_error_distribution, obs=positive_violations)
+
 
     # Ugh, I shouldn't need to manually reproduce the site names here.
     # Can I rearrange how traces get assembled to extract these?
@@ -286,8 +379,8 @@ def do_fixed_structure_hmc_with_constraint_penalties(
     for parent in original_tree.nodes:
         children, rules = original_tree.get_children_and_rules(parent)
         for child, rule in zip(children, rules):
-            for key, value in rule.get_site_values(parent, child).items():
-                initial_values["%s/%s/%s" % (parent.name, child.name, key)] = value
+            for key, site_value in rule.get_site_values(parent, child).items():
+                initial_values["%s/%s/%s" % (parent.name, child.name, key)] = site_value.value
     trace = pyro.poutine.trace(model).get_trace()
     for key in initial_values.keys():
         if key not in trace.nodes.keys():
@@ -310,12 +403,35 @@ def do_fixed_structure_hmc_with_constraint_penalties(
         )
     else:
         raise NotImplementedError(kernel_type)
+        
+    # Get MBP for viz
+    if zmq_url is not None:
+        builder, mbp, sg, node_to_free_body_ids_map, body_id_to_node_map = compile_scene_tree_to_mbp_and_sg(scene_tree)
+        mbp.Finalize()
+        visualizer = ConnectMeshcatVisualizer(builder, sg,
+            zmq_url=zmq_url, prefix=prefix)
+        diagram = builder.Build()
+        diagram_context = diagram.CreateDefaultContext()
+        mbp_context = diagram.GetMutableSubsystemContext(mbp, diagram_context)
+        vis_context = diagram.GetMutableSubsystemContext(visualizer, diagram_context)
+        visualizer.load()
+        def hook_fn(kernel, samples, stage, i):
+            # Set MBP context to 
+            for node, body_ids in node_to_free_body_ids_map.items():
+                for body_id in body_ids:
+                    mbp.SetFreeBodyPose(mbp_context, mbp.get_body(body_id), torch_tf_to_drake_tf(node.tf))
+            diagram.Publish(diagram_context)
+            time.sleep(0.1)
+    else:
+        hook_fn = None
+
     mcmc = MCMC(
         kernel,
         num_samples=num_samples,
         warmup_steps=min(int(num_samples/2), 50),
         num_chains=1,
-        disable_progbar=(verbose==-1)
+        disable_progbar=(verbose==-1),
+        hook_fn=hook_fn
     )
     mcmc.run()
     if verbose > 1:

@@ -8,7 +8,7 @@ pygraphviz
 pytest-cov
 pytest-subtests
 pytest-dependency
-pyro-ppl==1.5.1
+pyro-ppl==1.7.0
 torchviz
 torch==1.7.1
 torch_geometric==1.7.0

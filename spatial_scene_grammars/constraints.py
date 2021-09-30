@@ -31,18 +31,27 @@ class Constraint():
         self.upper_bound = upper_bound
         super().__init__()
 
+    def add_to_ik_prog(self, scene_tree, ik, mbp, mbp_context, node_to_free_body_ids_map):
+        # Add this constraint to a Drake InverseKinematics object ik.
+        raise NotImplementedError()
+        
     def eval(self, scene_tree):
         # Output should be torch-autodiffable from scene_tree
-        # params and variables.
+        # params and variables. It should either match the shape
+        # of lower_bound / upper_bound, or be batched with leftmost
+        # dims matching the shape of lower/upper bound.
         raise NotImplementedError()
 
     def eval_violation(self, scene_tree):
         # Return (max violation, lower_violation, upper_violation) vectors
         val = self.eval(scene_tree)
+        if self.lower_bound.shape != torch.Size() and val.shape != self.lower_bound.shape:
+            lb_n_elems = len(self.lower_bound.shape)
+            assert val.shape[-lb_n_elems:] == self.lower_bound.shape, (val.shape, self.lower_bound.shape)
         lower_violation = self.lower_bound - val
-        lower_violation[torch.isinf(self.lower_bound)] = 0.
+        lower_violation[..., torch.isinf(self.lower_bound)] = 0.
         upper_violation = val - self.upper_bound
-        upper_violation[torch.isinf(self.upper_bound)] = 0.
+        upper_violation[..., torch.isinf(self.upper_bound)] = 0.
         max_violation = torch.max(lower_violation, upper_violation)
         return max_violation, lower_violation, upper_violation
 
