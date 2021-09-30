@@ -167,7 +167,9 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             if len(parent_child_pairs) == 0:
                 continue
             ## XYZ Rules
-            if type(xyz_rule) == WorldBBoxRule:
+            if xyz_rule.fix_parameters is True:
+                pass
+            elif type(xyz_rule) == WorldBBoxRule:
                 # The inferred lb/ub (from which we'll derive center/width)
                 # will be the biggest deviation between parent and child, irrespective of weights.
                 offsets = torch.stack([child.translation for (_, child, _) in parent_child_pairs])
@@ -200,7 +202,9 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             else:
                 raise NotImplementedError("type %s under node %s" % (type(xyz_rule), node_type))
             ## Rotation rules
-            if type(rot_rule) == SameRotationRule or type(rot_rule) == UnconstrainedRotationRule:
+            if rot_rule.fix_parameters is True:
+                pass
+            elif type(rot_rule) == SameRotationRule or type(rot_rule) == UnconstrainedRotationRule:
                 # No parameters
                 pass
             elif type(rot_rule) == UniformBoundedRevoluteJointRule:

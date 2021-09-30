@@ -162,8 +162,8 @@ class XyzProductionRule():
         Instructions for how to produce a child's position
         from the parent.
     '''
-    def __init__(self):
-        pass
+    def __init__(self, fix_parameters=False):
+        self.fix_parameters = fix_parameters
     def sample_xyz(self, parent):
         raise NotImplementedError()
     def score_child(self, parent, child):
@@ -210,8 +210,8 @@ class XyzProductionRule():
 
 class SamePositionRule(XyzProductionRule):
     ''' Child Xyz is identically parent xyz. '''
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     def sample_xyz(self, parent):
         return parent.translation
@@ -335,11 +335,11 @@ class AxisAlignedBBoxRule(WorldBBoxRule):
 
 class AxisAlignedGaussianOffsetRule(XyzProductionRule):
     ''' Child xyz is diagonally-Normally distributed relative to parent in world frame.'''
-    def __init__(self, mean, variance):
+    def __init__(self, mean, variance, **kwargs):
         assert isinstance(mean, torch.Tensor) and mean.shape == (3,)
         assert isinstance(variance, torch.Tensor) and variance.shape == (3,)
         self.parameters = {"mean": mean, "variance": variance}
-        super().__init__()
+        super().__init__(**kwargs)
 
     def sample_xyz(self, parent):
         return parent.translation + pyro.sample("AxisAlignedGaussianOffsetRule_xyz", self.xyz_dist)
@@ -383,14 +383,14 @@ class WorldFramePlanarGaussianOffsetRule(XyzProductionRule):
     ''' Child xyz is diagonally-Normally distributed relative to parent in world frame
         within a plane. Mean and variance should be 2D, and are sampled to produce a vector
         d = [x, y, 0]. The child_xyz <- parent_xyz + plane_transform * d'''
-    def __init__(self, mean, variance, plane_transform):
+    def __init__(self, mean, variance, plane_transform, **kwargs):
         assert isinstance(mean, torch.Tensor) and mean.shape == (2,)
         assert isinstance(variance, torch.Tensor) and variance.shape == (2,)
         assert isinstance(plane_transform, RigidTransform)
         self.plane_transform = drake_tf_to_torch_tf(plane_transform)
         self.plane_transform_inv = drake_tf_to_torch_tf(plane_transform.inverse())
         self.parameters = {"mean": mean, "variance": variance}
-        super().__init__()
+        super().__init__(**kwargs)
 
     def sample_xyz(self, parent):
         xy_offset = pyro.sample("WorldFramePlanarGaussianOffsetRule", self.xy_dist)
@@ -452,8 +452,8 @@ class RotationProductionRule():
         Instructions for how to produce a child's position
         from the parent.
     '''
-    def __init__(self):
-        pass
+    def __init__(self, fix_parameters=False):
+        self.fix_parameters = fix_parameters
     def sample_rotation(self, parent):
         raise NotImplementedError()
     def score_child(self, parent, child):
@@ -501,8 +501,8 @@ class RotationProductionRule():
 
 class SameRotationRule(RotationProductionRule):
     ''' Child Xyz is identically parent xyz. '''
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     def sample_rotation(self, parent):
         return parent.rotation
@@ -536,8 +536,8 @@ class UnconstrainedRotationRule(RotationProductionRule):
         Child rotation is randomly chosen from all possible
         rotations with no relationship to parent.
     '''
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         desired_density = 1 / np.pi ** 2.
         true_ub = torch.tensor([1., 1., 0.5])
         self.scaling = torch.tensor([1., 1., 2.]) * np.pi ** (2. / 3)
@@ -656,10 +656,10 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         range of angles around a revolute joint axis about the parent.
     '''
     @classmethod
-    def from_bounds(cls, axis, lb, ub):
+    def from_bounds(cls, axis, lb, ub, **kwargs):
         assert ub >= lb
-        return cls(axis, (ub+lb)/2., ub-lb)
-    def __init__(self, axis, center, width):
+        return cls(axis, (ub+lb)/2., ub-lb, **kwargs)
+    def __init__(self, axis, center, width, **kwargs):
         assert isinstance(axis, torch.Tensor) and axis.shape == (3,)
         assert isinstance(center, (float, torch.Tensor)) and isinstance(width, (float, torch.Tensor)) and width >= 0 and width <= 2. * np.pi
         if isinstance(center, float):
@@ -675,6 +675,8 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
             "center": center,
             "width": width
         }
+        super().__init__(**kwargs)
+
     def sample_rotation(self, parent):
         angle = pyro.sample("UniformBoundedRevoluteJointRule_theta", self._angle_dist)
         angle_axis = self.axis * angle
@@ -808,7 +810,7 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
 
 class GaussianChordOffsetRule(RotationProductionRule):
     ''' Placeholder '''
-    def __init__(self, axis, loc, concentration):
+    def __init__(self, axis, loc, concentration, **kwargs):
         assert isinstance(axis, torch.Tensor) and axis.shape == (3,)
         assert isinstance(loc, (float, torch.Tensor))
         assert isinstance(concentration, (float, torch.Tensor)) and concentration >= 0
@@ -828,6 +830,7 @@ class GaussianChordOffsetRule(RotationProductionRule):
             "concentration": concentration,
             "loc": loc
         }
+        super().__init__(**kwargs)
     
     def sample_rotation(self, parent):
         angle = pyro.sample("GaussianChordOffsetRule_theta", self._angle_dist)
@@ -942,7 +945,7 @@ class WorldFrameBinghamRotationRule(RotationProductionRule):
     and RPY concentrations.
     '''
     @staticmethod
-    def from_rotation_and_rpy_variances(rotation_mode, rpy_concentration):
+    def from_rotation_and_rpy_variances(rotation_mode, rpy_concentration, **kwargs):
         ''' Construct this rule to distribute the child rotation
         around the given RotationMatrix, with specified concentrations
         around each rotation axis. '''
@@ -972,11 +975,11 @@ class WorldFrameBinghamRotationRule(RotationProductionRule):
         z = z[reorder_inds]
         m = m[:, reorder_inds]
         return WorldFrameBinghamRotationRule(
-            torch.tensor(deepcopy(m)), torch.tensor(deepcopy(z))
+            torch.tensor(deepcopy(m)), torch.tensor(deepcopy(z)), **kwargs
         )
 
 
-    def __init__(self, M, Z):
+    def __init__(self, M, Z, **kwargs):
         assert isinstance(M, torch.Tensor) and M.shape == (4, 4)
         assert isinstance(Z, torch.Tensor) and Z.shape == (4,)
         # More detailed checks on contents of M and Z will be done
@@ -985,6 +988,7 @@ class WorldFrameBinghamRotationRule(RotationProductionRule):
             "M": M,
             "Z": Z
         }
+        super().__init__(**kwargs)
     
     def sample_rotation(self, parent):
         quat = pyro.sample("WorldFrameBinghamRotationRule_quat", self._bingham_dist)

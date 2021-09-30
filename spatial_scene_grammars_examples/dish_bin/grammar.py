@@ -92,11 +92,9 @@ class Plate(OrNode):
         ]
         return ModelRules
 
-class PlateStack(GeometricSetNode):
+class PlateStack(AndNode):
     def __init__(self, tf):
         super().__init__(
-            p=torch.tensor(0.3),
-            max_children=3,
             tf=tf,
             physics_geometry_info=None,
             observed=False
@@ -108,13 +106,14 @@ class PlateStack(GeometricSetNode):
             ProductionRule(
                 child_type=Plate,
                 xyz_rule=AxisAlignedGaussianOffsetRule(
-                    mean=torch.tensor([0.0, 0.0, 0.025]),
-                    variance=torch.tensor([0.001, 0.001, 0.01])),
+                    mean=torch.tensor([0.0, 0.0, 0.00]),
+                    variance=torch.tensor([0.005, 0.005, 0.005]),
+                    fix_parameters=True),
                 # Assume world-frame vertically-oriented plate stacks
                 rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                    RotationMatrix(), [100., 100., 0.1]
+                    RotationMatrix(), [1000., 1000., 0.1], fix_parameters=True
                 )
-            )
+            ) for k in range(2)
         ]
         return rules
 
@@ -181,10 +180,12 @@ class BowlContents(GeometricSetNode):
                 child_type=Object,
                 xyz_rule=AxisAlignedGaussianOffsetRule(
                     mean=torch.tensor([0.0, 0.0, 0.02]),
-                    variance=torch.tensor([0.001, 0.001, 0.01])),
+                    variance=torch.tensor([0.001, 0.001, 0.001]),
+                    fix_parameters=True),
                 # Assume world-frame vertically-oriented plate stacks
                 rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                    RotationMatrix(), [100., 100., 0.1]
+                    RotationMatrix(), [1., 1., 1.],
+                    fix_parameters=True
                 )
             )
         ]
@@ -271,7 +272,7 @@ class AssortedPlateStacks(GeometricSetNode):
             child_type=PlateStack,
             xyz_rule=AxisAlignedGaussianOffsetRule(
                 mean=torch.tensor([0.0, 0.0, 0.01]),
-                variance=torch.tensor([0.05, 0.50, 0.005])),
+                variance=torch.tensor([0.05, 0.05, 0.001])),
             rotation_rule=SameRotationRule() # Upright
         )
         return [rule]
@@ -291,10 +292,10 @@ class AssortedFullBowls(GeometricSetNode):
             child_type=FullBowl,
             xyz_rule=AxisAlignedGaussianOffsetRule(
                 mean=torch.tensor([0.0, 0.0, 0.01]),
-                variance=torch.tensor([0.05, 0.50, 0.005])),
+                variance=torch.tensor([0.05, 0.05, 0.001])),
             # Assume world-frame vertically-oriented plate stacks
             rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                RotationMatrix(), [100., 100., 0.1]
+                RotationMatrix(), [1000., 1000., 0.1]
             )
         )
         return [rule]

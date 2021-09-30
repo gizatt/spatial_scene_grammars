@@ -455,6 +455,7 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
     return builder, mbp, scene_graph, node_to_free_body_ids_map, body_id_to_node_map
 
 def project_tree_to_feasibility(tree, constraints=[], jitter_q=None, do_forward_sim=False, zmq_url=None, prefix="projection", timestep=0.001, T=1.):
+    print("Starting")
     # Mutates tree into tree with bodies in closest
     # nonpenetrating configuration.
     builder, mbp, sg, node_to_free_body_ids_map, body_id_to_node_map = \
@@ -471,6 +472,8 @@ def project_tree_to_feasibility(tree, constraints=[], jitter_q=None, do_forward_
     mbp_context = diagram.GetMutableSubsystemContext(mbp, diagram_context)
     q0 = mbp.GetPositions(mbp_context)
     nq = len(q0)
+    
+    print("setting up ik")
     
     # Set up projection NLP.
     ik = InverseKinematics(mbp, mbp_context)
@@ -498,7 +501,9 @@ def project_tree_to_feasibility(tree, constraints=[], jitter_q=None, do_forward_
     os.system("rm %s" % logfile)
     options.SetOption(solver.id(), "Print file", logfile)
     options.SetOption(solver.id(), "Major feasibility tolerance", 1E-6)
+    print("Solving")
     result = solver.Solve(prog, None, options)
+    print("Solved")
     if not result.is_success():
         logging.warn("Projection failed.")
         print("Logfile: ")
