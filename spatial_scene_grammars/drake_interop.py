@@ -484,7 +484,7 @@ def project_tree_to_feasibility(tree, constraints=[], jitter_q=None, do_forward_
     # q0.
     prog.AddQuadraticErrorCost(np.eye(nq), q0, q_dec)
     # Nonpenetration constraint.
-    ik.AddMinimumDistanceConstraint(0.01)
+    ik.AddMinimumDistanceConstraint(0.001)
     # Other requested constraints.
     for constraint in constraints:
         constraint.add_to_ik_prog(tree, ik, mbp, mbp_context, node_to_free_body_ids_map)
@@ -500,7 +500,8 @@ def project_tree_to_feasibility(tree, constraints=[], jitter_q=None, do_forward_
     logfile = "/tmp/snopt.log"
     os.system("rm %s" % logfile)
     options.SetOption(solver.id(), "Print file", logfile)
-    options.SetOption(solver.id(), "Major feasibility tolerance", 1E-6)
+    options.SetOption(solver.id(), "Major feasibility tolerance", 1E-3)
+    options.SetOption(solver.id(), "Major optimality tolerance", 1E-3)
     print("Solving")
     result = solver.Solve(prog, None, options)
     print("Solved")
@@ -527,6 +528,50 @@ def project_tree_to_feasibility(tree, constraints=[], jitter_q=None, do_forward_
         node.tf = drake_tf_to_torch_tf(mbp.GetFreeBodyPose(mbp_context, mbp.get_body(body_id)))
     return tree
 
+def rejection_sample_structure_to_feasibility(
+        tree, constraints=[], max_n_iters=100,
+        do_forward_sim=False, timestep=0.001, T=1.):
+    
+    # Pre-build prog to check ourselves against
+    builder, mbp, sg, node_to_free_body_ids_map, body_id_to_node_map = \
+        compile_scene_tree_to_mbp_and_sg(tree, timestep=timestep)
+    mbp.Finalize()
+    diagram = builder.Build()
+    diagram_context = diagram.CreateDefaultContext()
+    mbp_context = diagram.GetMutableSubsystemContext(mbp, diagram_context)
+    q0 = mbp.GetPositions(mbp_context)
+    nq = len(q0)
+    
+    # Set up projection NLP.
+    ik = InverseKinematics(mbp, mbp_context)
+    q_dec = ik.q()
+    prog = ik.prog()
+    # Nonpenetration constraint.
+    ik.AddMinimumDistanceConstraint(0.001)
+    # Other requested constraints.
+    for constraint in constraints:
+        constraint.add_to_ik_prog(tree, ik, mbp, mbp_context, node_to_free_body_ids_map)
+    
+    from pyro.contrib.autoname import scope
+    for k in range(max_n_iters):
+        node_queue = [tree.get_root()]
+        while len(node_queue) > 0:
+            parent = node_queue.pop(0)
+            children, rules = tree.get_children_and_rules(parent)
+            for child, rule in zip(children, rules):
+                with scope(prefix=parent.name):
+                    rule.sample_child(parent, child)
+                node_queue.append(child)
+        for node, body_ids in node_to_free_body_ids_map.items():
+            for body_id in body_ids:
+                mbp.SetFreeBodyPose(mbp_context, mbp.get_body(body_id), torch_tf_to_drake_tf(node.tf))
+        q = mbp.GetPositions(mbp_context)
+        all_bindings = prog.GetAllConstraints()
+        satisfied = prog.CheckSatisfied(all_bindings, q)
+        if satisfied:
+            return tree, True
+    return tree, False
+    
 def simulate_scene_tree(scene_tree, T, timestep=0.001, target_realtime_rate=1.0, meshcat=None):
     builder, mbp, scene_graph, _, _ = compile_scene_tree_to_mbp_and_sg(
         scene_tree, timestep=timestep)
