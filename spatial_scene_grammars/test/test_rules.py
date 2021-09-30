@@ -335,6 +335,8 @@ def test_ProductionRule(set_seed, xyz_rule, rotation_rule):
             assert torch.allclose(site["value"], reported_site_values[subkey].value), (site["value"], reported_site_values[subkey].value)
             assert site["fn"] is reported_site_values[subkey].fn
 
+    # Max score should be a 1-element tensor
+    assert isinstance(rule.get_max_score().item(), float)
 
 if __name__ == "__main__":
     pytest.main()

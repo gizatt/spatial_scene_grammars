@@ -347,7 +347,7 @@ def add_mle_tree_parsing_to_prog(
             else:
                 # Never observed this type in the scene, so this node can't be active.
                 prog.AddLinearConstraint(node.active == 0)
-            
+
     # Finally, build the objective.
     for parent_node in super_tree:
         # For the discrete states, do maximum likelihood.
@@ -371,7 +371,9 @@ def add_mle_tree_parsing_to_prog(
         elif isinstance(parent_node, GeometricSetNode):
             # TODO(gizatt) Is this accurate given max_children causes a truncation
             # of the geometric dist? That might need special handling.
+            # p = p * (1-p)**(n_children)
             p = parent_node.p
+            prog.AddLinearCost(-np.log(p.item()))
             for child in children:
                 prog.AddLinearCost(-np.log(1.-p) * child.active)
         else:
@@ -379,9 +381,20 @@ def add_mle_tree_parsing_to_prog(
 
         ## Child location costs relative to parent.
         for rule, child_node in zip(rules, children):
-            rule.encode_cost(
+            cost_term = rule.encode_cost(
                 prog, rule.xyz_optim_params, rule.rot_optim_params, parent_node, child_node
             )
+            prog.AddCost(cost_term)
+            # Add additional term subtracting off what we know to be the minimum cost
+            # achieved by that optimization, when the child is inactive, so that when
+            # this child is inactive, the functional ll of the node in the optimization is 0.
+            # When the child is inactive, we know all of its children are also inactive, so it'll
+            # not be constrained to match an observed node. So the child pose will be chosen to optimize
+            # the score under this rule relative to the parent.
+            min_possible_cost = -rule.get_max_score().detach().item()
+            print("Rule %s->%s->%s, min cost %s" %(parent_node.name, child.name, rule, min_possible_cost))
+            prog.AddLinearCost((1. - child_node.active) * -min_possible_cost)
+
     return super_tree, observed_nodes, R_random_offset
 
 # Return type of infer_mle_tree_with_mip
@@ -495,6 +508,42 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
     if not success:
         logging.warning("MIP structure finding unsuccessful.")
     optimized_tree = SceneTree()
+
+    # Get score per rule in supertree
+    total_active_score = 0.
+    for parent_node in super_tree:
+        children = super_tree.get_children(parent_node)
+        ## Get child rule list.
+        if isinstance(parent_node, GeometricSetNode):
+            rules = [parent_node.rule for k in range(len(children))]
+        elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
+            rules = parent_node.rules
+        elif isinstance(parent_node, TerminalNode):
+            rules = []
+        else:
+            raise ValueError("Unexpected node type: ", type(parent_node))
+        child_set_score = parent_node.score_child_set([child for child in children if get_sol(child.active) > 0.5]).item()
+        print("%s (active %f): child set score %f" % (parent_node.name, get_sol(parent_node.active), child_set_score))
+        if get_sol(parent_node.active) > 0.5:
+            total_active_score += child_set_score
+        for child, rule in zip(children, rules):
+            proxy_child = deepcopy(child)
+            t_sol = get_sol(child.t_optim)
+            R_sol = RotationMatrix(
+                inference_results.R_random_offset.matrix().dot(
+                    get_sol(child.R_optim_pre_offset))
+            )
+            new_tf = drake_tf_to_torch_tf(RigidTransform(
+                p=t_sol, R=R_sol
+            ))
+            print("child tf: ", new_tf)
+            proxy_child.tf = new_tf
+            child_score = rule.score_child(parent_node, proxy_child, verbose=1).item()
+            print("%s:%s (active %s): child %f" % (parent_node.name, proxy_child.name, get_sol(child.active), child_score))
+            if get_sol(parent_node.active) > 0.5 and get_sol(child.active) > 0.5:
+                total_active_score += child_score
+    print("Total active score: ", total_active_score)
+
     # Build tree top-down so we know parent is already in new tree.
     potential_node_queue = [(super_tree.get_root(), None)]
     while len(potential_node_queue) > 0:
@@ -516,6 +565,7 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
             children = list(super_tree.successors(node))
             for child in children:
                 potential_node_queue.append((child, new_node))
+
     return optimized_tree
 
 def get_optimized_trees_from_mip_results(inference_results, assert_on_failure=False):

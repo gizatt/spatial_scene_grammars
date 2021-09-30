@@ -148,12 +148,17 @@ class ProductionRule():
         the xyz and rotation rules matching their parameters (but possibly valued
         by decision variables or fixed values for those parameters), and parent and
         child nodes that have been given R_optim and t_optim decision variable members,
-        encodes the negative log probability of this rule given that parent and child.
+        return the expression for the negative log probability of this rule given
+        that parent and child. (Does *not* add to program, though.) '''
+        return self.xyz_rule.encode_cost(prog, xyz_optim_params, parent, child) + \
+               self.rotation_rule.encode_cost(prog, rot_optim_params, parent, child)
 
-        Returns the return value of encoding the rotation rule (i.e. whether the rotation
-        was fully constrained by the constraints).'''
-        self.xyz_rule.encode_cost(prog, xyz_optim_params, parent, child)
-        self.rotation_rule.encode_cost(prog, rot_optim_params, parent, child)
+    def get_max_score(self):
+        ''' Return the maximum possible score from this rule at its current
+        parameter values for any parent/child pair. (For any rule I can think of, the
+        parent / child poses should not factor in to this number. '''
+        print(self.xyz_rule.get_max_score(), self.rotation_rule.get_max_score())
+        return self.xyz_rule.get_max_score() + self.rotation_rule.get_max_score()
 
 
 ## XYZ Production rules
@@ -206,7 +211,11 @@ class XyzProductionRule():
         t_optim decision variable members, adds the negative log probability
         of this rule given the parent and child to the program.'''
         raise NotImplementedError()
-
+    def get_max_score(self):
+        ''' Return the maximum possible score from this rule at its current
+        parameter values for any parent/child pair. (For any rule I can think of, the
+        parent / child poses should not factor in to this number. '''
+        raise NotImplementedError()
 
 class SamePositionRule(XyzProductionRule):
     ''' Child Xyz is identically parent xyz. '''
@@ -236,7 +245,9 @@ class SamePositionRule(XyzProductionRule):
         for k in range(3):
             prog.AddLinearEqualityConstraint(child.t_optim[k] == parent.t_optim[k])
     def encode_cost(self, prog, optim_params, parent, child):
-        pass
+        return 0.
+    def get_max_score(self):
+        return torch.tensor(0.)
 
 class WorldBBoxRule(XyzProductionRule):
     ''' Child xyz is uniformly chosen in [center, width] in world frame,
@@ -302,7 +313,9 @@ class WorldBBoxRule(XyzProductionRule):
         ub_world = optim_params["center"] + optim_params["width"]/2.
         # log prob = 1 / width on each axis
         total_ll = -sum(ub_world - lb_world)
-        prog.AddLinearCost(-total_ll)
+        return -total_ll
+    def get_max_score(self):
+        return -torch.log(self.width).sum()
 
 
 class AxisAlignedBBoxRule(WorldBBoxRule):
@@ -373,11 +386,13 @@ class AxisAlignedGaussianOffsetRule(XyzProductionRule):
         covar = np.diag(optim_params["variance"])
         inverse_covariance = np.linalg.inv(covar)
         covariance_det = np.linalg.det(covar)
-        log_normalizer = -np.log(np.sqrt( (2. * np.pi) ** 3 * covariance_det))
+        log_normalizer = np.log(np.sqrt( (2. * np.pi) ** 3 * covariance_det))
 
         xyz_offset = child.t_optim - (parent.t_optim + mean)
-        total_ll = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset)) + log_normalizer
-        prog.AddCost(-total_ll)
+        total_ll = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset)) - log_normalizer
+        return -total_ll
+    def get_max_score(self):
+        return self.xyz_dist.log_prob(self.mean).sum()
 
 class WorldFramePlanarGaussianOffsetRule(XyzProductionRule):
     ''' Child xyz is diagonally-Normally distributed relative to parent in world frame
@@ -438,13 +453,15 @@ class WorldFramePlanarGaussianOffsetRule(XyzProductionRule):
         covar = np.diag(optim_params["variance"])
         inverse_covariance = np.linalg.inv(covar)
         covariance_det = np.linalg.det(covar)
-        log_normalizer = -np.log(np.sqrt( (2. * np.pi) ** 2 * covariance_det))
+        log_normalizer = np.log(np.sqrt( (2. * np.pi) ** 2 * covariance_det))
 
         inv_tf = torch_tf_to_drake_tf(self.plane_transform_inv).cast[Expression]()
-        xy_offset = inv_tf.multiply(child.t_optim - parent.t_optim)[:2] - mean
-        total_ll = -0.5 * (xy_offset.transpose().dot(inverse_covariance).dot(xy_offset)) + log_normalizer
-        prog.AddCost(-total_ll)
+        xy_offset = inv_tf.multiply(child.t_optim - parent.t_optim) - mean
+        total_ll = -0.5 * (xy_offset.transpose().dot(inverse_covariance).dot(xy_offset)) - log_normalizer
+        return -total_ll
 
+    def get_max_score(self):
+        return self.xy_dist.log_prob(self.mean).sum()
 
 ## Rotation production rules
 class RotationProductionRule():
@@ -497,7 +514,11 @@ class RotationProductionRule():
         t_optim decision variable members, adds the negative log probability
         of this rule given the parent and child to the program.'''
         raise NotImplementedError()
-
+    def get_max_score(self):
+        ''' Return the maximum possible score from this rule at its current
+        parameter values for any parent/child pair. (For any rule I can think of, the
+        parent / child poses should not factor in to this number. '''
+        raise NotImplementedError()
 
 class SameRotationRule(RotationProductionRule):
     ''' Child Xyz is identically parent xyz. '''
@@ -529,7 +550,9 @@ class SameRotationRule(RotationProductionRule):
         # Child is fully constrained.
         return True
     def encode_cost(self, prog, optim_params, parent, child):
-        pass
+        return 0.
+    def get_max_score(self):
+        return torch.tensor([0.])
 
 class UnconstrainedRotationRule(RotationProductionRule):
     '''
@@ -622,7 +645,10 @@ class UnconstrainedRotationRule(RotationProductionRule):
         # Child rotation not fully constrained.
         return False
     def encode_cost(self, prog, optim_params, parent, child):
-        pass
+        # Constant term
+        return -self.score_child(parent, child).detach().item()
+    def get_max_score(self):
+        return torch.log(torch.ones(1) / np.pi**2)
 
 def recover_relative_angle_axis(parent, child, target_axis, zero_angle_width=1E-2, allowed_axis_diff=10. * np.pi/180.):
     # Recover angle-axis relationship between a parent and child.
@@ -806,7 +832,10 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         return False
 
     def encode_cost(self, prog, optim_params, parent, child):
-        pass
+        # Uniform distribution over angles, constant term
+        return torch.log(self.width).sum().detach().numpy()
+    def get_max_score(self):
+        return -torch.log(self.width).sum()
 
 class GaussianChordOffsetRule(RotationProductionRule):
     ''' Placeholder '''
@@ -927,7 +956,10 @@ class GaussianChordOffsetRule(RotationProductionRule):
         total_ll = dot_product * concentration - vmf_normalizer
         # Instead, this happens to be?
         total_ll = vector_diff.sum() * concentration - vmf_normalizer
-        prog.AddCost(-total_ll)
+        return -total_ll
+
+    def get_max_score(self):
+        return self._angle_dist.log_prob(self.loc)
 
 wfbrr_warned_prior_detached = False
 wfbrr_warned_params_detached = False
@@ -1126,8 +1158,10 @@ class WorldFrameBinghamRotationRule(RotationProductionRule):
             R[2, 2] == 1 - 2*xx - 2*yy
         )
 
-        # Add cost based on quaternion terms.
-        # Negate since we're maximizing log prob (i.e.
-        # minimizing -ll.)
-        cost = -np.trace(Z.dot(M.T.dot(qqt.dot(M))))
-        prog.AddLinearCost(cost)
+        # Add log prob based on quaternion terms.
+        ll = np.trace(Z.dot(M.T.dot(qqt.dot(M)))) - np.log(self._bingham_dist._norm_const.item())
+
+        return -ll
+
+    def get_max_score(self):
+        return self._bingham_dist.log_prob(self.M[:, -1])
