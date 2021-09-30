@@ -116,10 +116,35 @@ def do_collision_mesh_simplification(input_obj_path, show=False):
     if show:
         mesh.show()
     try:
-        convex_pieces = trimesh.decomposition.convex_decomposition(
-            mesh) # TODO: args
-        if not isinstance(convex_pieces, list):
-            convex_pieces = [convex_pieces]
+        convex_pieces = []
+        # Do convex decomp multiple times, hoping for overlap.
+        args_per_iter = [
+            {"maxhulls": 12,
+             "maxNumVerticesPerCH": 12,
+             "minVolumePerCH": 0.001,
+             "resolution": 100000,
+             "pca": 1},
+            {"maxhulls": 12,
+             "maxNumVerticesPerCH": 12,
+             "minVolumePerCH": 0.001,
+             "resolution": 100000,
+             "pca": 1},
+        ]
+        for k, args in enumerate(args_per_iter):
+            # Apply random rotation if not the first iteration
+            # (many meshes decompose better upright in axis-aligned arrangement)
+            tf = trimesh.transformations.random_rotation_matrix(np.random.rand(3))
+            mesh.apply_transform(tf)
+            convex_pieces_new = trimesh.decomposition.convex_decomposition(
+                mesh, **args) # TODO: args
+            # Unrotate and add pieces
+            inv_tf = tf.T # No translation so this is OK
+            mesh.apply_transform(inv_tf)
+            if not isinstance(convex_pieces_new, list):
+                convex_pieces_new = [convex_pieces_new]
+            for convex_piece in convex_pieces_new:
+                convex_piece.apply_transform(inv_tf)
+            convex_pieces += convex_pieces_new
     except Exception as e:
         print("Problem in decomp: ", e)
     
@@ -273,6 +298,7 @@ if __name__ == "__main__":
     #to_update = glob.glob(data_folder + "/*/Chefmate_8_Frypan/model.sdf")
     # Update all models.
     to_update = glob.glob(data_folder + "/**/model.sdf", recursive=True)
+    #to_update = glob.glob(data_folder + "/**/Cole_Hardware_Mug_Classic_Blue/model.sdf")
     print(to_update)
     for file in to_update:
         print("Processing %s" % file)
