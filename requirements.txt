@@ -10,7 +10,7 @@ pytest-subtests
 pytest-dependency
 pyro-ppl==1.7.0
 torchviz
-torch==1.7.1
+torch==1.9.1
 torch_geometric==1.7.0
 pytorch3d==0.3
 meshcat
