@@ -381,19 +381,9 @@ def add_mle_tree_parsing_to_prog(
 
         ## Child location costs relative to parent.
         for rule, child_node in zip(rules, children):
-            cost_term = rule.encode_cost(
-                prog, rule.xyz_optim_params, rule.rot_optim_params, parent_node, child_node
+            rule.encode_cost(
+                prog, rule.xyz_optim_params, rule.rot_optim_params, child_node.active, parent_node, child_node
             )
-            prog.AddCost(cost_term)
-            # Add additional term subtracting off what we know to be the minimum cost
-            # achieved by that optimization, when the child is inactive, so that when
-            # this child is inactive, the functional ll of the node in the optimization is 0.
-            # When the child is inactive, we know all of its children are also inactive, so it'll
-            # not be constrained to match an observed node. So the child pose will be chosen to optimize
-            # the score under this rule relative to the parent.
-            min_possible_cost = -rule.get_max_score().detach().item()
-            print("Rule %s->%s->%s, min cost %s" %(parent_node.name, child.name, rule, min_possible_cost))
-            prog.AddLinearCost((1. - child_node.active) * -min_possible_cost)
 
     return super_tree, observed_nodes, R_random_offset
 
@@ -509,7 +499,9 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
         logging.warning("MIP structure finding unsuccessful.")
     optimized_tree = SceneTree()
 
-    # Get score per rule in supertree
+    # Reconstruct what the optimization thinks our score should be.
+    # (Debugging code)
+    '''
     total_active_score = 0.
     for parent_node in super_tree:
         children = super_tree.get_children(parent_node)
@@ -543,6 +535,7 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
             if get_sol(parent_node.active) > 0.5 and get_sol(child.active) > 0.5:
                 total_active_score += child_score
     print("Total active score: ", total_active_score)
+    '''
 
     # Build tree top-down so we know parent is already in new tree.
     potential_node_queue = [(super_tree.get_root(), None)]

@@ -143,23 +143,16 @@ class ProductionRule():
         self.xyz_rule.encode_constraint(prog, xyz_optim_params, parent, child)
         return self.rotation_rule.encode_constraint(prog, rot_optim_params, parent, child)
 
-    def encode_cost(self, prog, xyz_optim_params, rot_optim_params, parent, child):
+    def encode_cost(self, prog, xyz_optim_params, rot_optim_params, active, parent, child):
         ''' Given a MathematicalProgram prog, parameter dictionaries for
         the xyz and rotation rules matching their parameters (but possibly valued
-        by decision variables or fixed values for those parameters), and parent and
-        child nodes that have been given R_optim and t_optim decision variable members,
-        return the expression for the negative log probability of this rule given
-        that parent and child. (Does *not* add to program, though.) '''
-        return self.xyz_rule.encode_cost(prog, xyz_optim_params, parent, child) + \
-               self.rotation_rule.encode_cost(prog, rot_optim_params, parent, child)
-
-    def get_max_score(self):
-        ''' Return the maximum possible score from this rule at its current
-        parameter values for any parent/child pair. (For any rule I can think of, the
-        parent / child poses should not factor in to this number. '''
-        print(self.xyz_rule.get_max_score(), self.rotation_rule.get_max_score())
-        return self.xyz_rule.get_max_score() + self.rotation_rule.get_max_score()
-
+        by decision variables or fixed values for those parameters), a binary variable
+        indicating whether the child is active, and parent and child nodes that have
+        been given R_optim and t_optim decision variable members, encode the negative log
+        probability of this rule given that parent and child into prog, s.t. the encoded
+        cost is the -ll of the rule if active, and 0 if inactive.'''
+        self.xyz_rule.encode_cost(prog, xyz_optim_params, active, parent, child)
+        self.rotation_rule.encode_cost(prog, rot_optim_params, active, parent, child)
 
 ## XYZ Production rules
 class XyzProductionRule():
@@ -205,7 +198,7 @@ class XyzProductionRule():
         t_optim decision variable members, encodes the constraints implied by
         this rule into the optimization program. '''
         raise NotImplementedError()
-    def encode_cost(self, prog, optim_params, parent, child):
+    def encode_cost(self, prog, optim_params, active, parent, child):
         ''' Given a MathematicalProgram prog, parameter dictionaries for this
         rule type, and parent and child nodes that have been given R_optim and
         t_optim decision variable members, adds the negative log probability
@@ -244,7 +237,7 @@ class SamePositionRule(XyzProductionRule):
         # Constrain child translation to be equal to parent translation.
         for k in range(3):
             prog.AddLinearEqualityConstraint(child.t_optim[k] == parent.t_optim[k])
-    def encode_cost(self, prog, optim_params, parent, child):
+    def encode_cost(self, prog, optim_params, active, parent, child):
         return 0.
     def get_max_score(self):
         return torch.tensor(0.)
@@ -308,12 +301,12 @@ class WorldBBoxRule(XyzProductionRule):
         for k in range(3):
             prog.AddLinearConstraint(child.t_optim[k] >= lb_world[k])
             prog.AddLinearConstraint(child.t_optim[k] <= ub_world[k])
-    def encode_cost(self, prog, optim_params, parent, child):
+    def encode_cost(self, prog, optim_params, active, parent, child):
         lb_world = optim_params["center"] - optim_params["width"]/2.
         ub_world = optim_params["center"] + optim_params["width"]/2.
         # log prob = 1 / width on each axis
         total_ll = -sum(ub_world - lb_world)
-        return -total_ll
+        return -total_ll * active
     def get_max_score(self):
         return -torch.log(self.width).sum()
 
@@ -381,7 +374,7 @@ class AxisAlignedGaussianOffsetRule(XyzProductionRule):
 
     def encode_constraint(self, prog, optim_params, parent, child):
         pass
-    def encode_cost(self, prog, optim_params, parent, child):
+    def encode_cost(self, prog, optim_params, active, parent, child):
         mean = optim_params["mean"]
         covar = np.diag(optim_params["variance"])
         inverse_covariance = np.linalg.inv(covar)
@@ -389,8 +382,17 @@ class AxisAlignedGaussianOffsetRule(XyzProductionRule):
         log_normalizer = np.log(np.sqrt( (2. * np.pi) ** 3 * covariance_det))
 
         xyz_offset = child.t_optim - (parent.t_optim + mean)
-        total_ll = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset)) - log_normalizer
-        return -total_ll
+        total_ll = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset))
+
+        # With this total ll, we don't actually need to use the active
+        # variable at all. We would add a constraint like
+        #  cost_slack >= cost - (inactive) * min_possible_cost; but
+        #  min_possible_cost is 0, since this is a quadratic error cost,
+        #  and in the case that this node is inactive, the child translation
+        #  will be unconstrained and thus the optimal solution will set the
+        #  cost to zero automatically.
+        prog.AddQuadraticCost(-total_ll)
+
     def get_max_score(self):
         return self.xyz_dist.log_prob(self.mean).sum()
 
@@ -448,7 +450,7 @@ class WorldFramePlanarGaussianOffsetRule(XyzProductionRule):
         dx = child.t_optim - parent.t_optim
         prog.AddLinearConstraint(np.sum(plane_normal * dx) == 0.)
 
-    def encode_cost(self, prog, optim_params, parent, child):
+    def encode_cost(self, prog, optim_params, active, parent, child):
         mean = optim_params["mean"]
         covar = np.diag(optim_params["variance"])
         inverse_covariance = np.linalg.inv(covar)
@@ -456,9 +458,16 @@ class WorldFramePlanarGaussianOffsetRule(XyzProductionRule):
         log_normalizer = np.log(np.sqrt( (2. * np.pi) ** 2 * covariance_det))
 
         inv_tf = torch_tf_to_drake_tf(self.plane_transform_inv).cast[Expression]()
-        xy_offset = inv_tf.multiply(child.t_optim - parent.t_optim) - mean
-        total_ll = -0.5 * (xy_offset.transpose().dot(inverse_covariance).dot(xy_offset)) - log_normalizer
-        return -total_ll
+        xy_offset = inv_tf.multiply(child.t_optim - parent.t_optim)[:2] - mean
+        total_ll = -0.5 * (xy_offset.transpose().dot(inverse_covariance).dot(xy_offset))
+        # With this total ll, we don't actually need to use the active
+        # variable at all. We would add a constraint like
+        #  cost_slack >= cost - (inactive) * min_possible_cost; but
+        #  min_possible_cost is 0, since this is a quadratic error cost,
+        #  and in the case that this node is inactive, the child translation
+        #  will be unconstrained and thus the optimal solution will set the
+        #  cost to zero automatically.
+        prog.AddQuadraticCost(-total_ll)
 
     def get_max_score(self):
         return self.xy_dist.log_prob(self.mean).sum()
@@ -508,7 +517,7 @@ class RotationProductionRule():
         this rule into the optimization program. Returns whether the rotation
         of the child is fully constrained by the application of this rule. '''
         raise NotImplementedError()
-    def encode_cost(self, prog, optim_params, parent, child):
+    def encode_cost(self, prog, optim_params, active, parent, child):
         ''' Given a MathematicalProgram prog, parameter dictionaries for this
         rule type, and parent and child nodes that have been given R_optim and
         t_optim decision variable members, adds the negative log probability
@@ -549,7 +558,7 @@ class SameRotationRule(RotationProductionRule):
                 prog.AddLinearEqualityConstraint(child.R_optim[i, j] == parent.R_optim[i, j])
         # Child is fully constrained.
         return True
-    def encode_cost(self, prog, optim_params, parent, child):
+    def encode_cost(self, prog, optim_params, active, parent, child):
         return 0.
     def get_max_score(self):
         return torch.tensor([0.])
@@ -644,9 +653,9 @@ class UnconstrainedRotationRule(RotationProductionRule):
     def encode_constraint(self, prog, optim_params, parent, child):
         # Child rotation not fully constrained.
         return False
-    def encode_cost(self, prog, optim_params, parent, child):
+    def encode_cost(self, prog, optim_params, active, parent, child):
         # Constant term
-        return -self.score_child(parent, child).detach().item()
+        return -self.score_child(parent, child).detach().item() * active
     def get_max_score(self):
         return torch.log(torch.ones(1) / np.pi**2)
 
@@ -831,9 +840,9 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         prog.AddLorentzConeConstraint(np.r_[lorentz_bound, vector_diff])
         return False
 
-    def encode_cost(self, prog, optim_params, parent, child):
+    def encode_cost(self, prog, optim_params, active, parent, child):
         # Uniform distribution over angles, constant term
-        return torch.log(self.width).sum().detach().numpy()
+        return torch.log(self.width).sum().detach().numpy() * active
     def get_max_score(self):
         return -torch.log(self.width).sum()
 
@@ -923,7 +932,7 @@ class GaussianChordOffsetRule(RotationProductionRule):
         # Child rotation is not fully constrained.
         return False
 
-    def encode_cost(self, prog, optim_params, parent, child):
+    def encode_cost(self, prog, optim_params, active, parent, child):
         # Compute chord distance between parent and child
 
         # Same logic as in the uniform bounded constraint; see eq Eq(10) in the global IK paper.
@@ -955,8 +964,17 @@ class GaussianChordOffsetRule(RotationProductionRule):
         # VMF; unfortunately does not appear to lead to convex cost (not positive definite).
         total_ll = dot_product * concentration - vmf_normalizer
         # Instead, this happens to be?
-        total_ll = vector_diff.sum() * concentration - vmf_normalizer
-        return -total_ll
+        total_ll = vector_diff.sum() * concentration #- vmf_normalizer
+        
+        # With this total ll, we don't actually need to use the active
+        # variable at all. We would add a constraint like
+        #  cost_slack >= cost - (inactive) * min_possible_cost; but
+        #  min_possible_cost is 0, since this is a quadratic error cost,
+        #  and in the case that this node is inactive, the child translation
+        #  will be unconstrained and thus the optimal solution will set the
+        #  cost to zero automatically.
+        logging.warning("Haven't verified GaussianChordOffsetRule cost is sane.")
+        prog.AddQuadraticCost(-total_ll)
 
     def get_max_score(self):
         return self._angle_dist.log_prob(self.loc)
@@ -1082,7 +1100,7 @@ class WorldFrameBinghamRotationRule(RotationProductionRule):
         # Child rotation is not fully constrained.
         return False
 
-    def encode_cost(self, prog, optim_params, parent, child):
+    def encode_cost(self, prog, optim_params, active, parent, child):
         '''
         Use the reinterpretation of the Bingham distribution objective as
         1/C(Z) * exp[ tr(Z M^T q q^T M) ] for quaternion q.
@@ -1158,10 +1176,28 @@ class WorldFrameBinghamRotationRule(RotationProductionRule):
             R[2, 2] == 1 - 2*xx - 2*yy
         )
 
-        # Add log prob based on quaternion terms.
+        # Total log prob based on quaternion terms.
         ll = np.trace(Z.dot(M.T.dot(qqt.dot(M)))) - np.log(self._bingham_dist._norm_const.item())
 
-        return -ll
+        # That's a linear expression in decision vars. Add a cost slack that is constrained to
+        # be 0 when inactive, and is lower-bounded by the true -ll when active.
+        cost_slack = prog.NewContinuousVariables(1, "cost_slack_%s_%s" % (parent.name, child.name))[0]
+        prog.AddLinearCost(cost_slack)
+
+        cost = -ll
+        inactive = 1. - active
+        # When inactive, ensure the lower bound on cost slack is not going to
+        # keep the cost slack from being 0. We know there's always a solution
+        # that makes the cost = the mode of the distribution, so use that as our
+        # offset; this functionally forces the optimization to pick the mode
+        # when the node is inactive.
+        min_possible_cost = -self._bingham_dist.log_prob(self.M[:, -1]).detach().item()
+        prog.AddLinearConstraint(cost_slack >= cost - min_possible_cost * inactive) 
+        # Otherwise, we're lower-bounded at the min cost we can ever achieve,
+        # and upper-bounded at a sufficiently bad score.
+        max_possible_cost = 10000. # Pick an arbitrary big number
+        prog.AddLinearConstraint(cost_slack <= max_possible_cost * active)
+        prog.AddLinearConstraint(cost_slack >= min_possible_cost * active)
 
     def get_max_score(self):
         return self._bingham_dist.log_prob(self.M[:, -1])
