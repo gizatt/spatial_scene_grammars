@@ -373,7 +373,7 @@ def add_mle_tree_parsing_to_prog(
             # of the geometric dist? That might need special handling.
             # p = p * (1-p)**(n_children)
             p = parent_node.p
-            prog.AddLinearCost(-np.log(p.item()))
+            prog.AddLinearCost(-np.log(p.item()) * parent_node.active)
             for child in children:
                 prog.AddLinearCost(-np.log(1.-p) * child.active)
         else:

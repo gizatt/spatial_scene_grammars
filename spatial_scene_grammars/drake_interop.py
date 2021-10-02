@@ -455,7 +455,6 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
     return builder, mbp, scene_graph, node_to_free_body_ids_map, body_id_to_node_map
 
 def project_tree_to_feasibility(tree, constraints=[], jitter_q=None, do_forward_sim=False, zmq_url=None, prefix="projection", timestep=0.001, T=1.):
-    print("Starting")
     # Mutates tree into tree with bodies in closest
     # nonpenetrating configuration.
     builder, mbp, sg, node_to_free_body_ids_map, body_id_to_node_map = \
@@ -473,7 +472,9 @@ def project_tree_to_feasibility(tree, constraints=[], jitter_q=None, do_forward_
     q0 = mbp.GetPositions(mbp_context)
     nq = len(q0)
     
-    print("setting up ik")
+    if nq == 0:
+        logging.warn("Generated MBP had no positions.")
+        return tree
     
     # Set up projection NLP.
     ik = InverseKinematics(mbp, mbp_context)
@@ -482,19 +483,24 @@ def project_tree_to_feasibility(tree, constraints=[], jitter_q=None, do_forward_
     # It's always a projection, so we always have this
     # Euclidean norm error between the optimized q and
     # q0.
+    
     prog.AddQuadraticErrorCost(np.eye(nq), q0, q_dec)
     # Nonpenetration constraint.
+    
     ik.AddMinimumDistanceConstraint(0.001)
     # Other requested constraints.
+    
     for constraint in constraints:
         constraint.add_to_ik_prog(tree, ik, mbp, mbp_context, node_to_free_body_ids_map)
     # Initial guess, which can be slightly randomized by request.
     q_guess = q0
     if jitter_q:
         q_guess = q_guess + np.random.normal(0., jitter_q, size=q_guess.size)
+        
     prog.SetInitialGuess(q_dec, q_guess)
     
     # Solve.
+    
     solver = SnoptSolver()
     options = SolverOptions()
     logfile = "/tmp/snopt.log"
@@ -502,9 +508,7 @@ def project_tree_to_feasibility(tree, constraints=[], jitter_q=None, do_forward_
     options.SetOption(solver.id(), "Print file", logfile)
     options.SetOption(solver.id(), "Major feasibility tolerance", 1E-3)
     options.SetOption(solver.id(), "Major optimality tolerance", 1E-3)
-    print("Solving")
     result = solver.Solve(prog, None, options)
-    print("Solved")
     if not result.is_success():
         logging.warn("Projection failed.")
         print("Logfile: ")
@@ -531,11 +535,11 @@ def project_tree_to_feasibility(tree, constraints=[], jitter_q=None, do_forward_
 def rejection_sample_structure_to_feasibility(
         tree, constraints=[], max_n_iters=100,
         do_forward_sim=False, timestep=0.001, T=1.):
-    
     # Pre-build prog to check ourselves against
     builder, mbp, sg, node_to_free_body_ids_map, body_id_to_node_map = \
         compile_scene_tree_to_mbp_and_sg(tree, timestep=timestep)
     mbp.Finalize()
+    floating_base_bodies = mbp.GetFloatingBaseBodies()
     diagram = builder.Build()
     diagram_context = diagram.CreateDefaultContext()
     mbp_context = diagram.GetMutableSubsystemContext(mbp, diagram_context)
@@ -553,6 +557,8 @@ def rejection_sample_structure_to_feasibility(
         constraint.add_to_ik_prog(tree, ik, mbp, mbp_context, node_to_free_body_ids_map)
     
     from pyro.contrib.autoname import scope
+    best_q = q0
+    best_violation = np.inf
     for k in range(max_n_iters):
         node_queue = [tree.get_root()]
         while len(node_queue) > 0:
@@ -570,6 +576,21 @@ def rejection_sample_structure_to_feasibility(
         satisfied = prog.CheckSatisfied(all_bindings, q)
         if satisfied:
             return tree, True
+        # Otherwise compute violation
+        evals = np.concatenate([binding.evaluator().Eval(q).flatten() for binding in all_bindings])
+        lbs = np.concatenate([binding.evaluator().lower_bound().flatten() for binding in all_bindings])
+        ubs = np.concatenate([binding.evaluator().upper_bound().flatten() for binding in all_bindings])
+        viols = np.maximum(np.clip(lbs - evals, 0., np.inf), np.clip(evals-ubs, 0., np.inf))
+        total_violation = np.sum(viols)
+        if total_violation < best_violation:
+            print("Updating best viol to ", best_violation)
+            best_violation = total_violation
+            best_q = q
+    # Load best q into tree
+    mbp.SetPositions(mbp_context, q)
+    for body_id, node in body_id_to_node_map.items():
+        if body_id in floating_base_bodies:
+            node.tf = drake_tf_to_torch_tf(mbp.GetFreeBodyPose(mbp_context, mbp.get_body(body_id)))
     return tree, False
     
 def simulate_scene_tree(scene_tree, T, timestep=0.001, target_realtime_rate=1.0, meshcat=None):

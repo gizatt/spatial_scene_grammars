@@ -297,7 +297,10 @@ if __name__ == "__main__":
     # Update a specific model by name.
     #to_update = glob.glob(data_folder + "/*/Chefmate_8_Frypan/model.sdf")
     # Update all models.
-    to_update = glob.glob(data_folder + "/**/model.sdf", recursive=True)
+    #to_update = glob.glob(data_folder + "/**/model.sdf", recursive=True)
+    #to_update = glob.glob(data_folder + "/**/Plastic_Cup/model.sdf")
+    to_update = glob.glob(data_folder + "/utensils/***/model.sdf")
+    
     #to_update = glob.glob(data_folder + "/**/Cole_Hardware_Mug_Classic_Blue/model.sdf")
     print(to_update)
     for file in to_update:

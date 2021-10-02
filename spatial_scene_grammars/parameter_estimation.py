@@ -740,16 +740,17 @@ class EMWrapper():
                     entry[k][key] = torch.stack(value)
 
         if len(node_param_history) > 0:
-            plt.figure()
+            plt.figure().set_size_inches(6, 6)
             for k in range(node_param_history.shape[1]):
                 plt.plot(node_param_history[:, k], label="%d" % k)
             plt.title("%s params" % node_type.__name__)
+            plt.xlabel("EM iter")
             plt.legend()
             print("Final params: ", node_param_history[-1, :])
         
         # Rules
         N_rules = len(rule_param_history)
-        plt.figure()
+        plt.figure().set_size_inches(12, 6)
         for k, entry in enumerate(rule_param_history):
             plt.suptitle("%s rule %d params" % (node_type.__name__, k))
             # XYZ
@@ -760,6 +761,7 @@ class EMWrapper():
                 for col in range(value.shape[1]):
                     plt.plot(value[:, col], label=key + "%d" % col)
                 print("%d:xyz:%s final: %s" % (k, key, value[-1, :]))
+            plt.xlabel("EM iter")
             plt.legend()
             plt.subplot(2, N_rules, k + N_rules + 1)
             plt.title("Rot rule")
@@ -767,6 +769,7 @@ class EMWrapper():
                 for col in range(value.shape[1]):
                     plt.plot(value[:, col], label=key + "%d" % col)
                 print("%d:rot:%s final: %s" % (k, key, value[-1, :]))
+            plt.xlabel("EM iter")
             plt.legend()
         plt.tight_layout()
 
