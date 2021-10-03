@@ -388,6 +388,7 @@ def do_fixed_structure_hmc_with_constraint_penalties(
             print("Initial values keys: ", initial_values.keys())
             raise ValueError("%s not in trace keys" % key)
     
+    print("Initial trace log prob: ", trace.log_prob_sum())
     # If I let MCMC auto-tune its step size, it seems to do well,
     # but sometimes seems to get lost, and then gets stuck with big step size and
     # zero acceptances.
@@ -396,7 +397,7 @@ def do_fixed_structure_hmc_with_constraint_penalties(
             init_strategy=pyro.infer.autoguide.init_to_value(values=initial_values),
             **kwargs
         )
-    elif kernel_type == "HMC":
+    elif kernel_type is "HMC":
         kernel = HMC(model,
             init_strategy=pyro.infer.autoguide.init_to_value(values=initial_values),
             **kwargs

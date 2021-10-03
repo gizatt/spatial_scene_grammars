@@ -68,6 +68,16 @@ class SceneTree(nx.DiGraph):
         assert parent in self.nodes
         return sorted(list(self.successors(parent)), key=lambda x: x.rule_k)
 
+    def get_children_recursive(self, parent):
+        unexpanded = [parent]
+        all_children = []
+        while len(unexpanded) > 0:
+            new_children = self.get_children(unexpanded.pop(0))
+            all_children += new_children
+            unexpanded += new_children
+        return all_children
+
+
     def get_rule_for_child(self, parent, child):
         if isinstance(parent, GeometricSetNode):
             return parent.rule

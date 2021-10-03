@@ -17,6 +17,8 @@ from .drake_interop import drake_tf_to_torch_tf, torch_tf_to_drake_tf
 from .distributions import UniformWithEqualityHandling, BinghamDistribution
 from .torch_utils import ConstrainedParameter
 
+torch.set_default_tensor_type(torch.DoubleTensor)
+
 import pydrake
 from pydrake.all import (
     AngleAxis,
@@ -204,19 +206,15 @@ class XyzProductionRule():
         t_optim decision variable members, adds the negative log probability
         of this rule given the parent and child to the program.'''
         raise NotImplementedError()
-    def get_max_score(self):
-        ''' Return the maximum possible score from this rule at its current
-        parameter values for any parent/child pair. (For any rule I can think of, the
-        parent / child poses should not factor in to this number. '''
-        raise NotImplementedError()
 
 class SamePositionRule(XyzProductionRule):
     ''' Child Xyz is identically parent xyz. '''
-    def __init__(self, **kwargs):
+    def __init__(self, offset=torch.zeros(3), **kwargs):
+        self.offset = offset
         super().__init__(**kwargs)
 
     def sample_xyz(self, parent):
-        return parent.translation
+        return parent.translation + torch.matmul(parent.rotation, self.offset)
     def score_child(self, parent, child):
         return torch.tensor(0.)
     def get_site_values(self, parent, child):
@@ -235,12 +233,11 @@ class SamePositionRule(XyzProductionRule):
 
     def encode_constraint(self, prog, optim_params, parent, child):
         # Constrain child translation to be equal to parent translation.
+        t = parent.R_optim.dot(self.offset.detach().numpy())
         for k in range(3):
-            prog.AddLinearEqualityConstraint(child.t_optim[k] == parent.t_optim[k])
+            prog.AddLinearEqualityConstraint(child.t_optim[k] == parent.t_optim[k] + t[k])
     def encode_cost(self, prog, optim_params, active, parent, child):
         return 0.
-    def get_max_score(self):
-        return torch.tensor(0.)
 
 class WorldBBoxRule(XyzProductionRule):
     ''' Child xyz is uniformly chosen in [center, width] in world frame,
@@ -307,8 +304,6 @@ class WorldBBoxRule(XyzProductionRule):
         # log prob = 1 / width on each axis
         total_ll = -sum(ub_world - lb_world)
         return -total_ll * active
-    def get_max_score(self):
-        return -torch.log(self.width).sum()
 
 
 class AxisAlignedBBoxRule(WorldBBoxRule):
@@ -393,8 +388,22 @@ class AxisAlignedGaussianOffsetRule(XyzProductionRule):
         #  cost to zero automatically.
         prog.AddQuadraticCost(-total_ll)
 
-    def get_max_score(self):
-        return self.xyz_dist.log_prob(self.mean).sum()
+
+class ParentFrameGaussianOffsetRule(AxisAlignedGaussianOffsetRule):
+    def sample_xyz(self, parent):
+        return parent.translation + torch.matmul(parent.rotation, pyro.sample("ParentFrameGaussianOffsetRule_xyz", self.xyz_dist))
+    def score_child(self, parent, child):
+        rel_translation_in_parent_frame = torch.matmul(parent.rotation.T, child.translation - parent.translation)
+        return self.xyz_dist.log_prob(rel_translation_in_parent_frame).sum()
+    def get_site_values(self, parent, child):
+        rel_translation_in_parent_frame = torch.matmul(parent.rotation.T, child.translation - parent.translation)
+        return {"ParentFrameGaussianOffsetRule_xyz": SiteValue(self.xyz_dist, rel_translation_in_parent_frame)}
+
+    def encode_constraint(self, prog, optim_params, parent, child):
+        raise NotImplementedError()
+    def encode_cost(self, prog, optim_params, active, parent, child):
+        raise NotImplementedError()
+
 
 class WorldFramePlanarGaussianOffsetRule(XyzProductionRule):
     ''' Child xyz is diagonally-Normally distributed relative to parent in world frame
@@ -469,9 +478,6 @@ class WorldFramePlanarGaussianOffsetRule(XyzProductionRule):
         #  cost to zero automatically.
         prog.AddQuadraticCost(-total_ll)
 
-    def get_max_score(self):
-        return self.xy_dist.log_prob(self.mean).sum()
-
 ## Rotation production rules
 class RotationProductionRule():
     '''
@@ -523,19 +529,16 @@ class RotationProductionRule():
         t_optim decision variable members, adds the negative log probability
         of this rule given the parent and child to the program.'''
         raise NotImplementedError()
-    def get_max_score(self):
-        ''' Return the maximum possible score from this rule at its current
-        parameter values for any parent/child pair. (For any rule I can think of, the
-        parent / child poses should not factor in to this number. '''
-        raise NotImplementedError()
+
 
 class SameRotationRule(RotationProductionRule):
     ''' Child Xyz is identically parent xyz. '''
-    def __init__(self, **kwargs):
+    def __init__(self, offset=torch.eye(3), **kwargs):
+        self.offset = offset
         super().__init__(**kwargs)
 
     def sample_rotation(self, parent):
-        return parent.rotation
+        return torch.matmul(parent.rotation, self.offset)
     def score_child(self, parent, child):
         return torch.tensor(0.)
     def get_site_values(self, parent, child):
@@ -553,15 +556,15 @@ class SameRotationRule(RotationProductionRule):
             raise ValueError("SameRotationRule has no parameters.")
 
     def encode_constraint(self, prog, optim_params, parent, child):
+        R_offset = self.offset.detach().numpy()
+        R_targ = np.dot(parent.R_optim, R_offset)
         for i in range(3):
             for j in range(3):
-                prog.AddLinearEqualityConstraint(child.R_optim[i, j] == parent.R_optim[i, j])
+                prog.AddLinearEqualityConstraint(child.R_optim[i, j] == R_targ[i, j])
         # Child is fully constrained.
         return True
     def encode_cost(self, prog, optim_params, active, parent, child):
         return 0.
-    def get_max_score(self):
-        return torch.tensor([0.])
 
 class UnconstrainedRotationRule(RotationProductionRule):
     '''
@@ -656,8 +659,6 @@ class UnconstrainedRotationRule(RotationProductionRule):
     def encode_cost(self, prog, optim_params, active, parent, child):
         # Constant term
         return -self.score_child(parent, child).detach().item() * active
-    def get_max_score(self):
-        return torch.log(torch.ones(1) / np.pi**2)
 
 def recover_relative_angle_axis(parent, child, target_axis, zero_angle_width=1E-2, allowed_axis_diff=10. * np.pi/180.):
     # Recover angle-axis relationship between a parent and child.
@@ -843,8 +844,6 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
     def encode_cost(self, prog, optim_params, active, parent, child):
         # Uniform distribution over angles, constant term
         return torch.log(self.width).sum().detach().numpy() * active
-    def get_max_score(self):
-        return -torch.log(self.width).sum()
 
 class GaussianChordOffsetRule(RotationProductionRule):
     ''' Placeholder '''
@@ -975,9 +974,6 @@ class GaussianChordOffsetRule(RotationProductionRule):
         #  cost to zero automatically.
         logging.warning("Haven't verified GaussianChordOffsetRule cost is sane.")
         prog.AddQuadraticCost(-total_ll)
-
-    def get_max_score(self):
-        return self._angle_dist.log_prob(self.loc)
 
 wfbrr_warned_prior_detached = False
 wfbrr_warned_params_detached = False
@@ -1199,5 +1195,38 @@ class WorldFrameBinghamRotationRule(RotationProductionRule):
         prog.AddLinearConstraint(cost_slack <= max_possible_cost * active)
         prog.AddLinearConstraint(cost_slack >= min_possible_cost * active)
 
-    def get_max_score(self):
-        return self._bingham_dist.log_prob(self.M[:, -1])
+
+class ParentFrameBinghamRotationRule(WorldFrameBinghamRotationRule):
+    '''
+    Same as WorldFrameBinghamRotationRule, but the child rotation is chosen
+    in parent rotation frame.
+    '''
+    
+    def sample_rotation(self, parent):
+        quat = pyro.sample("ParentFrameBinghamRotationRule_quat", self._bingham_dist)
+        R = quaternion_to_matrix(quat)
+        return torch.matmul(parent.rotation, R)
+
+    def score_child(self, parent, child):
+        rel_rotation = torch.matmul(parent.rotation.T, child.rotation)
+        quat = matrix_to_quaternion(rel_rotation)
+        # Flip the quaternion if its last element is negative, by convention of our
+        # implementation of BinghamDistribution.
+        if quat[-1] < 0:
+            quat = quat * -1
+        return self._bingham_dist.log_prob(quat)
+
+    def get_site_values(self, parent, child):
+        rel_rotation = torch.matmul(parent.rotation.T, child.rotation)
+        quat = matrix_to_quaternion(rel_rotation)
+        # Flip the quaternion if its last element is negative, by convention of our
+        # implementation of BinghamDistribution.
+        if quat[-1] < 0:
+            quat = quat * -1
+        return {"ParentFrameBinghamRotationRule_quat": SiteValue(self._bingham_dist, quat)}
+
+    def encode_constraint(self, prog, optim_params, parent, child):
+        raise NotImplementedError()
+
+    def encode_cost(self, prog, optim_params, active, parent, child):
+        raise NotImplementedError()

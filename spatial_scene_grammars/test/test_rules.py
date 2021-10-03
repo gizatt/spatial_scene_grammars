@@ -6,6 +6,7 @@ import pyro.poutine
 from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
 from torch.distributions import constraints
+import pyro.distributions as dist
 
 from .grammar import *
 
@@ -28,7 +29,8 @@ def make_dummy_node():
 
 ## SamePositionRule
 def test_SamePositionRule(set_seed):
-    rule = SamePositionRule()
+    offset = dist.Normal(torch.zeros(3), torch.ones(3)).sample()
+    rule = SamePositionRule(offset=offset)
 
     params = rule.parameters
     assert isinstance(params, dict) and params == {}
@@ -39,7 +41,8 @@ def test_SamePositionRule(set_seed):
     child.translation = rule.sample_xyz(parent)
     ll = rule.score_child(parent, child)
     assert torch.isclose(ll, torch.tensor(0.))
-    assert torch.allclose(parent.translation, child.translation)
+    assert torch.allclose(parent.translation + offset, child.translation)
+    assert torch.allclose(parent.rotation, child.rotation)
 
 ## WorldBBoxRule
 def test_WorldBBoxRule(set_seed):
@@ -143,7 +146,8 @@ def test_WorldFramePlanarGaussianOffsetRule(set_seed):
 
 ## SameRotationRule
 def test_SameRotationRule(set_seed):
-    rule = SameRotationRule()
+    offset = torch.tensor(UniformlyRandomRotationMatrix(set_seed).matrix(), dtype=torch.double)
+    rule = SameRotationRule(offset=offset)
 
     params = rule.parameters
     assert isinstance(params, dict) and params == {}
@@ -156,6 +160,7 @@ def test_SameRotationRule(set_seed):
     ll = rule.score_child(parent, child)
     assert torch.isclose(ll, torch.tensor(0.))
     assert torch.allclose(parent.translation, child.translation)
+    assert torch.allclose(torch.matmul(parent.rotation, offset), child.rotation)
 
 ## UnconstrainedRotationRule
 def test_UnconstrainedRotationRule(set_seed):
@@ -285,6 +290,7 @@ def test_WorldFrameBinghamRotationRule(set_seed):
     WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*3.),
     AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*5.),
     AxisAlignedGaussianOffsetRule(mean=torch.zeros(3), variance=torch.ones(3)),
+    ParentFrameGaussianOffsetRule(mean=torch.zeros(3), variance=torch.ones(3)),
     WorldFramePlanarGaussianOffsetRule(
         mean=torch.zeros(2), variance=torch.ones(2), plane_transform=RigidTransform(p=np.array([1., 2., 3.]), rpy=RollPitchYaw(1., 2., 3.)))
 ])
@@ -293,7 +299,8 @@ def test_WorldFrameBinghamRotationRule(set_seed):
     UnconstrainedRotationRule(),
     UniformBoundedRevoluteJointRule.from_bounds(axis=torch.tensor([0., 1., 0.]), lb=-np.pi/2., ub=np.pi/2.),
     GaussianChordOffsetRule(axis=torch.tensor([0., 0., 1.]), loc=0.42, concentration=11.),
-    WorldFrameBinghamRotationRule(M=torch.eye(4), Z=torch.tensor([-1., -1., -1., 0.]))
+    WorldFrameBinghamRotationRule(M=torch.eye(4), Z=torch.tensor([-1., -1., -1., 0.])),
+    ParentFrameBinghamRotationRule(M=torch.eye(4), Z=torch.tensor([-1., -1., -1., 0.]))
 ])
 def test_ProductionRule(set_seed, xyz_rule, rotation_rule):
     rule = ProductionRule(
