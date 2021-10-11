@@ -51,7 +51,7 @@ def draw_scene_tree_contents_meshcat(scene_tree, prefix="scene", zmq_url=None, a
     del vis.vis
 
 def draw_scene_tree_structure_meshcat(scene_tree, prefix="scene_tree", zmq_url=None,
-        alpha=0.5, node_sphere_size=0.025, linewidth=2, quiet=True):
+        alpha=0.775, node_sphere_size=0.05, linewidth=2, quiet=True):
     # Do actual drawing in meshcat, starting from root of tree
     # So first find the root...
     root_node = scene_tree.get_root()
@@ -88,7 +88,7 @@ def draw_scene_tree_structure_meshcat(scene_tree, prefix="scene_tree", zmq_url=N
 
         vis[prefix][node.name + "%d/sphere" % k].set_object(
             meshcat_geom.Sphere(node_sphere_size),
-            meshcat_geom.MeshToonMaterial(color=color, opacity=alpha, transparent=(alpha != 1.)))
+            meshcat_geom.MeshToonMaterial(color=color, opacity=alpha, transparent=(alpha != 1.), depthTest=False))
         vis[prefix][node.name + "%d/triad" % k].set_object(
             meshcat_geom.triad(scale=node_sphere_size*5.)
         )
@@ -105,5 +105,5 @@ def draw_scene_tree_structure_meshcat(scene_tree, prefix="scene_tree", zmq_url=N
             verts = np.vstack(verts).T
             vis[prefix][node.name + "%d" % k + "_child_connections"].set_object(
                 meshcat_geom.Line(meshcat_geom.PointsGeometry(verts),
-                                  meshcat_geom.LineBasicMaterial(linewidth=linewidth, color=color)))
+                                  meshcat_geom.LineBasicMaterial(linewidth=linewidth, color=color, depthTest=False)))
         k += 1

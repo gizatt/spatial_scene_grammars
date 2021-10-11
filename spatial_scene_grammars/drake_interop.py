@@ -15,7 +15,9 @@ import pydrake
 from pydrake.common.cpp_param import List as DrakeBindingList
 from pydrake.all import (
     AddMultibodyPlantSceneGraph,
+    AngleAxis,
     BasicVector,
+    BodyIndex,
     ConnectMeshcatVisualizer,
     CoulombFriction,
     DiagramBuilder,
@@ -127,6 +129,71 @@ def sanity_check_node_tf_and_physics_geom_info(node):
     assert isinstance(node.physics_geometry_info, PhysicsGeometryInfo), type(node.physics_geometry_info)
 
 
+class DecayingForceToDesiredConfigSystem(LeafSystem):
+    ''' Connect to a MBP to apply ghost forces (that decay over time)
+    to encourage the scene to settle near the desired configuration. '''
+    def __init__(self, mbp, q_des):
+        LeafSystem.__init__(self)
+        self.set_name('DecayingForceToDesiredConfigSystem')
+
+        self.robot_state_input_port = self.DeclareVectorInputPort(
+            "robot_state", BasicVector(mbp.num_positions() + mbp.num_velocities()))
+        forces_cls = Value[DrakeBindingList[ExternallyAppliedSpatialForce]]
+        self.spatial_forces_output_port = self.DeclareAbstractOutputPort(
+            "spatial_forces_vector",
+            lambda: forces_cls(),
+            self.DoCalcAbstractOutput)
+
+        self.mbp = mbp
+        self.q_des = q_des
+        self.mbp_current_context = mbp.CreateDefaultContext()
+        self.mbp_des_context = mbp.CreateDefaultContext()
+        self.mbp.SetPositions(self.mbp_des_context, self.q_des)
+
+    def DoCalcAbstractOutput(self, context, y_data):
+        t = context.get_time()
+        # Annealing schedule
+        force_multiplier = 10.0*np.exp(-0.5*t)*np.abs(np.cos(t*np.pi/2.))
+        
+        x_in = self.EvalVectorInput(context, 0).get_value()
+        self.mbp.SetPositionsAndVelocities(self.mbp_current_context, x_in)
+
+        forces = []
+        for k in self.mbp.GetFloatingBaseBodies():
+            body = self.mbp.get_body(BodyIndex(k))
+
+            # Get pose of body in world frame
+            body_tf = self.mbp.GetFreeBodyPose(self.mbp_current_context, body)
+            body_r = body_tf.rotation().matrix()
+            body_tfd = self.mbp.EvalBodySpatialVelocityInWorld(self.mbp_current_context, body)
+
+            des_tf = self.mbp.GetFreeBodyPose(self.mbp_des_context, body)
+            delta_xyz = des_tf.translation() - body_tf.translation()
+            delta_r = des_tf.rotation().matrix().dot(body_tf.rotation().matrix().T)
+
+            # Get mass info so we can calc correct forces
+            si = body.CalcSpatialInertiaInBodyFrame(self.mbp_current_context)
+            m = si.get_mass()
+            I = si.CalcRotationalInertia().CopyToFullMatrix3()
+            I_w = body_tf.rotation().matrix().dot(I)
+
+            # Multiply out
+            aa = AngleAxis(delta_r)
+            tau = aa.axis()*aa.angle() - 0.1*body_tfd.rotational()
+            f = (delta_xyz*10. - 0.1*body_tfd.translational() + np.array([0., 0., 9.81])/max(1., force_multiplier))*m
+            max_force = 100.
+            max_torque = 100.
+            force = SpatialForce(
+                tau=np.clip(tau*force_multiplier, -max_torque, max_torque),
+                f=np.clip(f*force_multiplier, -max_force, max_force)
+            )
+            out = ExternallyAppliedSpatialForce()
+            out.F_Bq_W = force
+            out.body_index = body.index()
+            forces.append(out)
+
+        y_data.set_value(forces)
+
 class StochasticLangevinForceSource(LeafSystem):
     ''' Connect to a MBP to apply ghost forces. The forces are:
     1) Random noise whose magnitude decays with sim time.
@@ -165,7 +232,6 @@ class StochasticLangevinForceSource(LeafSystem):
     def DoCalcAbstractOutput(self, context, y_data):
         t = context.get_time()
         # TODO: Hook up random input on the right kind of random port.
-        print(t)
         noise_scale = 0.25 * 0.25**t
         ll_scale = 2.0 * 0.25**t
         
@@ -487,7 +553,7 @@ def project_tree_to_feasibility(tree, constraints=[], jitter_q=None, do_forward_
     prog.AddQuadraticErrorCost(np.eye(nq), q0, q_dec)
     # Nonpenetration constraint.
     
-    ik.AddMinimumDistanceConstraint(0.001)
+    ik.AddMinimumDistanceConstraint(0.01)
     # Other requested constraints.
     
     for constraint in constraints:
@@ -508,6 +574,7 @@ def project_tree_to_feasibility(tree, constraints=[], jitter_q=None, do_forward_
     options.SetOption(solver.id(), "Print file", logfile)
     options.SetOption(solver.id(), "Major feasibility tolerance", 1E-3)
     options.SetOption(solver.id(), "Major optimality tolerance", 1E-3)
+    options.SetOption(solver.id(), "Major iterations limit", 300)
     result = solver.Solve(prog, None, options)
     if not result.is_success():
         logging.warn("Projection failed.")
@@ -531,6 +598,63 @@ def project_tree_to_feasibility(tree, constraints=[], jitter_q=None, do_forward_
             continue
         node.tf = drake_tf_to_torch_tf(mbp.GetFreeBodyPose(mbp_context, mbp.get_body(body_id)))
     return tree
+
+
+def project_tree_to_feasibility_via_sim(tree, constraints=[], zmq_url=None, prefix="projection", timestep=0.0005, T=10.):
+    # Mutates tree into tree with bodies in closest
+    # nonpenetrating configuration.
+    builder, mbp, sg, node_to_free_body_ids_map, body_id_to_node_map = \
+        compile_scene_tree_to_mbp_and_sg(tree, timestep=timestep)
+    mbp.Finalize()
+    # Connect visualizer if requested. Wrap carefully to keep it
+    # from spamming the console.
+    if zmq_url is not None:
+         with open(os.devnull, 'w') as devnull:
+            with contextlib.redirect_stdout(devnull):
+                visualizer = ConnectMeshcatVisualizer(builder, sg, zmq_url=zmq_url, prefix=prefix)
+
+    # Forward sim under langevin forces
+    force_source = builder.AddSystem(
+        DecayingForceToDesiredConfigSystem(mbp, mbp.GetPositions(mbp.CreateDefaultContext()))
+    )
+    builder.Connect(mbp.get_state_output_port(),
+                force_source.get_input_port(0))
+    builder.Connect(force_source.get_output_port(0),
+                mbp.get_applied_spatial_force_input_port())
+
+    diagram = builder.Build()
+    diagram_context = diagram.CreateDefaultContext()
+    mbp_context = diagram.GetMutableSubsystemContext(mbp, diagram_context)
+    q0 = mbp.GetPositions(mbp_context)
+    nq = len(q0)
+    
+    if nq == 0:
+        logging.warn("Generated MBP had no positions.")
+        return tree
+    
+    # Make 'safe' initial configuration that randomly arranges objects vertically
+    k = 0
+    all_pos = []
+    for node in tree:
+        for body_id in node_to_free_body_ids_map[node]:
+            body = mbp.get_body(body_id)
+            tf = mbp.GetFreeBodyPose(mbp_context, body)
+            tf = RigidTransform(p=tf.translation() + np.array([0., 0., 1. + k*0.5]), R=tf.rotation())
+            mbp.SetFreeBodyPose(mbp_context, body, tf)
+            k += 1
+
+    sim = Simulator(diagram, diagram_context)
+    sim.set_target_realtime_rate(1000)
+    sim.AdvanceTo(T)
+    
+    # Reload poses back into tree
+    free_bodies = mbp.GetFloatingBaseBodies()
+    for body_id, node in body_id_to_node_map.items():
+        if body_id not in free_bodies:
+            continue
+        node.tf = drake_tf_to_torch_tf(mbp.GetFreeBodyPose(mbp_context, mbp.get_body(body_id)))
+    return tree
+
 
 def rejection_sample_structure_to_feasibility(
         tree, constraints=[], max_n_iters=100,
