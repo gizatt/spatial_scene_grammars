@@ -68,7 +68,7 @@ class FoodWasteCluster(IndependentSetNode):
         Rules = [
             ProductionRule(
                 child_type=stuff,
-                xyz_rule=AxisAlignedBBoxRule.from_bounds(
+                xyz_rule=WorldFrameBBoxOffsetRule.from_bounds(
                     lb=torch.tensor([-0.2, -0.2, 0.0]),
                     ub=torch.tensor([0.2, 0.2, 0.0])
                 ),
@@ -107,7 +107,7 @@ class PaperCluster(GeometricSetNode):
     def generate_rules(cls):
         return [ProductionRule(
             child_type=Paper,
-            xyz_rule=AxisAlignedBBoxRule.from_bounds(
+            xyz_rule=WorldFrameBBoxOffsetRule.from_bounds(
                 lb=torch.tensor([-0.05, -0.05, 0.0]),
                 ub=torch.tensor([0.05, 0.05, 0.0])
             ),
@@ -144,7 +144,7 @@ class PencilCluster(GeometricSetNode):
     def generate_rules(cls):
         return [ProductionRule(
             child_type=Pencil,
-            xyz_rule=AxisAlignedBBoxRule.from_bounds(
+            xyz_rule=WorldFrameBBoxOffsetRule.from_bounds(
                 lb=torch.tensor([-0.05, -0.05, 0.0]),
                 ub=torch.tensor([0.05, 0.05, 0.0])
             ),
@@ -169,7 +169,7 @@ class ObjectCluster(OrNode):
         ClusterRules = [
             ProductionRule(
                 child_type=cluster_type,
-                xyz_rule=AxisAlignedBBoxRule.from_bounds(
+                xyz_rule=WorldFrameBBoxOffsetRule.from_bounds(
                     lb=torch.zeros(3),
                     ub=torch.zeros(3)
                 ),
@@ -201,7 +201,7 @@ class Desk(GeometricSetNode):
         ub = torch.tensor([cls.desk_size[0] - 0.2, cls.desk_size[1] - 0.2, 0.0])
         rule = ProductionRule(
             child_type=ObjectCluster,
-            xyz_rule=AxisAlignedBBoxRule.from_bounds(lb=lb, ub=ub),
+            xyz_rule=WorldFrameBBoxOffsetRule.from_bounds(lb=lb, ub=ub),
             rotation_rule=SameRotationRule()
         )
         return [rule]

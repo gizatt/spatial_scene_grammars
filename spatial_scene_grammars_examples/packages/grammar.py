@@ -107,7 +107,7 @@ class MaybeStackBox(IndependentSetNode):
         ModelRules = [
             ProductionRule(
                 child_type=BoxAndStackBox,
-                xyz_rule=AxisAlignedGaussianOffsetRule(
+                xyz_rule=WorldFrameGaussianOffsetRule(
                     mean=torch.tensor([0.0, 0.0, 0.2]),
                     variance=torch.tensor([0.01, 0.01, 0.05])),
                 # Assume world-frame vertically-oriented plate stacks
@@ -154,7 +154,7 @@ class AssortedBoxes(GeometricSetNode):
     def generate_rules(cls):
         rule = ProductionRule(
             child_type=BoxAndStackBox,
-            xyz_rule=AxisAlignedGaussianOffsetRule(
+            xyz_rule=WorldFrameGaussianOffsetRule(
                 mean=torch.tensor([0.0, 0.0, 0.1]),
                 variance=torch.tensor([0.25, 0.25, 0.001])),
             rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-1, -1, -1, 0.]))

@@ -44,11 +44,11 @@ def test_SamePositionRule(set_seed):
     assert torch.allclose(parent.translation + offset, child.translation)
     assert torch.allclose(parent.rotation, child.rotation)
 
-## WorldBBoxRule
-def test_WorldBBoxRule(set_seed):
+## WorldFrameBBoxRule
+def test_WorldFrameBBoxRule(set_seed):
     lb = torch.zeros(3)
     ub = torch.ones(3)
-    rule = WorldBBoxRule.from_bounds(lb, ub)
+    rule = WorldFrameBBoxRule.from_bounds(lb, ub)
 
     params = rule.parameters
     assert isinstance(params, dict)
@@ -68,11 +68,11 @@ def test_WorldBBoxRule(set_seed):
     # ll of uniform[0, 1] unit box is log(1) = 0
     assert torch.isclose(ll, torch.tensor(0.))
 
-## AxisAlignedBBoxRule
-def test_AxisAlignedBBoxRule(set_seed):
+## WorldFrameBBoxOffsetRule
+def test_WorldFrameBBoxOffsetRule(set_seed):
     lb = torch.zeros(3)
     ub = torch.ones(3)
-    rule = AxisAlignedBBoxRule.from_bounds(lb, ub)
+    rule = WorldFrameBBoxOffsetRule.from_bounds(lb, ub)
 
     params = rule.parameters
     assert isinstance(params, dict)
@@ -93,11 +93,11 @@ def test_AxisAlignedBBoxRule(set_seed):
     # ll of uniform[0, 1] unit box is log(1) = 0
     assert torch.isclose(ll, torch.tensor(0.))
 
-## AxisAlignedBBoxRule
-def test_AxisAlignedGaussianOffsetRule(set_seed):
+## WorldFrameBBoxOffsetRule
+def test_WorldFrameGaussianOffsetRule(set_seed):
     random_mean = torch.tensor(np.random.normal(0., 1., 3))
     random_covar = torch.tensor(np.random.uniform(np.zeros(3)*0.1, np.ones(3)))
-    rule = AxisAlignedGaussianOffsetRule(mean=random_mean, variance=random_covar)
+    rule = WorldFrameGaussianOffsetRule(mean=random_mean, variance=random_covar)
 
     params = rule.parameters
     assert isinstance(params, dict)
@@ -287,9 +287,9 @@ def test_WorldFrameBinghamRotationRule(set_seed):
 
 
 @pytest.mark.parametrize("xyz_rule", [
-    WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*3.),
-    AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*5.),
-    AxisAlignedGaussianOffsetRule(mean=torch.zeros(3), variance=torch.ones(3)),
+    WorldFrameBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*3.),
+    WorldFrameBBoxOffsetRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*5.),
+    WorldFrameGaussianOffsetRule(mean=torch.zeros(3), variance=torch.ones(3)),
     ParentFrameGaussianOffsetRule(mean=torch.zeros(3), variance=torch.ones(3)),
     WorldFramePlanarGaussianOffsetRule(
         mean=torch.zeros(2), variance=torch.ones(2), plane_transform=RigidTransform(p=np.array([1., 2., 3.]), rpy=RollPitchYaw(1., 2., 3.)))

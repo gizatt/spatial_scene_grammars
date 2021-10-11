@@ -169,7 +169,7 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             ## XYZ Rules
             if xyz_rule.fix_parameters is True:
                 pass
-            elif type(xyz_rule) == WorldBBoxRule:
+            elif type(xyz_rule) == WorldFrameBBoxRule:
                 # The inferred lb/ub (from which we'll derive center/width)
                 # will be the biggest deviation between parent and child, irrespective of weights.
                 offsets = torch.stack([child.translation for (_, child, _) in parent_child_pairs])
@@ -177,7 +177,7 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
                 ub = torch.max(offsets, axis=0)[0]
                 xyz_param_dict["center"].set((lb + ub) / 2.)
                 xyz_param_dict["width"].set(ub - lb)
-            elif type(xyz_rule) == AxisAlignedBBoxRule:
+            elif type(xyz_rule) == WorldFrameBBoxOffsetRule:
                 # The inferred lb/ub (from which we'll derive center/width)
                 # will be the biggest deviation between parent and child, irrespective of weights.
                 offsets = torch.stack([child.translation - parent.translation for (parent, child, _) in parent_child_pairs])
@@ -185,7 +185,7 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
                 ub = torch.max(offsets, axis=0)[0]
                 xyz_param_dict["center"].set((lb + ub) / 2.)
                 xyz_param_dict["width"].set(ub - lb)
-            elif type(xyz_rule) == AxisAlignedGaussianOffsetRule:
+            elif type(xyz_rule) == WorldFrameGaussianOffsetRule:
                 # The inferred mean and variance are fit from deviations
                 # between parent and child.
                 offsets = torch.stack([child.translation - parent.translation for (parent, child, _) in parent_child_pairs]) # Nx3

@@ -40,7 +40,7 @@ class GaussianMode(AndNode):
         return [
             ProductionRule(
                 child_type=Point,
-                xyz_rule=AxisAlignedGaussianOffsetRule(
+                xyz_rule=WorldFrameGaussianOffsetRule(
                     mean=torch.zeros(3),
                     variance=torch.tensor([1.0, 1.0, 1.0])),
                 rotation_rule=SameRotationRule()

@@ -66,7 +66,7 @@ class Mode1(AndNode):
         return [
             ProductionRule(
                 child_type=Observed,
-                xyz_rule=AxisAlignedGaussianOffsetRule(
+                xyz_rule=WorldFrameGaussianOffsetRule(
                     mean=torch.tensor([0.0, 0.1, 0.2]),
                     variance=torch.tensor([1., 0.005, 3.]),
                 ),
@@ -89,7 +89,7 @@ class Mode2(AndNode):
         return [
             ProductionRule(
                 child_type=Observed,
-                xyz_rule=AxisAlignedGaussianOffsetRule(
+                xyz_rule=WorldFrameGaussianOffsetRule(
                     mean=torch.tensor([0.0, 0.1, 0.2]),
                     variance=torch.tensor([1., 0.005, 0.1]),
                 ),

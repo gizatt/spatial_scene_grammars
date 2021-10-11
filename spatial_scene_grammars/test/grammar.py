@@ -47,7 +47,7 @@ class NodeD(IndependentSetNode):
         return [
             ProductionRule(
                 child_type=NodeG,
-                xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+                xyz_rule=WorldFrameBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
                 rotation_rule=SameRotationRule()
             )
         ]
@@ -66,7 +66,7 @@ class NodeC(GeometricSetNode):
         return [
             ProductionRule(
                 child_type=NodeF,
-                xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+                xyz_rule=WorldFrameBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
                 rotation_rule=UnconstrainedRotationRule()
             )
         ]
@@ -84,12 +84,12 @@ class NodeB(OrNode):
         return [
             ProductionRule(
                 child_type=NodeD,
-                xyz_rule=AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+                xyz_rule=WorldFrameBBoxOffsetRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
                 rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(axis=torch.tensor([0., 0., 1.]), lb=-1., ub=1.)
             ),
             ProductionRule(
                 child_type=NodeE,
-                xyz_rule=AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+                xyz_rule=WorldFrameBBoxOffsetRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
                 rotation_rule=UnconstrainedRotationRule()
             )
         ]
@@ -104,12 +104,12 @@ class NodeA(AndNode):
         return [
             ProductionRule(
                 child_type=NodeB,
-                xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+                xyz_rule=WorldFrameBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
                 rotation_rule=UnconstrainedRotationRule()
             ),
             ProductionRule(
                 child_type=NodeC,
-                xyz_rule=WorldBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+                xyz_rule=WorldFrameBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
                 rotation_rule=UnconstrainedRotationRule()
             )
         ]

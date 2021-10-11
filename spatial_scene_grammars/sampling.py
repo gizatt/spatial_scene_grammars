@@ -185,13 +185,13 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                 ## The exact perturbation we'll apply
                 # depends on the relationship to the parent.
                 xyz_rule, rotation_rule = rule.xyz_rule, rule.rotation_rule
-                if type(xyz_rule) is WorldBBoxRule:
+                if type(xyz_rule) is WorldFrameBBoxRule:
                     # Perturb in axes that are not equality constrained
                     scale = xyz_rule.ub - xyz_rule.lb
                     perturb = dist.Normal(torch.zeros(3), scale*translation_variance).sample()
                     perturb[xyz_rule.xyz_dist.delta_mask] = 0.
                     new_child.translation = current_child.translation + perturb
-                elif type(xyz_rule) is AxisAlignedBBoxRule:
+                elif type(xyz_rule) is WorldFrameBBoxOffsetRule:
                     # Perturb in axes that are not equality constrained
                     scale = xyz_rule.ub - xyz_rule.lb
                     perturb = dist.Normal(torch.zeros(3), scale*translation_variance).sample()
@@ -201,7 +201,7 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                         new_child.translation = new_parent.translation + current_offset + perturb
                     else:
                         new_child.translation = current_child.translation + perturb
-                elif type(xyz_rule) is AxisAlignedGaussianOffsetRule:
+                elif type(xyz_rule) is WorldFrameGaussianOffsetRule:
                     # Perturb all axes
                     scale = xyz_rule.variance
                     perturb = dist.Normal(torch.zeros(3), scale*translation_variance).sample()

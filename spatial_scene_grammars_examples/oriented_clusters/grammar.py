@@ -38,7 +38,7 @@ class BoxPreYRotation(AndNode):
     def generate_rules(cls):
         return [ProductionRule(
             child_type=LongBox,
-            xyz_rule=AxisAlignedBBoxRule.from_bounds(
+            xyz_rule=WorldFrameBBoxOffsetRule.from_bounds(
                 lb=torch.zeros(3),
                 ub=torch.zeros(3)
             ),
@@ -62,7 +62,7 @@ class OrientedCluster(GeometricSetNode):
     def generate_rules(cls):
         return [ProductionRule(
             child_type=LongBox,
-            xyz_rule=AxisAlignedBBoxRule.from_bounds(
+            xyz_rule=WorldFrameBBoxOffsetRule.from_bounds(
                 lb=-torch.ones(3)*0.1,
                 ub=torch.ones(3)*0.1
             ),
@@ -85,6 +85,6 @@ class OrientedClusterRoot(GeometricSetNode):
     def generate_rules(cls):
         return [ProductionRule(
             child_type=OrientedCluster,
-            xyz_rule=AxisAlignedBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+            xyz_rule=WorldFrameBBoxOffsetRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
             rotation_rule=UnconstrainedRotationRule()
         )]

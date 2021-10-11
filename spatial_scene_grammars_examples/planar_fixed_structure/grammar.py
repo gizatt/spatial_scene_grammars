@@ -51,7 +51,7 @@ class HiddenNode(AndNode):
         return [
             ProductionRule(
                 child_type=VisibleNode,
-                xyz_rule=AxisAlignedGaussianOffsetRule(
+                xyz_rule=WorldFrameGaussianOffsetRule(
                     mean=torch.zeros(3),
                     variance=torch.tensor([1.0, 2.0, eps])),
                 rotation_rule=SameRotationRule() 
@@ -77,7 +77,7 @@ class RootNode(AndNode):
         return [
             ProductionRule(
                 child_type=HiddenNode,
-                xyz_rule=AxisAlignedGaussianOffsetRule(
+                xyz_rule=WorldFrameGaussianOffsetRule(
                     mean=torch.zeros(3),
                     variance=torch.tensor([1.0, 2.0, eps])),
                 rotation_rule=SameRotationRule()

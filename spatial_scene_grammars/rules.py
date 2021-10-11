@@ -239,7 +239,7 @@ class SamePositionRule(XyzProductionRule):
     def encode_cost(self, prog, optim_params, active, parent, child):
         return 0.
 
-class WorldBBoxRule(XyzProductionRule):
+class WorldFrameBBoxRule(XyzProductionRule):
     ''' Child xyz is uniformly chosen in [center, width] in world frame,
         without relationship to the parent.'''
     @classmethod
@@ -254,11 +254,11 @@ class WorldBBoxRule(XyzProductionRule):
         super().__init__()
 
     def sample_xyz(self, parent):
-        return pyro.sample("WorldBBoxRule_xyz", self.xyz_dist)
+        return pyro.sample("WorldFrameBBoxRule_xyz", self.xyz_dist)
     def score_child(self, parent, child):
         return self.xyz_dist.log_prob(child.translation).sum()
     def get_site_values(self, parent, child):
-        return {"WorldBBoxRule_xyz": SiteValue(self.xyz_dist, child.translation)}
+        return {"WorldFrameBBoxRule_xyz": SiteValue(self.xyz_dist, child.translation)}
 
     @classmethod
     def get_parameter_prior(cls):
@@ -306,7 +306,7 @@ class WorldBBoxRule(XyzProductionRule):
         return -total_ll * active
 
 
-class AxisAlignedBBoxRule(WorldBBoxRule):
+class WorldFrameBBoxOffsetRule(WorldFrameBBoxRule):
     ''' Child xyz is parent xyz + a uniform offset in [lb, ub]
         in world frame.
 
@@ -314,13 +314,13 @@ class AxisAlignedBBoxRule(WorldBBoxRule):
         special wrapping around Uniform to handle the equality
         cases as Delta distributions.'''
     def sample_xyz(self, parent):
-        offset = pyro.sample("AxisAlignedBBoxRule_xyz", self.xyz_dist)
+        offset = pyro.sample("WorldFrameBBoxOffsetRule_xyz", self.xyz_dist)
         return parent.translation + offset
     def score_child(self, parent, child):
         xyz_offset = child.translation - parent.translation
         return self.xyz_dist.log_prob(xyz_offset).sum()
     def get_site_values(self, parent, child):
-        return {"AxisAlignedBBoxRule_xyz": SiteValue(self.xyz_dist, child.translation - parent.translation)}
+        return {"WorldFrameBBoxOffsetRule_xyz": SiteValue(self.xyz_dist, child.translation - parent.translation)}
 
     def encode_constraint(self, prog, optim_params, parent, child):
         # Child translation should be within the translation bounds in
@@ -331,10 +331,10 @@ class AxisAlignedBBoxRule(WorldBBoxRule):
         for k in range(3):
             prog.AddLinearConstraint(child.t_optim[k] >= lb_world[k])
             prog.AddLinearConstraint(child.t_optim[k] <= ub_world[k])
-    # Uses encode_cost implementation in WorldBBoxRule
+    # Uses encode_cost implementation in WorldFrameBBoxRule
 
 
-class AxisAlignedGaussianOffsetRule(XyzProductionRule):
+class WorldFrameGaussianOffsetRule(XyzProductionRule):
     ''' Child xyz is diagonally-Normally distributed relative to parent in world frame.'''
     def __init__(self, mean, variance, **kwargs):
         assert isinstance(mean, torch.Tensor) and mean.shape == (3,)
@@ -343,11 +343,11 @@ class AxisAlignedGaussianOffsetRule(XyzProductionRule):
         super().__init__(**kwargs)
 
     def sample_xyz(self, parent):
-        return parent.translation + pyro.sample("AxisAlignedGaussianOffsetRule_xyz", self.xyz_dist)
+        return parent.translation + pyro.sample("WorldFrameGaussianOffsetRule_xyz", self.xyz_dist)
     def score_child(self, parent, child):
         return self.xyz_dist.log_prob(child.translation - parent.translation).sum()
     def get_site_values(self, parent, child):
-        return {"AxisAlignedGaussianOffsetRule_xyz": SiteValue(self.xyz_dist, child.translation - parent.translation)}
+        return {"WorldFrameGaussianOffsetRule_xyz": SiteValue(self.xyz_dist, child.translation - parent.translation)}
 
     @classmethod
     def get_parameter_prior(cls):
@@ -389,7 +389,7 @@ class AxisAlignedGaussianOffsetRule(XyzProductionRule):
         prog.AddQuadraticCost(-total_ll)
 
 
-class ParentFrameGaussianOffsetRule(AxisAlignedGaussianOffsetRule):
+class ParentFrameGaussianOffsetRule(WorldFrameGaussianOffsetRule):
     def sample_xyz(self, parent):
         return parent.translation + torch.matmul(parent.rotation, pyro.sample("ParentFrameGaussianOffsetRule_xyz", self.xyz_dist))
     def score_child(self, parent, child):
@@ -403,6 +403,62 @@ class ParentFrameGaussianOffsetRule(AxisAlignedGaussianOffsetRule):
         raise NotImplementedError()
     def encode_cost(self, prog, optim_params, active, parent, child):
         raise NotImplementedError()
+
+
+
+class ParentFrameGaussianOffsetRule(WorldFrameGaussianOffsetRule):
+    ''' Child xyz is diagonally-Normally distributed relative to parent in the
+    parent's frame. Parsing this in a MIP requires extra work to handle some bilinear
+    terms arising from rotating the offsets out of the parent frame.'''
+    def sample_xyz(self, parent):
+        return parent.translation + torch.matmul(parent.rotation, pyro.sample("WorldFrameGaussianOffsetRule_xyz", self.xyz_dist))
+    def score_child(self, parent, child):
+        offset_in_parent_frame = torch.matmul(parent.rotation.T, child.translation - parent.translation)
+        return self.xyz_dist.log_prob(offset_in_parent_frame).sum()
+    def get_site_values(self, parent, child):
+        return {"WorldFrameGaussianOffsetRule_xyz": SiteValue(self.xyz_dist, child.translation - parent.translation)}
+
+    @classmethod
+    def get_parameter_prior(cls):
+        return {
+            "mean": dist.Normal(torch.zeros(3), torch.ones(3)),
+            "variance": dist.Uniform(torch.zeros(3)+1E-6, torch.ones(3)*10.) # TODO: Inverse gamma is better
+        }
+    @property
+    def parameters(self):
+        return {
+            "mean": self.mean,
+            "variance": self.variance
+        }
+    @parameters.setter
+    def parameters(self, parameters):
+        self.mean = parameters["mean"]
+        self.variance = parameters["variance"]
+        self.xyz_dist = dist.Normal(self.mean, torch.sqrt(self.variance))
+
+    def encode_constraint(self, prog, optim_params, parent, child):
+        pass
+    def encode_cost(self, prog, optim_params, active, parent, child):
+        mean = optim_params["mean"]
+        covar = np.diag(optim_params["variance"])
+        inverse_covariance = np.linalg.inv(covar)
+        covariance_det = np.linalg.det(covar)
+        log_normalizer = np.log(np.sqrt( (2. * np.pi) ** 3 * covariance_det))
+
+        xyz_offset = child.t_optim - (parent.t_optim + mean)
+        total_ll = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset))
+
+        # With this total ll, we don't actually need to use the active
+        # variable at all. We would add a constraint like
+        #  cost_slack >= cost - (inactive) * min_possible_cost; but
+        #  min_possible_cost is 0, since this is a quadratic error cost,
+        #  and in the case that this node is inactive, the child translation
+        #  will be unconstrained and thus the optimal solution will set the
+        #  cost to zero automatically.
+        prog.AddQuadraticCost(-total_ll)
+
+    def get_max_score(self):
+        return self.xyz_dist.log_prob(self.mean).sum()
 
 
 class WorldFramePlanarGaussianOffsetRule(XyzProductionRule):

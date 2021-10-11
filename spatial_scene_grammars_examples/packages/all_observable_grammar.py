@@ -91,7 +91,7 @@ class BoxGroup(AndNode):
         return [
             ProductionRule(
                 child_type=box_model,
-                xyz_rule=AxisAlignedGaussianOffsetRule(
+                xyz_rule=WorldFrameGaussianOffsetRule(
                     mean=torch.tensor([0.0, 0.0, 0.5*k]),
                     variance=torch.tensor([0.01, 0.01, 0.01])),
                 rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
