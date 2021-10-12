@@ -144,60 +144,185 @@ def add_mle_tree_parsing_to_prog(
     if verbose:
         print("Activation vars allocated.")
 
-    # Every node gets an optimized pose.
+    # For each observed node, add a binary variable for each possible
+    # correspondence to a node in the observed set, where an active correspondence
+    # forces the corresponded node to be the same position as the observed node.
+    for n in super_tree:
+        # (first prep some bookkeeping)
+        n.possible_observations = []
+    for node_k, observed_node in enumerate(observed_nodes):
+        obs_tf = torch_tf_to_drake_tf(observed_node.tf)
+        possible_sources = [n for n in super_tree if type(n) == type(observed_node)]
+        if len(possible_sources) == 0:
+            raise ValueError("Grammar invalid for observation: can't explain observed node ", observed_node)
+        source_actives = prog.NewBinaryVariables(len(possible_sources), observed_node.__class__.__name__ + str(node_k) + "_sources")
+
+        # Store these variables
+        observed_node.source_actives = source_actives
+        for k, n in enumerate(possible_sources):
+            n.possible_observations.append((observed_node, source_actives[k], obs_tf))
+
+        # Each observed node needs exactly one explaining input.
+        prog.AddLinearEqualityConstraint(sum(source_actives) == 1)
+
+    # Now for each observed node type in the supertree:
+    #  - Ensure the node only observed ones actual observation.
+    #  - If there are no observations of this type, this node can't be active.
+    for node in super_tree:
+        if node.observed:
+            if len(node.possible_observations) > 0:
+                sum_of_obs_vars = sum([obs_var for (_, obs_var, _) in node.possible_observations])
+                prog.AddLinearConstraint(sum_of_obs_vars == node.active)
+                prog.AddLinearConstraint(sum_of_obs_vars <= 1.) # Probably unnecessary
+            else:
+                # Never observed this type in the scene, so this node can't be active.
+                prog.AddLinearConstraint(node.active == 0)
+
+
+    # For translations and rotations separately, figure out which connected sets of nodes in the
+    # supertree have translations [or rotations] that are constrained to be exactly equal.
+    t_equivalence_graph = nx.Graph()
+    R_equivalence_graph = nx.Graph()
+    t_equivalence_graph.add_nodes_from(super_tree.nodes)
+    R_equivalence_graph.add_nodes_from(super_tree.nodes)
+    for parent_node in super_tree.nodes:
+        children = super_tree.get_children(parent_node)
+        ## Get child rule list. Can't use get_children_and_rules
+        # here since we're operating on a supertree, so the standard
+        # scene tree logic for getting rules isn't correct.
+        if isinstance(parent_node, GeometricSetNode):
+            rules = [parent_node.rule for k in range(len(children))]
+        elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
+            rules = parent_node.rules
+        elif isinstance(parent_node, TerminalNode):
+            rules = []
+        else:
+            raise ValueError("Unexpected node type: ", type(parent_node))
+        for child_node, rule in zip(children, rules):
+            # TODO(gizatt) We may have other rule types that, depending on
+            # parameters, imply equality constraints. They could be included
+            # here generally if we query the rule whether it is fully constraining
+            # at the current parameter setting.
+            if isinstance(rule.xyz_rule, SamePositionRule):
+                t_equivalence_graph.add_edge(parent_node, child_node)
+            if isinstance(rule.rotation_rule, SameRotationRule):
+                R_equivalence_graph.add_edge(parent_node, child_node)
+    t_equivalent_sets = list(nx.connected_components(t_equivalence_graph))
+    R_equivalent_sets = list(nx.connected_components(R_equivalence_graph))
+
+    # For each set, figure out if it contains an observed node, and propagate
+    # a reference to the observed node to the rest of the set. If the set
+    # contains multiple observed nodes, throw an error, as that's probably unparse-able.
+    for t_equivalent_set in t_equivalent_sets:
+        t_observed_nodes = [node for node in t_equivalent_set if node.observed]
+        for node in t_equivalent_set:
+            node.t_equivalent_to_observed_nodes = t_observed_nodes
+    for R_equivalent_set in R_equivalent_sets:
+        R_observed_nodes = [node for node in R_equivalent_set if node.observed]
+        for node in R_equivalent_set:
+            node.R_equivalent_to_observed_nodes = R_observed_nodes
+
+    # For each set of nodes with equivalent translations [or rotations],
+    # if the set doesn't contain an observed node, create a decision variable
+    # describing the set's translation [or rotation], and share it to all of the nodes
+    # in the set. If it does contain an observed node, create an expression
+    # for the set's translation [or rotation] as a convex combination of the observed
+    # node's possible correspondences, and share it to all of the nodes in the set.
     mip_rot_gen = MixedIntegerRotationConstraintGenerator(
         approach = MixedIntegerRotationConstraintGenerator.Approach.kBilinearMcCormick,
         num_intervals_per_half_axis=num_intervals_per_half_axis,
         interval_binning = IntervalBinning.kLogarithmic
     )
-    for node_k, node in enumerate(super_tree.nodes):
-        node.R_optim_pre_offset = prog.NewContinuousVariables(3, 3, "%s_%03d_R" % (node.__class__.__name__, node_k))
-        node.R_optim = R_random_offset.matrix().dot(node.R_optim_pre_offset)
-        node.t_optim = prog.NewContinuousVariables(3, "%s_%03d_t" % (node.__class__.__name__, node_k))
-        # Trivial constraint: elements of R bounded in [-1, 1].
-        prog.AddBoundingBoxConstraint(-np.ones(9), np.ones(9), node.R_optim_pre_offset.flatten())
-        # We'll need to constrain some R's to be in SO(3), but
-        # many R's are directly constrained and don't actually need
-        # this (very expensive to create) constraint. So we delay
-        # setup until we know the rotation is unconstrained. These
-        # vars track if
-        #  1) The node rotation will constrained by correspondence to
-        #     an observation or root-node tf.
-        #  2) The parent/child rotation relationship is fully constrained
-        #     (i.e. equality or fixed offset).
-        if node.observed or node is root_node:
-            node.rotation_is_fully_constrained = True
+    for k, t_equivalent_set in enumerate(t_equivalent_sets):
+        # For some convenience in expression forming, we'll always have some
+        # auxiliary variables for this node pose.
+        t_optim = prog.NewContinuousVariables(3, "t_optim_%d" % k)
+        t_observed_nodes = next(iter(t_equivalent_set)).t_equivalent_to_observed_nodes
+        if len(t_observed_nodes) > 0:
+            for observed_node in t_observed_nodes:
+                if len(observed_node.possible_observations) == 0:
+                    continue
+                observed_t = sum([
+                    obs_var * obs_tf.translation()
+                    for (_, obs_var, obs_tf) in observed_node.possible_observations
+                ])
+                # If there are no active correspondences, allow the translation to vary freely.
+                M = max_scene_extent_in_any_dir
+                no_correspondences = 1. - sum([obs_var for (_, obs_var, _) in observed_node.possible_observations])
+                for i in range(3):
+                    prog.AddLinearConstraint(t_optim[i] <= observed_t[i] + no_correspondences*M)
+                    prog.AddLinearConstraint(t_optim[i] >= observed_t[i] - no_correspondences*M)
         else:
-            node.rotation_is_fully_constrained = False
-        # Default to not constrained; encoded rules may update this value.
-        node.rotation_fully_constrained_relative_to_parent = False
+            # Put some reasonable bounds on the unknown t_optim.
+            prog.AddBoundingBoxConstraint(-np.ones(3)*max_scene_extent_in_any_dir, np.ones(3)*max_scene_extent_in_any_dir, t_optim)
+        for node in t_equivalent_set:
+            node.t_optim = t_optim.reshape(3)
 
-        # For rules, annotate them with their parameter set for
-        # convenience later. (This saves some effort, since the
-        # node-type-to-rule mapping is a big trickier to work out in
-        # a supertree context since we have to hand-construct child-to-rule
-        # mappings for different node types.)
+    for k, R_equivalent_set in enumerate(R_equivalent_sets):
+        R_optim_pre_offset = prog.NewContinuousVariables(3, 3, "R_optim_%d" % k)
+        R_optim = R_random_offset.matrix().dot(R_optim_pre_offset)
+
+        R_observed_nodes = next(iter(R_equivalent_set)).R_equivalent_to_observed_nodes
+        if len(R_observed_nodes) > 0:
+            for observed_node in R_observed_nodes:
+                if len(observed_node.possible_observations) == 0:
+                    continue
+                observed_R = sum([
+                    obs_var * obs_tf.rotation().matrix()
+                    for (_, obs_var, obs_tf) in observed_node.possible_observations
+                ])
+                # If there are no active correspondences, allow the rotation to vary freely.
+                M = 1.
+                no_correspondences = 1. - sum([obs_var for (_, obs_var, _) in observed_node.possible_observations])
+                for i in range(3):
+                    for j in range(3):
+                        prog.AddLinearConstraint(R_optim[i, j] <= observed_R[i, j] + M * no_correspondences)
+                        prog.AddLinearConstraint(R_optim[i, j] >= observed_R[i, j] - M * no_correspondences)
+        else:
+            # Trivial rotation matrix bounds
+            prog.AddBoundingBoxConstraint(-np.ones(9), np.ones(9), R_optim_pre_offset.flatten())
+            # SO(3) constraint
+            mip_rot_gen.AddToProgram(R_optim_pre_offset, prog)
+        for node in R_equivalent_set:
+            node.R_optim = R_optim.reshape(3, 3)
+            node.R_optim_pre_offset = R_optim_pre_offset.reshape(3, 3)
+        
+    if verbose:
+        print("Continuous variables and SO(3) constraints allocated for all equivalence sets.")
+
+
+    # For rules, annotate them with their parameter set for
+    # convenience later. (This saves some effort, since the
+    # node-type-to-rule mapping is a big trickier to work out in
+    # a supertree context since we have to hand-construct child-to-rule
+    # mappings for different node types.)
+    for node in super_tree.nodes:
         param_vars_by_rule = grammar.rule_params_by_node_type_optim[node.__class__.__name__]
         for rule, (xyz_optim_params, rot_optim_params) in zip(node.rules, param_vars_by_rule):
             rule.xyz_optim_params = xyz_optim_params
             rule.rot_optim_params = rot_optim_params
-        
-    if verbose:
-        print("Continuous variables allocated.")
 
-    # Constraint root node to have the grammar's root position.
-    root_tf = torch_tf_to_drake_tf(grammar.root_node_tf)
-    prog.AddBoundingBoxConstraint(
-        root_tf.translation(), root_tf.translation(),
-        root_node.t_optim
-    )
-    # R_optim = R_offset * R_optim_pre_offset = R_target
-    # R_optim_pre_offset = R_offset.T * R_target
-    R_target_pre_offset = R_random_offset.matrix().T.dot(root_tf.rotation().matrix())
-    prog.AddBoundingBoxConstraint(R_target_pre_offset.flatten(), R_target_pre_offset.flatten(), root_node.R_optim_pre_offset.flatten())
+    # Constrain root node to have the grammar's root position. If it's observed, don't bother,
+    # as it should be in the observation set at exactly this position.
+    # TODO(gizatt) This observation is *not* considered part of the equivalence set
+    # logic above, as making the decision of "parent is observed *or* root" makes the
+    # logic a lot messier. Should I add it, or just rely on most grammars having the root
+    # be observed anyway?
+    if not root_node.observed:
+        root_tf = torch_tf_to_drake_tf(grammar.root_node_tf)
+        t_target = root_tf.translation().reshape(3)
+        R_target = root_tf.rotation().matrix().reshape(3, 3)
+        for i in range(3):
+            # These are redundant if the translation/rotation is functionally observed
+            if len(root_node.t_equivalent_to_observed_nodes) == 0:
+                prog.AddLinearEqualityConstraint(root_node.t_optim[i] == t_target[i])
+            for j in range(3):
+                if len(root_node.R_equivalent_to_observed_nodes) == 0:
+                    prog.AddLinearEqualityConstraint(root_node.R_optim[i, j] == R_target[i, j])
 
-    ## For each node in the super tree, add relationships between the parent
-    ## and that node.
+
+    ## For each node in the super tree, add logical implications on the child activations
+    # under the parent, depending on the parent type.
     for parent_node in super_tree:
         children = super_tree.get_children(parent_node)
         ## Get child rule list. Can't use get_children_and_rules
@@ -256,101 +381,10 @@ def add_mle_tree_parsing_to_prog(
         
         else:
             raise ValueError("Unexpected node type: ", type(parent_node))
-        
-        ## Child location constraints relative to parent.
-        for rule, child_node in zip(rules, children):
-            child_node.rotation_fully_constrained_relative_to_parent = rule.encode_constraint(
-                prog, rule.xyz_optim_params, rule.rot_optim_params, parent_node, child_node
-            )
-
-    # Propagate rotations being fully constrained up and down the tree to be sure
-    # we really only add rotation constraints where they're necessary. This is done
-    # in a two-step, inside-out process: first pass constraints up the tree as far
-    # as possible, then pass back down to any children that aren't already constrained.
-    # Step 1: For every node that is already fully constrained, if its parent/child
-    # relationship is fully constrained, fully constrain the parent.
-    fully_constrained_nodes = [node for node in super_tree if node.rotation_is_fully_constrained]
-    while len(fully_constrained_nodes) > 0:
-        node = fully_constrained_nodes.pop()
-        parent = super_tree.get_parent(node)
-        if parent and not parent.rotation_is_fully_constrained and node.rotation_fully_constrained_relative_to_parent:
-            parent.rotation_is_fully_constrained = True
-            fully_constrained_nodes.append(parent)
-    # Step 2: Same thing, but go downwards instead of upwards.
-    fully_constrained_nodes = [node for node in super_tree if node.rotation_is_fully_constrained]
-    while len(fully_constrained_nodes) > 0:
-        node = fully_constrained_nodes.pop()
-        children = super_tree.get_children(node)
-        for child in children:
-            if not child.rotation_is_fully_constrained and child.rotation_fully_constrained_relative_to_parent:
-                child.rotation_is_fully_constrained = True
-                fully_constrained_nodes.append(child)
-
-    for node in super_tree:
-        if not node.rotation_is_fully_constrained:
-            # In this case, and only this case, we need to make sure R_optim
-            # is in SO(3).
-            mip_rot_gen.AddToProgram(node.R_optim_pre_offset, prog)
-
-
-    # For each observed node, add a binary variable for each possible
-    # correspondence to a node in the observed set, where an active correspondence
-    # forces the corresponded node to be the same position as the observed node.
-    for n in super_tree:
-        # (first prep some bookkeeping)
-        n.outgoings = []
-    for observed_node in observed_nodes:
-        obs_tf = torch_tf_to_drake_tf(observed_node.tf)
-        possible_sources = [n for n in super_tree if type(n) == type(observed_node)]
-        if len(possible_sources) == 0:
-            raise ValueError("Grammar invalid for observation: can't explain observed node ", observed_node)
-        source_actives = prog.NewBinaryVariables(len(possible_sources), observed_node.__class__.__name__ + "_sources")
-
-        # Store these variables
-        observed_node.source_actives = source_actives
-        for k, n in enumerate(possible_sources):
-            n.outgoings.append(source_actives[k])
-
-        # Each observed node needs exactly one explaining input.
-        prog.AddLinearEqualityConstraint(sum(source_actives) == 1)
-
-        for k, node in enumerate(possible_sources):
-            M = max_scene_extent_in_any_dir # Should upper bound positional error in any single dimension/
-
-            # When correspondence is active, force the node to match the observed node.
-            # Otherwise, it can vary within a big M of the observed node.
-            obs_t = obs_tf.translation()
-            obs_R = obs_tf.rotation().matrix()
-            for i in range(3):
-                prog.AddLinearConstraint(node.t_optim[i] <= obs_t[i] + 1E-6 + (1. - source_actives[k]) * M)
-                prog.AddLinearConstraint(node.t_optim[i] >= obs_t[i] - 1E-6 - (1. - source_actives[k]) * M)
-            M = 2. # Max error in a rotation matrix entry
-            for i in range(3):
-                for j in range(3):
-                    prog.AddLinearConstraint(node.R_optim[i, j] <= obs_R[i, j] + 1E-6 + (1. - source_actives[k]) * M)
-                    prog.AddLinearConstraint(node.R_optim[i, j] >= obs_R[i, j] - 1E-6 - (1. - source_actives[k]) * M)
-
-    # Go back and make sure no node in the super tree is being used
-    # to explain more than one observed node, that the "observed"
-    # nodes are only active if they are explaining something.
-    # TODO(gizatt) These constraints are a little frustrating: without
-    # them, the parsing likes to hallucinate unnecessary hidden nodes
-    # since adding them increases the tree likelihood (since the net log-prob
-    # of adding a new node is positive due to concentrated densities).
-    # It makes me feel like I'm doing something fundamentally wrong, like using
-    # total model prob to do model comparisons between models of different size.
-    for node in super_tree:
-        if node.observed:
-            if len(node.outgoings) > 0:
-                prog.AddLinearConstraint(sum(node.outgoings) <= 1)
-                prog.AddLinearConstraint(node.active == sum(node.outgoings))
-            else:
-                # Never observed this type in the scene, so this node can't be active.
-                prog.AddLinearConstraint(node.active == 0)
 
     # Finally, build the objective.
     for parent_node in super_tree:
-        # For the discrete states, do maximum likelihood.
+        ## p(child set | parent), which depends on the child activation variables.
         children = super_tree.get_children(parent_node)
         ## Get child rule list.
         if isinstance(parent_node, GeometricSetNode):
@@ -379,8 +413,20 @@ def add_mle_tree_parsing_to_prog(
         else:
             raise ValueError("Unexpected node in cost assembly: ", type(parent_node))
 
-        ## Child location costs relative to parent.
+        ## p(child tf | parent tf) for each child.
         for rule, child_node in zip(rules, children):
+            # Can't apply SamePositionRule/SameRotationRule again,
+            # as due to our grouping into equivalence classes, this would
+            # add trivial constraints (variable == variable) that cause Drake
+            # to throw errors. All other constraints should be fair game.
+            if not isinstance(rule.xyz_rule, SamePositionRule):
+                rule.xyz_rule.encode_constraint(
+                    prog, rule.xyz_optim_params, parent_node, child_node
+                )
+            if not isinstance(rule.rotation_rule, SameRotationRule):
+                rule.rotation_rule.encode_constraint(
+                    prog, rule.rot_optim_params, parent_node, child_node
+                )
             rule.encode_cost(
                 prog, rule.xyz_optim_params, rule.rot_optim_params, child_node.active, parent_node, child_node
             )
@@ -456,6 +502,14 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
     if verbose:
             print("Solve time: ", solve_time-setup_time)
             print("Total time: ", solve_time - start_time)
+
+    # Manually prune these out; they're hard to clean up for pickling, and not necessary
+    # for anyone else to consume.
+    # TODO(gizatt): Need to cleanly contain all extra optimization variables in a container
+    # so I can prune them before pickling.
+    for node in super_tree:
+        del node.R_equivalent_to_observed_nodes
+        del node.t_equivalent_to_observed_nodes
 
     return TreeInferenceResults(solver, result, super_tree, observed_nodes, R_random_offset)
 
@@ -609,7 +663,7 @@ def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, o
             t_target = node.translation.cpu().detach().numpy()
             prog.AddBoundingBoxConstraint(t_target, t_target, node.t_optim)
         else:
-            # Otherwise, constraint the pose to be a legal and good pose.
+            # Otherwise, constrain the pose to be a legal and good pose.
             # R.' R = I
             RtR = node.R_optim.T.dot(node.R_optim)
             I = np.eye(3)

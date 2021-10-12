@@ -402,7 +402,26 @@ class ParentFrameGaussianOffsetRule(WorldFrameGaussianOffsetRule):
     def encode_constraint(self, prog, optim_params, parent, child):
         raise NotImplementedError()
     def encode_cost(self, prog, optim_params, active, parent, child):
-        raise NotImplementedError()
+        # Extract info about the Normal distribution.
+        mean = optim_params["mean"]
+        covar = np.diag(optim_params["variance"])
+        inverse_covariance = np.linalg.inv(covar)
+        covariance_det = np.linalg.det(covar)
+        log_normalizer = np.log(np.sqrt( (2. * np.pi) ** 3 * covariance_det))
+
+        # The offset is parent.R_optim.T * (child.t_optim - parent.t_optim)
+        # which has bilinear terms p.R.T  * c.t,  p.R.T * p.t.
+        xyz_offset = child.t_optim - (parent.t_optim + mean)
+        total_ll = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset))
+
+        # With this total ll, we don't actually need to use the active
+        # variable at all. We would add a constraint like
+        #  cost_slack >= cost - (inactive) * min_possible_cost; but
+        #  min_possible_cost is 0, since this is a quadratic error cost,
+        #  and in the case that this node is inactive, the child translation
+        #  will be unconstrained and thus the optimal solution will set the
+        #  cost to zero automatically.
+        prog.AddQuadraticCost(-total_ll)
 
 
 

@@ -44,7 +44,7 @@ from pydrake.all import (
     VPolytope,
     MixedIntegerRotationConstraintGenerator,
     IntervalBinning,
-    Variable
+    Variable, Expression, Formula
 )
 
 from .nodes import *
@@ -309,17 +309,18 @@ def _contains(obj, type_of_interest):
     if isinstance(obj, type_of_interest):
         return True
     try:
-        return any([_contains(subobj, type_of_interest) for subobj in obj if subobj is not obj])
+        return any([_contains(subobj, type_of_interest) for subobj in iter(obj) if subobj is not obj])
     except TypeError:
         return False
 
 def _cleanup_object(obj):
     to_remove = []
     for key, value in vars(obj).items():
-        if _contains(value, Variable):
+        if _contains(value, (Variable, Expression, Formula)):
             to_remove.append(key)
         if isinstance(value, torch.Tensor):
             setattr(obj, key, value.detach())
+
     for key in to_remove:
         delattr(obj, key)
     

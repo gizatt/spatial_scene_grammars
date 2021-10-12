@@ -102,6 +102,8 @@ def test_parsing_complex(set_seed):
     assert_explains_observeds(tree, mip_optimized_tree)
 
     start_time = time.time()
+    for node in mip_optimized_tree:
+        print(node, node.tf)
     refinement_results = optimize_scene_tree_with_nlp(grammar, mip_optimized_tree, objective="mle", verbose=True)
     elapsed = time.time() - start_time
     print("Refinement took %f secs." % elapsed)
@@ -110,7 +112,7 @@ def test_parsing_complex(set_seed):
     assert_explains_observeds(tree, refined_tree)
     assert_feasible(refined_tree)
 
-    # Check out of get-tree-as-close-to-this-one works too.
+    # Check out if get-tree-as-close-to-this-one works too.
     tree = grammar.sample_tree(detach=True)
     # Perturb node C to a known feasible location.
     # It's always safe to put C anywhere in the unit box, since its spawning
