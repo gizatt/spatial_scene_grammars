@@ -186,3 +186,67 @@ def test_parsing_n_solutions():
 
     # Should find a diversity of unconstrained solutions.
     assert len(mip_optimized_trees) == 20
+
+all_rules = [
+    WorldFrameBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*3.),
+    WorldFrameBBoxOffsetRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*5.),
+    WorldFrameGaussianOffsetRule(mean=torch.zeros(3), variance=torch.ones(3)),
+    ParentFrameGaussianOffsetRule(mean=torch.zeros(3), variance=torch.ones(3)),
+    WorldFramePlanarGaussianOffsetRule(
+        mean=torch.zeros(2), variance=torch.ones(2), plane_transform=RigidTransform(p=np.array([1., 2., 3.]), rpy=RollPitchYaw(1., 2., 3.))),
+    UnconstrainedRotationRule(),
+    UniformBoundedRevoluteJointRule.from_bounds(axis=torch.tensor([0., 1., 0.]), lb=-np.pi/2., ub=np.pi/2.),
+    WorldFrameBinghamRotationRule(M=torch.eye(4), Z=torch.tensor([-1., -1., -1., 0.])),
+    ParentFrameBinghamRotationRule(M=torch.eye(4), Z=torch.tensor([-1., -1., -1., 0.]))
+]
+@pytest.mark.skipif(os.environ.get('GUROBI_PATH') is None or not SnoptSolver().available(),
+                    reason='This test relies on Gurobi and SNOPT.')
+@pytest.mark.parametrize("rule", all_rules, ids=[type(rule).__name__ for rule in all_rules])
+@pytest.mark.parametrize("parent_observed", [False, True])
+@pytest.mark.parametrize("child_observed", [False, True])
+def test_parsing_rules_in_each_observed_case(set_seed, rule, parent_observed, child_observed):
+    # Construct a trivial grammar in which the only uncertainty is the pose of an
+    # intermediate node. Experiment with each combination of parent/child of that
+    # rule being observed and unobserved, making sure each case works as expected.
+
+    # Case 1: A -> B -> C
+    #              B -> C by the rule we're testing.
+    #              B is observed or unobserved.
+    class C(TerminalNode):
+        def __init__(self, tf):
+            super().__init__(observed=child_observed, physics_geometry_info=None, tf=tf)
+
+    if isinstance(rule, RotationProductionRule):
+        xyz_rule = SamePositionRule()
+        rotation_rule = rule
+    else:
+        xyz_rule = rule
+        rotation_rule = SameRotationRule()
+
+    class B(AndNode):
+        def __init__(self, tf):
+            super().__init__(observed=parent_observed, physics_geometry_info=None, tf=tf)
+        @classmethod
+        def generate_rules(cls):
+            return [ProductionRule(child_type=C, xyz_rule=xyz_rule, rotation_rule=rotation_rule)]
+
+    class A(AndNode):
+        def __init__(self, tf):
+            super().__init__(observed=False, physics_geometry_info=None, tf=tf)
+        @classmethod
+        def generate_rules(cls):
+            return [ProductionRule(child_type=B, xyz_rule=SamePositionRule(), rotation_rule=SameRotationRule())]
+
+    grammar = SpatialSceneGrammar(
+        root_node_type = A,
+        root_node_tf = torch.eye(4)
+    )
+    observed_nodes = grammar.sample_tree(detach=True).get_observed_nodes()
+
+    inference_results = infer_mle_tree_with_mip(
+        grammar, observed_nodes, verbose=True, N_solutions=3,
+        use_random_rotation_offset=True
+    )
+    assert inference_results.optim_result.is_success(), "MIP parsing failed."
+
+    mip_optimized_trees = get_optimized_trees_from_mip_results(inference_results)

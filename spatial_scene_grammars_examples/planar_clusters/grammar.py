@@ -203,7 +203,7 @@ class Desk(GeometricSetNode):
         super().__init__(
             tf=tf,
             p=0.2,
-            max_children=6,
+            max_children=3,
             physics_geometry_info=geom,
             observed=True
         )

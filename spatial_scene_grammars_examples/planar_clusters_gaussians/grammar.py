@@ -75,10 +75,8 @@ class FoodWasteCluster(IndependentSetNode):
                     mean=torch.tensor([0.0, 0.0]),
                     variance=torch.tensor([0.05, 0.05]),
                     plane_transform=RigidTransform()),
-                rotation_rule=GaussianChordOffsetRule(
-                    axis=torch.tensor([0., 0., 1.]),
-                    loc=0., concentration=0.1 # Basically uniformly random
-                )
+                rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
+                        RotationMatrix(RollPitchYaw(0., 0., 1.)), [1000., 1000., 1.])
             ) for stuff in Stuff
         ]
         return Rules
@@ -117,10 +115,8 @@ class PaperCluster(GeometricSetNode):
                 mean=torch.tensor([0.0, 0.0]),
                 variance=torch.tensor([0.05, 0.05]),
                 plane_transform=RigidTransform()),
-            rotation_rule=GaussianChordOffsetRule(
-                axis=torch.tensor([0., 0., 1.]),
-                loc=0., concentration=100. # Roughly aligned
-            )
+            rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
+                    RotationMatrix(RollPitchYaw(0., 0., 1.)), [1000., 1000., 100.])
         )]
 
 ## Pencils
@@ -157,10 +153,8 @@ class PencilCluster(GeometricSetNode):
                 mean=torch.tensor([0.0, 0.0]),
                 variance=torch.tensor([0.01, 0.005]),
                 plane_transform=RigidTransform()),
-            rotation_rule=GaussianChordOffsetRule(
-                axis=torch.tensor([0., 0., 1.]),
-                loc=0., concentration=1000. # Very aligned
-            )
+            rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
+                    RotationMatrix(RollPitchYaw(0., 0., 1.)), [1000., 1000., 1000.])
         )]
 
 ## Desk and abstract cluster
@@ -214,10 +208,7 @@ class Desk(GeometricSetNode):
                 mean=torch.tensor([0.0, 0.0]),
                 variance=torch.tensor([0.2, 0.2]),
                 plane_transform=RigidTransform()),
-            rotation_rule=GaussianChordOffsetRule(
-                axis=torch.tensor([0., 0., 1.]),
-                loc=0.,
-                concentration=0.1 # This is basically uniform
-            )
+            rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
+                    RotationMatrix(RollPitchYaw(0., 0., 1.)), [1000., 1000., 1.])
         )
         return [rule]

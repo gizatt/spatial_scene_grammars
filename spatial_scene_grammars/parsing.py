@@ -209,7 +209,6 @@ def add_mle_tree_parsing_to_prog(
                 R_equivalence_graph.add_edge(parent_node, child_node)
     t_equivalent_sets = list(nx.connected_components(t_equivalence_graph))
     R_equivalent_sets = list(nx.connected_components(R_equivalence_graph))
-
     # For each set, figure out if it contains an observed node, and propagate
     # a reference to the observed node to the rest of the set. If the set
     # contains multiple observed nodes, throw an error, as that's probably unparse-able.
@@ -231,7 +230,7 @@ def add_mle_tree_parsing_to_prog(
     mip_rot_gen = MixedIntegerRotationConstraintGenerator(
         approach = MixedIntegerRotationConstraintGenerator.Approach.kBilinearMcCormick,
         num_intervals_per_half_axis=num_intervals_per_half_axis,
-        interval_binning = IntervalBinning.kLogarithmic
+        interval_binning = IntervalBinning.kLinear # Logarithmic is a bit more efficient, but will break my rotation constraint binary variable sharing stuff.
     )
     for k, t_equivalent_set in enumerate(t_equivalent_sets):
         # For some convenience in expression forming, we'll always have some
@@ -247,7 +246,7 @@ def add_mle_tree_parsing_to_prog(
                     for (_, obs_var, obs_tf) in observed_node.possible_observations
                 ])
                 # If there are no active correspondences, allow the translation to vary freely.
-                M = max_scene_extent_in_any_dir
+                M = 2.*max_scene_extent_in_any_dir
                 no_correspondences = 1. - sum([obs_var for (_, obs_var, _) in observed_node.possible_observations])
                 for i in range(3):
                     prog.AddLinearConstraint(t_optim[i] <= observed_t[i] + no_correspondences*M)
@@ -260,7 +259,8 @@ def add_mle_tree_parsing_to_prog(
 
     for k, R_equivalent_set in enumerate(R_equivalent_sets):
         R_optim_pre_offset = prog.NewContinuousVariables(3, 3, "R_optim_%d" % k)
-        R_optim = R_random_offset.matrix().dot(R_optim_pre_offset)
+        R_optim = R_optim_pre_offset.dot(R_random_offset.matrix())
+        R_optim_mip_info = None
 
         R_observed_nodes = next(iter(R_equivalent_set)).R_equivalent_to_observed_nodes
         if len(R_observed_nodes) > 0:
@@ -272,7 +272,7 @@ def add_mle_tree_parsing_to_prog(
                     for (_, obs_var, obs_tf) in observed_node.possible_observations
                 ])
                 # If there are no active correspondences, allow the rotation to vary freely.
-                M = 1.
+                M = 2.
                 no_correspondences = 1. - sum([obs_var for (_, obs_var, _) in observed_node.possible_observations])
                 for i in range(3):
                     for j in range(3):
@@ -282,10 +282,15 @@ def add_mle_tree_parsing_to_prog(
             # Trivial rotation matrix bounds
             prog.AddBoundingBoxConstraint(-np.ones(9), np.ones(9), R_optim_pre_offset.flatten())
             # SO(3) constraint
-            mip_rot_gen.AddToProgram(R_optim_pre_offset, prog)
+            R_optim_mip_info = {
+                "rot_gen": mip_rot_gen,
+                "B": mip_rot_gen.AddToProgram(R_optim_pre_offset, prog).B_
+            }
         for node in R_equivalent_set:
             node.R_optim = R_optim.reshape(3, 3)
             node.R_optim_pre_offset = R_optim_pre_offset.reshape(3, 3)
+            node.R_optim_mip_info = R_optim_mip_info
+            node.R_random_offset = R_random_offset
         
     if verbose:
         print("Continuous variables and SO(3) constraints allocated for all equivalence sets.")
@@ -421,14 +426,14 @@ def add_mle_tree_parsing_to_prog(
             # to throw errors. All other constraints should be fair game.
             if not isinstance(rule.xyz_rule, SamePositionRule):
                 rule.xyz_rule.encode_constraint(
-                    prog, rule.xyz_optim_params, parent_node, child_node
+                    prog, rule.xyz_optim_params, parent_node, child_node, max_scene_extent_in_any_dir
                 )
             if not isinstance(rule.rotation_rule, SameRotationRule):
                 rule.rotation_rule.encode_constraint(
-                    prog, rule.rot_optim_params, parent_node, child_node
+                    prog, rule.rot_optim_params, parent_node, child_node, max_scene_extent_in_any_dir
                 )
             rule.encode_cost(
-                prog, rule.xyz_optim_params, rule.rot_optim_params, child_node.active, parent_node, child_node
+                prog, rule.xyz_optim_params, rule.rot_optim_params, child_node.active, parent_node, child_node, max_scene_extent_in_any_dir
             )
 
     return super_tree, observed_nodes, R_random_offset
@@ -510,6 +515,7 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
     for node in super_tree:
         del node.R_equivalent_to_observed_nodes
         del node.t_equivalent_to_observed_nodes
+        del node.R_optim_mip_info
 
     return TreeInferenceResults(solver, result, super_tree, observed_nodes, R_random_offset)
 
@@ -538,8 +544,13 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
 
     else:
         raise ValueError(inference_results.solver)
+
     super_tree = inference_results.super_tree
     observed_nodes = inference_results.observed_nodes
+
+    if not success:
+        logging.error("MIP structure finding unsuccessful.")
+        return None
 
     # Sanity-check observed nodes are explained properly.
     for observed_node in observed_nodes:
@@ -547,10 +558,8 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
             if assert_on_failure:
                 raise ValueError("observed node %s not explained by MLE sol." % str(observed_node))
             else:
-                logging.warning("Observed node %s not explained by MLE sol." % str(observed_node))
+                logging.error("Observed node %s not explained by MLE sol." % str(observed_node))
 
-    if not success:
-        logging.warning("MIP structure finding unsuccessful.")
     optimized_tree = SceneTree()
 
     # Reconstruct what the optimization thinks our score should be.
@@ -598,8 +607,9 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
         if get_sol(node.active) > 0.5:
             t_sol = get_sol(node.t_optim)
             R_sol = RotationMatrix(
-                inference_results.R_random_offset.matrix().dot(
-                    get_sol(node.R_optim_pre_offset))
+                    get_sol(node.R_optim_pre_offset).dot(
+                        inference_results.R_random_offset.matrix()
+                    )
             )
             new_tf = drake_tf_to_torch_tf(RigidTransform(
                 p=t_sol, R=R_sol
@@ -698,7 +708,7 @@ def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, o
         optim_params_by_rule = grammar.rule_params_by_node_type_optim[type(parent_node).__name__]
         for rule, child_node, (xyz_optim_params, rot_optim_params) in zip(rules, children, optim_params_by_rule):
             rule.encode_constraint(
-                prog, xyz_optim_params, rot_optim_params, parent_node, child_node
+                prog, xyz_optim_params, rot_optim_params, parent_node, child_node, max_scene_extent_in_any_dir
             )
 
     def penalize_rotation_error(R_goal, R_optim):
@@ -723,13 +733,13 @@ def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, o
 
     if objective == "mle":
         # Add costs for MLE tree estimate
-        for prent_node in scene_tree.nodes:
+        for parent_node in scene_tree.nodes:
             children, rules = scene_tree.get_children_and_rules(parent_node)
             ## Child location costs relative to parent.
             optim_params_by_rule = grammar.rule_params_by_node_type_optim[type(parent_node).__name__]
             for rule, child_node, (xyz_optim_params, rot_optim_params) in zip(rules, children, optim_params_by_rule):
                 rule.encode_cost(
-                    prog, xyz_optim_params, rot_optim_params, parent_node, child_node
+                    prog, xyz_optim_params, rot_optim_params, True, parent_node, child_node, max_scene_extent_in_any_dir
                 )
 
     elif objective == "projection":

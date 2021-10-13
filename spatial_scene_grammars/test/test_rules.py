@@ -207,33 +207,6 @@ def test_UniformBoundedRevoluteJointRule(set_seed):
     child.rotation = R
     ll = rule.score_child(parent, child)
 
-## UniformBoundedRevoluteJointRule
-def test_GaussianChordOffsetRule(set_seed):
-    random_axis = np.random.normal(0., 1., 3)
-    random_axis = torch.tensor(random_axis / np.linalg.norm(random_axis))
-    random_loc = np.random.uniform(0., 2.*np.pi)
-    random_concentration = np.random.uniform(0.01, 1.)
-    rule = GaussianChordOffsetRule(axis=random_axis, loc=random_loc, concentration=random_concentration)
-
-    params = rule.parameters
-    assert isinstance(params, dict)
-    priors = rule.get_parameter_prior()
-    for k, params in params.items():
-        assert all(torch.isfinite(priors[k].log_prob(params)))
-
-    parent = make_dummy_node()
-
-    R = rule.sample_rotation(parent)
-    assert isinstance(R, torch.Tensor)
-    assert R.shape == (3, 3)
-    # Is it a rotation?
-    assert torch.allclose(torch.matmul(R, torch.transpose(R, 0, 1)), torch.eye(3))
-    assert torch.isclose(torch.det(R), torch.ones(1))
-
-    child = make_dummy_node()
-    child.rotation = R
-    ll = rule.score_child(parent, child)
-
 @pytest.mark.parametrize("angle", torch.arange(start=-np.pi+1E-3, end=np.pi-1E-3, step=np.pi/8.))
 def test_AngleAxisInversion(set_seed, angle):
     # Test angle-axis inversion
@@ -285,23 +258,24 @@ def test_WorldFrameBinghamRotationRule(set_seed):
 
 
 
-
-@pytest.mark.parametrize("xyz_rule", [
+xyz_rules = [
+    SamePositionRule(),
     WorldFrameBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*3.),
     WorldFrameBBoxOffsetRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*5.),
     WorldFrameGaussianOffsetRule(mean=torch.zeros(3), variance=torch.ones(3)),
     ParentFrameGaussianOffsetRule(mean=torch.zeros(3), variance=torch.ones(3)),
     WorldFramePlanarGaussianOffsetRule(
         mean=torch.zeros(2), variance=torch.ones(2), plane_transform=RigidTransform(p=np.array([1., 2., 3.]), rpy=RollPitchYaw(1., 2., 3.)))
-])
-@pytest.mark.parametrize("rotation_rule", [
+]
+rotation_rules = [
     SameRotationRule(),
     UnconstrainedRotationRule(),
     UniformBoundedRevoluteJointRule.from_bounds(axis=torch.tensor([0., 1., 0.]), lb=-np.pi/2., ub=np.pi/2.),
-    GaussianChordOffsetRule(axis=torch.tensor([0., 0., 1.]), loc=0.42, concentration=11.),
     WorldFrameBinghamRotationRule(M=torch.eye(4), Z=torch.tensor([-1., -1., -1., 0.])),
     ParentFrameBinghamRotationRule(M=torch.eye(4), Z=torch.tensor([-1., -1., -1., 0.]))
-])
+]
+@pytest.mark.parametrize("xyz_rule", xyz_rules, ids=[type(rule).__name__ for rule in xyz_rules])
+@pytest.mark.parametrize("rotation_rule", rotation_rules,  ids=[type(rule).__name__ for rule in rotation_rules])
 def test_ProductionRule(set_seed, xyz_rule, rotation_rule):
     rule = ProductionRule(
         child_type=NodeB,
@@ -322,7 +296,7 @@ def test_ProductionRule(set_seed, xyz_rule, rotation_rule):
     rule.parameters = params
 
     trace = pyro.poutine.trace(rule.sample_child).get_trace(parent)
-    expected = trace.log_prob_sum()
+    expected = trace.log_prob_sum() + torch.tensor(0.) # force to be a tensor, even if it's an empty trace
     child = trace.nodes["_RETURN"]["value"]
     score = rule.score_child(parent, child, verbose=True).sum()
     assert torch.isclose(score, expected), "%f vs %f for rule types %s, %s" % (
