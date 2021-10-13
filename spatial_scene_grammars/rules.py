@@ -457,50 +457,45 @@ class ParentFrameGaussianOffsetRule(WorldFrameGaussianOffsetRule):
                 R_B = parent.R_optim_mip_info["B"]
                 R_phi = parent.R_optim_mip_info["rot_gen"].phi()
 
-                # Create a slack to approximate each bilinear product that shows up.
+                # Create a slack to approximate each bilinear product that shows up
+                # in  parent.R.T * (child_t - (parent_t + mean)
                 # We'll need to write this in terms of pre- and post-random-offset, since
-                # the MIP binary variables are written on the pre-random-offset rotations.
-                # Our terms look like
-                #          parent.R.T * parent.translation
-                #      = (parent.R_pre * random_offset).T * parent.translation
-                #      = random_offset.T * parent.R_pre.T * parent.translation
-                # The [i, j] entry in these matrices represents the [i, j] entry
-                # of the parent rotation (pre random offset) * the j^th entry of the child or parent translation.
-                # We recover the "full" objective later by left-multiplying by the offset.
-                parent_child_products = prog.NewContinuousVariables(3, 3, "%s_%s_parent_child_slacks" % (parent.name, child.name))
-                parent_parent_products = prog.NewContinuousVariables(3, 3, "%s_%s_parent_child_slacks" % (parent.name, child.name))
+                # the MIP binary variables are written on the pre-random-offset rotations:
+                #    random_offset.T * parent.R_pre.T * (child_t - (parent_t + mean))
+
+                # Mean gets added later
+                xyz_offset_pre_rotation = child.t_optim - (parent.t_optim)
+                xyz_offset_slack = prog.NewContinuousVariables(3, "xyz_offset_slack")
+                for i in range(3):
+                    prog.AddLinearEqualityConstraint(xyz_offset_pre_rotation[i] == xyz_offset_slack[i])
+                
+                product_terms = prog.NewContinuousVariables(3, 3, "product_terms")
+                
                 # Approximate the constraint w = x*y for every bilinear product
                 # used to assemble the R*t bilinear terms. We reuse the subdivisions
                 # for the terms of R.
-                N_t_subdivisions = 1
+                N_t_subdivisions = 3
                 for i in range(3):
                     for j in range(3):
                         # Need to add one trivial binary variable since we've subdivided the translation
                         # range once.
-                        t_B_child = prog.NewBinaryVariables(N_t_subdivisions)
-                        t_B_parent = prog.NewBinaryVariables(N_t_subdivisions)
-                        t_phi = np.linspace(-max_scene_extent_in_any_dir, max_scene_extent_in_any_dir, N_t_subdivisions+1)
+                        t_offset = prog.NewBinaryVariables(N_t_subdivisions)
+                        # Big M needs to be the biggest error we can have between parent and child,
+                        # which is twice the biggest error in a scene.
+                        t_phi = np.linspace(-2.*max_scene_extent_in_any_dir, 2.*max_scene_extent_in_any_dir, N_t_subdivisions+1)
                         # Be sure to transpose R
                         AddBilinearProductMcCormickEnvelopeSos2(
-                            prog, parent.R_optim_pre_offset[j, i], child.t_optim[j], parent_child_products[i, j],
+                            prog, parent.R_optim_pre_offset[j, i], xyz_offset_slack[j], product_terms[i, j],
                             phi_x=R_phi,
                             phi_y=t_phi,
                             Bx = R_B[j][i],
-                            By = t_B_child,
+                            By = t_offset,
                             binning=binning
                         )
-                        AddBilinearProductMcCormickEnvelopeSos2(
-                            prog, parent.R_optim_pre_offset[j, i], parent.t_optim[j], parent_parent_products[i, j],
-                            phi_x=R_phi,
-                            phi_y=t_phi,
-                            Bx = R_B[j][i],
-                            By = t_B_parent,
-                            binning=binning
-                        )
-
                 # Our approximate offset, then, is...
-                xyz_offset = np.sum(parent_child_products, axis=0) - np.sum(parent_parent_products, axis=0) - parent.R_optim_pre_offset.T.dot(mean)
+                xyz_offset = np.sum(product_terms, axis=0) + parent.R_optim.dot(mean)
                 xyz_offset = parent.R_random_offset.matrix().T.dot(xyz_offset)
+
             # Now that we've assembled xyz_offset, apply a cost
             # if this node is active. (I'm not sure that this node being active
             # implies or is implied by the observed nodes being active; and this node's
