@@ -425,6 +425,7 @@ class ParentFrameGaussianOffsetRule(WorldFrameGaussianOffsetRule):
             # NLP context.
             xyz_offset = parent.R_optim.T.dot(child.t_optim - (parent.t_optim + mean))
             total_ll = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset)) * active
+            prog.AddCost(-total_ll)
         else:
             parent_R_observed = len(parent.R_equivalent_to_observed_nodes) > 0
             if parent_R_observed:
@@ -474,15 +475,15 @@ class ParentFrameGaussianOffsetRule(WorldFrameGaussianOffsetRule):
                 # Approximate the constraint w = x*y for every bilinear product
                 # used to assemble the R*t bilinear terms. We reuse the subdivisions
                 # for the terms of R.
-                N_t_subdivisions = 3
-                for i in range(3):
-                    for j in range(3):
+                N_t_subdivisions = 5
+                for j in range(3):
+                    t_offset = prog.NewBinaryVariables(N_t_subdivisions)
+                    t_phi = np.linspace(-max_scene_extent_in_any_dir, max_scene_extent_in_any_dir, N_t_subdivisions+1)
+                    for i in range(3):
                         # Need to add one trivial binary variable since we've subdivided the translation
                         # range once.
-                        t_offset = prog.NewBinaryVariables(N_t_subdivisions)
                         # Big M needs to be the biggest error we can have between parent and child,
                         # which is twice the biggest error in a scene.
-                        t_phi = np.linspace(-2.*max_scene_extent_in_any_dir, 2.*max_scene_extent_in_any_dir, N_t_subdivisions+1)
                         # Be sure to transpose R
                         AddBilinearProductMcCormickEnvelopeSos2(
                             prog, parent.R_optim_pre_offset[j, i], xyz_offset_slack[j], product_terms[i, j],
@@ -493,7 +494,7 @@ class ParentFrameGaussianOffsetRule(WorldFrameGaussianOffsetRule):
                             binning=binning
                         )
                 # Our approximate offset, then, is...
-                xyz_offset = np.sum(product_terms, axis=0) + parent.R_optim.dot(mean)
+                xyz_offset = np.sum(product_terms, axis=0) - parent.R_optim.T.dot(mean)
                 xyz_offset = parent.R_random_offset.matrix().T.dot(xyz_offset)
 
             # Now that we've assembled xyz_offset, apply a cost
@@ -508,8 +509,7 @@ class ParentFrameGaussianOffsetRule(WorldFrameGaussianOffsetRule):
                 prog.AddLinearConstraint(xyz_offset[i] - xyz_offset_slack[i] <= 2. * inactive * max_scene_extent_in_any_dir)
                 prog.AddLinearConstraint(xyz_offset[i] - xyz_offset_slack[i] >= -2. * inactive * max_scene_extent_in_any_dir)
             total_ll = -0.5 * (xyz_offset_slack.transpose().dot(inverse_covariance).dot(xyz_offset_slack))
-
-        prog.AddQuadraticCost(-total_ll)
+            prog.AddQuadraticCost(-total_ll)
 
     def get_max_score(self):
         return self.xyz_dist.log_prob(self.mean).sum()
@@ -1040,8 +1040,8 @@ class WorldFrameBinghamRotationRule(RotationProductionRule):
     Recommended to use a helper function to assemble these from target rotation
     and RPY concentrations.
     '''
-    @staticmethod
-    def from_rotation_and_rpy_variances(rotation_mode, rpy_concentration, **kwargs):
+    @classmethod
+    def from_rotation_and_rpy_variances(cls, rotation_mode, rpy_concentration, **kwargs):
         ''' Construct this rule to distribute the child rotation
         around the given RotationMatrix, with specified concentrations
         around each rotation axis. '''
@@ -1070,7 +1070,7 @@ class WorldFrameBinghamRotationRule(RotationProductionRule):
         reorder_inds = np.argsort(z)
         z = z[reorder_inds]
         m = m[:, reorder_inds]
-        return WorldFrameBinghamRotationRule(
+        return cls(
             torch.tensor(deepcopy(m)), torch.tensor(deepcopy(z)), **kwargs
         )
 
@@ -1268,10 +1268,15 @@ class ParentFrameBinghamRotationRule(WorldFrameBinghamRotationRule):
 
                 # Create a slack to approximate each bilinear product that shows up.
                 deltaR = prog.NewContinuousVariables(3, 3, "deltaR")
+                # This entity is itself a rotation, so go ahead and throw in rotation
+                # constraints, with the hope that it'll push the MIP solver towards better
+                # solutions.
+                parent.R_optim_mip_info["rot_gen"].AddToProgram(deltaR, prog)
                 for i in range(3):
                     for j in range(3):
-                        # deltaR[i, j] = parent.R.T [i, 0] * child.R[0, j]
+                        # deltaR[i, j] = \sum_k parent.R.T [i, k] * child.R[k, j]
                         terms = prog.NewContinuousVariables(3, "deltaR_sum_terms_%d_%d" % (i, j))
+                        prog.AddLinearEqualityConstraint(deltaR[i, j] == sum(terms))
                         for term_k in range(3):
                             # Be sure to transpose R parent
                             AddBilinearProductMcCormickEnvelopeSos2(
@@ -1283,6 +1288,6 @@ class ParentFrameBinghamRotationRule(WorldFrameBinghamRotationRule):
                                 binning=binning
                             )
                 # And now account for random offsets
-                deltaR = parent.R_random_offset.matrix().dot(deltaR).dot(child.R_random_offset.matrix())
+                deltaR = parent.R_random_offset.matrix().T.dot(deltaR).dot(child.R_random_offset.matrix())
             # Now we can use that expression for deltaR to construct the bingham cost.
             add_bingham_cost(prog, deltaR, active, M, Z)

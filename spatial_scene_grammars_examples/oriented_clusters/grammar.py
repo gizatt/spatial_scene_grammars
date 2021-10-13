@@ -32,7 +32,7 @@ class OrientedCluster(GeometricSetNode):
         super().__init__(
             tf=tf,
             p=0.3,
-            max_children=3,
+            max_children=5,
             physics_geometry_info=None,
             observed=False
         )
@@ -42,7 +42,7 @@ class OrientedCluster(GeometricSetNode):
             child_type=LongBox,
             xyz_rule=ParentFrameGaussianOffsetRule(
                 mean=torch.zeros(3),
-                variance=torch.tensor([0.1, 0.1, 0.01])
+                variance=torch.tensor([0.05, 0.05, 0.01])
             ),
             rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
                 RotationMatrix(RollPitchYaw(0., 0., 1.)),
@@ -55,9 +55,9 @@ class OrientedClusterRoot(GeometricSetNode):
         super().__init__(
             tf=tf,
             p=0.3,
-            max_children=2,
+            max_children=3,
             physics_geometry_info=None,
-            observed=False
+            observed=True
         )
     @classmethod
     def generate_rules(cls):
@@ -67,8 +67,8 @@ class OrientedClusterRoot(GeometricSetNode):
                 mean=torch.zeros(3),
                 variance=torch.tensor([1.0, 1.0, 0.01])
             ),
-            rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                RotationMatrix(RollPitchYaw(0., 0., 1.)),
-                [1., 1., 1.]
+            rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
+                RotationMatrix(RollPitchYaw(1., 0., 0.)),
+                [0.1, 0.1, 0.1]
             )
         )]
