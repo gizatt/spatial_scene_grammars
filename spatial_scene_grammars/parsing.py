@@ -405,16 +405,24 @@ def add_mle_tree_parsing_to_prog(
             pass
         elif isinstance(parent_node, (OrNode, IndependentSetNode)):
             # Binary variables * log of probabilities.
+            # If parent is inactive, all children are inactive, so these probs go to zero.
             for p, child in zip(parent_node.rule_probs, children):
                 prog.AddLinearCost(-np.log(p) * child.active)
         elif isinstance(parent_node, GeometricSetNode):
-            # TODO(gizatt) Is this accurate given max_children causes a truncation
-            # of the geometric dist? That might need special handling.
-            # p = p * (1-p)**(n_children)
-            p = parent_node.p
-            prog.AddLinearCost(-np.log(p.item()) * parent_node.active)
-            for child in children:
-                prog.AddLinearCost(-np.log(1.-p) * child.active)
+            # Copy probabilities out from the "fake" geometric dist.
+            count_probs = parent_node.rule_probs.detach().numpy()
+            for child_k, child in enumerate(children):
+                # Any given child being active removes the prob of the last #
+                # of children being active, and adds the prob of this # of children
+                # being active.
+                if child_k == 0:
+                    prog.AddLinearCost(-np.log(count_probs[child_k]) * child.active)
+                else:
+                    prog.AddLinearCost(
+                        (np.log(count_probs[child_k-1]) -
+                         np.log(count_probs[child_k])) 
+                        * child.active
+                    )
         else:
             raise ValueError("Unexpected node in cost assembly: ", type(parent_node))
 
@@ -474,7 +482,7 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
         logfile = "/tmp/gurobi.log"
         os.system("rm -f %s" % logfile)
         options.SetOption(solver.id(), "LogFile", logfile)
-        options.SetOption(solver.id(), "MIPGap", 5E-2)
+        options.SetOption(solver.id(), "MIPGap", 1E-3)
         if N_solutions > 1:
             options.SetOption(solver.id(), "PoolSolutions", N_solutions)
             options.SetOption(solver.id(), "PoolSearchMode", 2)
