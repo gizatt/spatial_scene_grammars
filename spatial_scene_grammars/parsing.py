@@ -575,6 +575,8 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
     '''
     total_active_score = 0.
     for parent_node in super_tree:
+        if get_sol(parent_node.active) < 0.5:
+            continue
         children = super_tree.get_children(parent_node)
         ## Get child rule list.
         if isinstance(parent_node, GeometricSetNode):
@@ -589,25 +591,36 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
         print("%s (active %f): child set score %f" % (parent_node.name, get_sol(parent_node.active), child_set_score))
         if get_sol(parent_node.active) > 0.5:
             total_active_score += child_set_score
+        
+        proxy_parent = deepcopy(parent_node)
+        t_sol = get_sol(parent_node.t_optim)
+        R_sol = RotationMatrix(
+            get_sol(parent_node.R_optim_pre_offset).dot(inference_results.R_random_offset.matrix())
+        )
+        new_tf = drake_tf_to_torch_tf(RigidTransform(
+            p=t_sol, R=R_sol
+        ))
+        proxy_parent.tf = new_tf
+
         for child, rule in zip(children, rules):
+            if get_sol(child.active) < 0.5:
+                continue
             proxy_child = deepcopy(child)
             t_sol = get_sol(child.t_optim)
             R_sol = RotationMatrix(
-                inference_results.R_random_offset.matrix().dot(
-                    get_sol(child.R_optim_pre_offset))
+                get_sol(child.R_optim_pre_offset).dot(inference_results.R_random_offset.matrix())
             )
             new_tf = drake_tf_to_torch_tf(RigidTransform(
                 p=t_sol, R=R_sol
             ))
-            print("child tf: ", new_tf)
             proxy_child.tf = new_tf
-            child_score = rule.score_child(parent_node, proxy_child, verbose=1).item()
-            print("%s:%s (active %s): child %f" % (parent_node.name, proxy_child.name, get_sol(child.active), child_score))
+            child_score = rule.score_child(proxy_parent, proxy_child, verbose=1).item()
+            print("%s:%s (active %s): child %f" % (proxy_parent.name, proxy_child.name, get_sol(child.active), child_score))
             if get_sol(parent_node.active) > 0.5 and get_sol(child.active) > 0.5:
                 total_active_score += child_score
     print("Total active score: ", total_active_score)
     '''
-
+    
     # Build tree top-down so we know parent is already in new tree.
     potential_node_queue = [(super_tree.get_root(), None)]
     while len(potential_node_queue) > 0:
@@ -746,6 +759,7 @@ def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, o
             ## Child location costs relative to parent.
             optim_params_by_rule = grammar.rule_params_by_node_type_optim[type(parent_node).__name__]
             for rule, child_node, (xyz_optim_params, rot_optim_params) in zip(rules, children, optim_params_by_rule):
+                print(rule.xyz_rule, rule.rotation_rule)
                 rule.encode_cost(
                     prog, xyz_optim_params, rot_optim_params, True, parent_node, child_node, max_scene_extent_in_any_dir
                 )

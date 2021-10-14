@@ -242,7 +242,7 @@ class SamePositionRule(XyzProductionRule):
         for k in range(3):
             prog.AddLinearEqualityConstraint(child.t_optim[k] == parent.t_optim[k] + t[k])
     def encode_cost(self, prog, optim_params, active, parent, child, max_scene_extent_in_any_dir):
-        return 0.
+        pass
 
 class WorldFrameBBoxRule(XyzProductionRule):
     ''' Child xyz is uniformly chosen in [center, width] in world frame,
@@ -379,19 +379,25 @@ class WorldFrameGaussianOffsetRule(XyzProductionRule):
         covar = np.diag(optim_params["variance"])
         inverse_covariance = np.linalg.inv(covar)
         covariance_det = np.linalg.det(covar)
-        log_normalizer = np.log(np.sqrt( (2. * np.pi) ** 3 * covariance_det))
-        xyz_offset = child.t_optim - (parent.t_optim + mean)
+        log_normalizer = np.log(np.sqrt( ((2. * np.pi) ** 3) * covariance_det))
+        xyz_offset = (child.t_optim - (parent.t_optim + mean))
         
         # Introduce an xyz offset slack, which is forced to be equal to the
         # real xyz offset when active, and allowed to vary freely otherwise.
         # When inactive, the xyz offset slack will achieve an optimal cost of 0
         # by taking a value of 0.
-        xyz_offset_slack = prog.NewContinuousVariables(3)
-        inactive = 1. - active
-        for i in range(3):
-            prog.AddLinearConstraint(xyz_offset[i] - xyz_offset_slack[i] <= 2. * inactive * max_scene_extent_in_any_dir)
-            prog.AddLinearConstraint(xyz_offset[i] - xyz_offset_slack[i] >= -2. * inactive * max_scene_extent_in_any_dir)
-        total_ll = -0.5 * (xyz_offset_slack.transpose().dot(inverse_covariance).dot(xyz_offset_slack))
+        if isinstance(active, bool):
+            assert active is True
+            total_ll = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset)) - log_normalizer
+        else:
+            xyz_offset_slack = prog.NewContinuousVariables(3)
+            inactive = 1. - active
+            for i in range(3):
+                prog.AddLinearConstraint(xyz_offset[i] - xyz_offset_slack[i] <= 2. * inactive * max_scene_extent_in_any_dir)
+                prog.AddLinearConstraint(xyz_offset[i] - xyz_offset_slack[i] >= -2. * inactive * max_scene_extent_in_any_dir)
+                prog.AddLinearConstraint(xyz_offset_slack[i] <= active*max_scene_extent_in_any_dir)
+                prog.AddLinearConstraint(xyz_offset_slack[i] >= -active*max_scene_extent_in_any_dir)
+            total_ll = -0.5 * ((xyz_offset_slack).transpose().dot(inverse_covariance).dot(xyz_offset_slack)) - log_normalizer * active
         prog.AddQuadraticCost(-total_ll)
 
 
@@ -424,7 +430,8 @@ class ParentFrameGaussianOffsetRule(WorldFrameGaussianOffsetRule):
         if isinstance(active, bool):
             # NLP context.
             xyz_offset = parent.R_optim.T.dot(child.t_optim - (parent.t_optim + mean))
-            total_ll = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset)) * active
+            total_ll = -0.5 * (xyz_offset.transpose().dot(inverse_covariance).dot(xyz_offset)) - log_normalizer
+            total_ll = total_ll * active
             prog.AddCost(-total_ll)
         else:
             parent_R_observed = len(parent.R_equivalent_to_observed_nodes) > 0
@@ -453,6 +460,7 @@ class ParentFrameGaussianOffsetRule(WorldFrameGaussianOffsetRule):
                 #    with parent.R_optim \in SO(3) to apply a piecewise approximation of this constraint.
                 #    This will work even if the parent or child translations are observed, as the objective
                 #    is quadratic 
+                logging.warning("Hitting bad MIP case")
                 assert parent.R_optim_mip_info is not None, "Parent rotation was unobserved but has no SO(3) MIP constraint info."
                 binning = parent.R_optim_mip_info["rot_gen"].interval_binning()
                 R_B = parent.R_optim_mip_info["B"]
@@ -508,7 +516,7 @@ class ParentFrameGaussianOffsetRule(WorldFrameGaussianOffsetRule):
             for i in range(3):
                 prog.AddLinearConstraint(xyz_offset[i] - xyz_offset_slack[i] <= 2. * inactive * max_scene_extent_in_any_dir)
                 prog.AddLinearConstraint(xyz_offset[i] - xyz_offset_slack[i] >= -2. * inactive * max_scene_extent_in_any_dir)
-            total_ll = -0.5 * (xyz_offset_slack.transpose().dot(inverse_covariance).dot(xyz_offset_slack))
+            total_ll = -0.5 * (xyz_offset_slack.transpose().dot(inverse_covariance).dot(xyz_offset_slack))  - log_normalizer * active
             prog.AddQuadraticCost(-total_ll)
 
     def get_max_score(self):
@@ -579,15 +587,18 @@ class WorldFramePlanarGaussianOffsetRule(XyzProductionRule):
         inv_tf = torch_tf_to_drake_tf(self.plane_transform_inv).cast[Expression]()
         xy_offset = inv_tf.multiply(child.t_optim - parent.t_optim)[:2] - mean
 
-        # If inactive, allow the cost to vary freely, which will lead to a cost
-        # of zero for this node. Otherwise, the cost will take the value implied
-        # by xy_offset.
-        xy_offset_slack = prog.NewContinuousVariables(2)
-        inactive = 1. - active
-        for i in range(2):
-            prog.AddLinearConstraint(xy_offset[i] - xy_offset_slack[i] <= 2. * inactive * max_scene_extent_in_any_dir)
-            prog.AddLinearConstraint(xy_offset[i] - xy_offset_slack[i] >= -2. * inactive * max_scene_extent_in_any_dir)
-        total_ll = -0.5 * (xy_offset_slack.transpose().dot(inverse_covariance).dot(xy_offset_slack))
+        if isinstance(active, bool):
+            total_ll = -0.5 * (xy_offset.transpose().dot(inverse_covariance).dot(xy_offset))  - log_normalizer
+        else:
+            # If inactive, allow the cost to vary freely, which will lead to a cost
+            # of zero for this node. Otherwise, the cost will take the value implied
+            # by xy_offset.
+            xy_offset_slack = prog.NewContinuousVariables(2)
+            inactive = 1. - active
+            for i in range(2):
+                prog.AddLinearConstraint(xy_offset[i] - xy_offset_slack[i] <= 2. * inactive * max_scene_extent_in_any_dir)
+                prog.AddLinearConstraint(xy_offset[i] - xy_offset_slack[i] >= -2. * inactive * max_scene_extent_in_any_dir)
+            total_ll = -0.5 * (xy_offset_slack.transpose().dot(inverse_covariance).dot(xy_offset_slack))  - log_normalizer * active
         prog.AddQuadraticCost(-total_ll)
 
 ## Rotation production rules
@@ -960,7 +971,7 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
 wfbrr_warned_prior_detached = False
 wfbrr_warned_params_detached = False
 
-def add_bingham_cost(prog, R, active, M, Z):
+def add_bingham_cost(prog, R, active, M, Z, log_normalizer):
     '''
     Use the reinterpretation of the Bingham distribution objective as
     1/C(Z) * exp[ tr(Z M^T q q^T M) ] for quaternion q.
@@ -988,8 +999,7 @@ def add_bingham_cost(prog, R, active, M, Z):
     Then we can write that cost as linear function of the intermediate
     quaternion outer product terms.
     '''
-    qqt_terms = prog.NewContinuousVariables(
-        10, "%s_bingham_quat_outer_prod")
+    qqt_terms = prog.NewContinuousVariables(10)
     ww, wx, wy, wz, xx, xy, xz, yy, yz, zz = qqt_terms
     # w,x,y,z all in [-1, 1], so their products are as well.
     prog.AddBoundingBoxConstraint(-np.ones(10), np.ones(10), qqt_terms)
@@ -1000,31 +1010,40 @@ def add_bingham_cost(prog, R, active, M, Z):
         [wy, xy, yy, yz],
         [wz, xz, yz, zz]
     ])
-    prog.AddLinearConstraint(ww + xx + yy + zz == 1.)
+    prog.AddLinearEqualityConstraint(ww + xx + yy + zz == 1.)
 
-    # Enforce quaternion-bilinear-term-to-rotmat correspondence when this
-    # node is active. When it's inactive, let these variables vary freely.
-    def add_constraint(lhs, rhs, inactive):
-        prog.AddLinearConstraint(lhs <= rhs + inactive*2.)
-        prog.AddLinearConstraint(lhs >= rhs - inactive*2.)
-    add_constraint(R[0, 0], 1 - 2*yy - 2*zz, 1. - active)
-    add_constraint(R[0, 1], 2*xy - 2*wz    , 1. - active)
-    add_constraint(R[0, 2], 2*xz + 2*wy    , 1. - active)
-    add_constraint(R[1, 0], 2*xy + 2*wz    , 1. - active)
-    add_constraint(R[1, 1], 1 - 2*xx - 2*zz, 1. - active)
-    add_constraint(R[1, 2], 2*yz - 2*wx    , 1. - active)
-    add_constraint(R[2, 0], 2*xz - 2*wy    , 1. - active)
-    add_constraint(R[2, 1], 2*yz + 2*wx    , 1. - active)
-    add_constraint(R[2, 2], 1 - 2*xx - 2*yy, 1. - active)
-
-    # Total log prob based on quaternion terms. Here, I'm subtracting off the maximum
-    # possible score (which is a function of the distribution parameters), so that the
-    # highest LL is 0; this way, when the node is inactive and the rotation slack is
-    # unconstrained, it'll achieve this optimal solution with zero cost and not
-    # change total LL.
-    mode = M[:, -1].reshape(4, 1)
-    modemodeT = mode.dot(mode.T)
-    ll = np.trace(Z.dot(M.T.dot(qqt.dot(M)))) - np.trace(Z.dot(M.T.dot(modemodeT.dot(M))))
+    # Enforce quaternion-bilinear-term-to-rotmat correspondence.
+    prog.AddLinearEqualityConstraint(R[0, 0] == 1 - 2*yy - 2*zz)
+    prog.AddLinearEqualityConstraint(R[0, 1] == 2*xy - 2*wz)
+    prog.AddLinearEqualityConstraint(R[0, 2] == 2*xz + 2*wy)
+    prog.AddLinearEqualityConstraint(R[1, 0] == 2*xy + 2*wz)
+    prog.AddLinearEqualityConstraint(R[1, 1] == 1 - 2*xx - 2*zz)
+    prog.AddLinearEqualityConstraint(R[1, 2] == 2*yz - 2*wx)
+    prog.AddLinearEqualityConstraint(R[2, 0] == 2*xz - 2*wy)
+    prog.AddLinearEqualityConstraint(R[2, 1] == 2*yz + 2*wx)
+    prog.AddLinearEqualityConstraint(R[2, 2] == 1 - 2*xx - 2*yy)
+    
+    if isinstance(active, bool):
+        assert active is True
+        ll = np.trace(Z.dot(M.T.dot(qqt.dot(M)))) - log_normalizer
+    else:
+        # Total log prob based on quaternion terms. Here, I'm creating a slack
+        # variable that'll take the the value of the mode of the distribution
+        # when this node is inactive, and take the value corresponding to R_optim
+        # otherwise. At the mode, the trace term is 0.
+        mode = M[:, -1].reshape(4, 1)
+        modemodeT = mode.dot(mode.T)
+        # Add slack s.t. when active, qqt_slack = qqt, but otherwise,
+        # qqt_slack = modemodeT.
+        qqt_slack = prog.NewContinuousVariables(4, 4, "qqt_slack")
+        inactive = 1. - active
+        for i in range(4):
+            for j in range(4):
+                prog.AddLinearConstraint(modemodeT[i, j] - qqt_slack[i, j] >= -2.*active)
+                prog.AddLinearConstraint(modemodeT[i, j] - qqt_slack[i, j] <= 2.*active)
+                prog.AddLinearConstraint(qqt[i, j] - qqt_slack[i, j] >= -2. * (inactive))
+                prog.AddLinearConstraint(qqt[i, j] - qqt_slack[i, j] <= 2. * (inactive))
+        ll = np.trace(Z.dot(M.T.dot(qqt_slack.dot(M)))) - log_normalizer * active
     prog.AddLinearCost(-ll)
 
 
@@ -1150,7 +1169,8 @@ class WorldFrameBinghamRotationRule(RotationProductionRule):
         R = child.R_optim
         M = optim_params["M"]
         Z = np.diag(optim_params["Z"])
-        add_bingham_cost(prog, R, active, M, Z)
+        log_normalizer = torch.log(self._bingham_dist._norm_const).detach().numpy()
+        add_bingham_cost(prog, R, active, M, Z, log_normalizer)
 
 
 class ParentFrameBinghamRotationRule(WorldFrameBinghamRotationRule):
@@ -1216,6 +1236,7 @@ class ParentFrameBinghamRotationRule(WorldFrameBinghamRotationRule):
         R = child.R_optim
         M = optim_params["M"]
         Z = np.diag(optim_params["Z"])
+        log_normalizer = torch.log(self._bingham_dist._norm_const).detach().numpy()
         
         if isinstance(active, bool):
             # NLP context; just add the nonlinear cost and run.
@@ -1290,4 +1311,4 @@ class ParentFrameBinghamRotationRule(WorldFrameBinghamRotationRule):
                 # And now account for random offsets
                 deltaR = parent.R_random_offset.matrix().T.dot(deltaR).dot(child.R_random_offset.matrix())
             # Now we can use that expression for deltaR to construct the bingham cost.
-            add_bingham_cost(prog, deltaR, active, M, Z)
+            add_bingham_cost(prog, deltaR, active, M, Z, log_normalizer)
