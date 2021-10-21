@@ -363,7 +363,11 @@ def add_mle_tree_parsing_to_prog(
             # each node under an AND node has its own distribution. But I could conceivably
             # detect "equivalent" children and break symmetries there.
             for child, next_child in zip(children[:-1], children[1:]):
-                prog.AddLinearConstraint(next_child.t_optim[0] >= child.t_optim[0])
+                c = next_child.t_optim[0] >= child.t_optim[0]
+                if len(c.GetFreeVariables()) > 0:
+                    # In some cases this formula simplifies to True, which breaks
+                    # AddLinearConstraint.
+                    prog.AddLinearConstraint(c)
 
             # The geometric process we used (np.random.geometric) is only supported
             # on k=1, ..., so constrain that the # of active children must be
@@ -796,6 +800,7 @@ def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, o
             print(f.read())
         print("Solve time: ", solve_time-setup_time)
         print("Total time: ", solve_time - start_time)
+        print("Optimal cost: ", result.get_optimal_cost())
 
     out_tree = deepcopy(scene_tree)
     if result.is_success():
