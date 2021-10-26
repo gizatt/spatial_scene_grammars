@@ -56,7 +56,7 @@ from .parsing import *
 from .visualization import *
 
 
-def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterior_sample_sets, weight_by_sample_prob=False):
+def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterior_sample_sets, weight_by_sample_prob=False, min_weight=1e-4):
     ## Fit node and rule parameters using closed-form solutions, assuming
     # an uninformative prior.
 
@@ -114,7 +114,7 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             avg_count = count / torch.sum(count)
             # Bound the avg count so we don't make nodes absolutely
             # impossible to see.
-            avg_count = torch.clip(avg_count, 1E-4, 1.-1E-4)
+            avg_count = torch.clip(avg_count, min_weight, 1.-min_weight)
             grammar.params_by_node_type[node_type.__name__].set(avg_count)
         elif issubclass(node_type, GeometricSetNode):
             # Record weighted-average count of children, whose inverse
@@ -127,7 +127,7 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             # space to be the # of outputs probabilities, and call it a "repeating item"
             # node?
             p = 1./torch.sum(torch.tensor(n_children, dtype=torch.double) * observed_child_sets_weights)
-            p = torch.clip(p, 1E-4, 1.-1E-4)
+            p = torch.clip(p, min_weight, 1.-min_weight)
             grammar.params_by_node_type[node_type.__name__].set(p)
         elif issubclass(node_type, IndependentSetNode):
             # For each child, record weighted average of how often it's active.
@@ -135,7 +135,7 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             for (_, children, _), weight in zip(observed_child_sets, observed_child_sets_weights):
                 for child in children:
                     count[child.rule_k] += weight
-            count = torch.clip(count, 1E-4, 1.-1E-4)
+            count = torch.clip(count, min_weight, 1.-min_weight)
             grammar.params_by_node_type[node_type.__name__].set(count)
         elif issubclass(node_type, TerminalNode):
             continue
@@ -686,7 +686,7 @@ class EMWrapper():
 
     def do_iterated_em_fitting(self, em_iterations=5, throw_on_map_failure=False,
                                verbose=0, tqdm=None, max_recursion_depth=10, N_solutions=1,
-                               num_workers=1):
+                               num_workers=1, weight_by_sample_prob=True, min_weight=1E-4):
         self.grammar_iters = [deepcopy(self.grammar.state_dict())]
         if tqdm is None:
             iterator = range(em_iterations)
@@ -698,7 +698,8 @@ class EMWrapper():
                 num_workers=num_workers, max_scene_extent_in_any_dir=self.max_scene_extent_in_any_dir
             )
             self.grammar = fit_grammar_params_to_sample_sets_with_uninformative_prior(
-                self.grammar, refined_tree_sets, weight_by_sample_prob=True
+                self.grammar, refined_tree_sets, weight_by_sample_prob=weight_by_sample_prob,
+                min_weight=min_weight
             )
             self.grammar_iters.append(deepcopy(self.grammar.state_dict()))
         return self.grammar
