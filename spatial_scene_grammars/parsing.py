@@ -147,7 +147,6 @@ def equivalent_set_activity_implies_observability(equivalent_nodes, super_tree):
             # Observes off
             prog.AddBoundingBoxConstraint(0., 0., var)
     if not isinstance(nonobserved_sum, float):
-        print(nonobserved_sum)
         prog.AddLinearConstraint(nonobserved_sum >= 1.)
 
     # Parent-child type relationships
@@ -191,10 +190,8 @@ def equivalent_set_activity_implies_observability(equivalent_nodes, super_tree):
     # Try to solve
     result = GurobiSolver().Solve(prog)
     if result.is_success():
-        print("Feasible")
         return False
     else:
-        print("Infeasible")
         return True
 
 
@@ -859,7 +856,8 @@ def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, o
             ## Child location costs relative to parent.
             optim_params_by_rule = grammar.rule_params_by_node_type_optim[type(parent_node).__name__]
             for rule, child_node, (xyz_optim_params, rot_optim_params) in zip(rules, children, optim_params_by_rule):
-                print(rule.xyz_rule, rule.rotation_rule)
+                if verbose:
+                    print(rule.xyz_rule, rule.rotation_rule)
                 rule.encode_cost(
                     prog, xyz_optim_params, rot_optim_params, True, parent_node, child_node, max_scene_extent_in_any_dir
                 )

@@ -395,8 +395,8 @@ class WorldFrameGaussianOffsetRule(XyzProductionRule):
             for i in range(3):
                 prog.AddLinearConstraint(xyz_offset[i] - xyz_offset_slack[i] <= 2. * inactive * max_scene_extent_in_any_dir)
                 prog.AddLinearConstraint(xyz_offset[i] - xyz_offset_slack[i] >= -2. * inactive * max_scene_extent_in_any_dir)
-                prog.AddLinearConstraint(xyz_offset_slack[i] <= active*max_scene_extent_in_any_dir)
-                prog.AddLinearConstraint(xyz_offset_slack[i] >= -active*max_scene_extent_in_any_dir)
+                prog.AddLinearConstraint(xyz_offset_slack[i] <= active*2.*max_scene_extent_in_any_dir)
+                prog.AddLinearConstraint(xyz_offset_slack[i] >= -active*2.*max_scene_extent_in_any_dir)
             total_ll = -0.5 * ((xyz_offset_slack).transpose().dot(inverse_covariance).dot(xyz_offset_slack)) - log_normalizer * active
         prog.AddQuadraticCost(-total_ll)
 
