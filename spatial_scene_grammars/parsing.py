@@ -18,6 +18,7 @@ Impose additional symmetry breaking constraints:
 Add costs summing up activation of each child node.
 '''
 
+from datetime import datetime
 import time
 import networkx as nx
 import numpy as np
@@ -107,6 +108,94 @@ def prepare_grammar_for_parsing(prog, grammar, optimize_parameters=False, inequa
                 [xyz_var_dict, rot_var_dict]
             )
     return grammar
+
+
+def equivalent_set_activity_implies_observability(equivalent_nodes, super_tree):
+    ''' For a list of nodes `equivalent_set` from the supertree for
+    a grammar, return True if any node in the equivalent set being
+    active implies that one of the observable nodes in the equivalent set
+    is active; and False otherwise.
+
+    Strategy: construct an LP, where the activation of each node is a variable
+    constrained in [0, 1]. Add constraints between parent/child sets from the supertree
+    constraining the activations to be reasonable under the node types. Constrain
+    at least one non-observable node to be on, but all observable nodes to be off.
+    If there is a solution to this, then activity doesn't imply observability,
+    so return False. Otherwise, return True.
+
+    TODO: Is LP sufficient, or do we need binary variables?
+    '''
+
+    num_observable_nodes = len([node for node in equivalent_nodes if node.observed])
+    if num_observable_nodes == 0:
+        # Can never be observable, as there are no observed nodes.
+        return False
+
+    prog = MathematicalProgram()
+    # Create activations per node
+    node_to_activation = {
+        node: prog.NewBinaryVariables(1)[0]
+        for node in equivalent_nodes
+    }
+    # At least one observed node, but all other nodes off.
+    nonobserved_sum = 0.
+    for node, var in node_to_activation.items():
+        if not node.observed:
+            prog.AddBoundingBoxConstraint(0., 1., var)
+            nonobserved_sum += var
+        else:
+            # Observes off
+            prog.AddBoundingBoxConstraint(0., 0., var)
+    if not isinstance(nonobserved_sum, float):
+        print(nonobserved_sum)
+        prog.AddLinearConstraint(nonobserved_sum >= 1.)
+
+    # Parent-child type relationships
+    for parent_node, parent_var in node_to_activation.items():
+        children = super_tree.get_children(parent_node)
+        ## Get child rule list. Can't use get_children_and_rules
+        # here since we're operating on a supertree, so the standard
+        # scene tree logic for getting rules isn't correct.
+        if isinstance(parent_node, AndNode):
+            for child in children:
+                if child in node_to_activation.keys():
+                    prog.AddLinearConstraint(node_to_activation[child] == parent_var)
+        elif isinstance(parent_node, OrNode):
+            child_var_sum = 0.
+            child_set_is_complete = True
+            for child in children:
+                if child in node_to_activation.keys():
+                    child_var_sum += node_to_activation[child]
+                else:
+                    child_set_is_complete = False
+            if child_set_is_complete and not isinstance(child_var_sum, float):
+                prog.AddLinearConstraint(child_var_sum == parent_var)
+            else:
+                # Don't know what other out-of-set children are doing, so
+                # deactivate them.
+                prog.AddLinearConstraint(child_var_sum <= parent_var)
+        elif isinstance(parent_node, IndependentSetNode):
+            for child in children:
+                if child in node_to_activation.keys():
+                    prog.AddLinearConstraint(node_to_activation[child] <= parent_var)
+
+        elif isinstance(parent_node, GeometricSetNode):
+            for child in children:
+                if child in node_to_activation.keys():
+                    prog.AddLinearConstraint(node_to_activation[child] <= parent_var)
+        elif isinstance(parent_node, TerminalNode):
+            assert len(children) == 0
+        else:
+            raise ValueError("Unexpected node type: ", type(parent_node))
+
+    # Try to solve
+    result = GurobiSolver().Solve(prog)
+    if result.is_success():
+        print("Feasible")
+        return False
+    else:
+        print("Infeasible")
+        return True
 
 
 def add_mle_tree_parsing_to_prog(
@@ -209,24 +298,27 @@ def add_mle_tree_parsing_to_prog(
                 R_equivalence_graph.add_edge(parent_node, child_node)
     t_equivalent_sets = list(nx.connected_components(t_equivalence_graph))
     R_equivalent_sets = list(nx.connected_components(R_equivalence_graph))
-    # For each set, figure out if it contains an observed node, and propagate
-    # a reference to the observed node to the rest of the set. If the set
-    # contains multiple observed nodes, throw an error, as that's probably unparse-able.
+
+    # For each set, figure out if activation of any node in the set implies that
+    # an observed node will be active. Record the result and a reference to the
+    # corresponding set of observed nodes to the rest of the set.
     for t_equivalent_set in t_equivalent_sets:
+        t_always_observed = equivalent_set_activity_implies_observability(t_equivalent_set, super_tree)
         t_observed_nodes = [node for node in t_equivalent_set if node.observed]
         for node in t_equivalent_set:
+            node.t_always_observed = t_always_observed
             node.t_equivalent_to_observed_nodes = t_observed_nodes
     for R_equivalent_set in R_equivalent_sets:
+        R_always_observed = equivalent_set_activity_implies_observability(R_equivalent_set, super_tree)
         R_observed_nodes = [node for node in R_equivalent_set if node.observed]
         for node in R_equivalent_set:
+            node.R_always_observed = R_always_observed
             node.R_equivalent_to_observed_nodes = R_observed_nodes
 
-    # For each set of nodes with equivalent translations [or rotations],
-    # if the set doesn't contain an observed node, create a decision variable
-    # describing the set's translation [or rotation], and share it to all of the nodes
-    # in the set. If it does contain an observed node, create an expression
-    # for the set's translation [or rotation] as a convex combination of the observed
-    # node's possible correspondences, and share it to all of the nodes in the set.
+    # For each set of nodes with equivalent translations [or rotations], create
+    # decision variables set's translation [or rotation], and share it to all of the nodes
+    # in the set. If it does contain an observed node, constrain the observation
+    # to match the set translation/rotation when the observation correspondence is active.
     mip_rot_gen = MixedIntegerRotationConstraintGenerator(
         approach = MixedIntegerRotationConstraintGenerator.Approach.kBilinearMcCormick,
         num_intervals_per_half_axis=num_intervals_per_half_axis,
@@ -234,26 +326,26 @@ def add_mle_tree_parsing_to_prog(
     )
     for k, t_equivalent_set in enumerate(t_equivalent_sets):
         # For some convenience in expression forming, we'll always have some
-        # auxiliary variables for this node pose.
+        # auxiliary variables for this node set pose.
         t_optim = prog.NewContinuousVariables(3, "t_optim_%d" % k)
-        t_observed_nodes = next(iter(t_equivalent_set)).t_equivalent_to_observed_nodes
-        if len(t_observed_nodes) > 0:
-            for observed_node in t_observed_nodes:
-                if len(observed_node.possible_observations) == 0:
-                    continue
-                observed_t = sum([
-                    obs_var * obs_tf.translation()
-                    for (_, obs_var, obs_tf) in observed_node.possible_observations
-                ])
-                # If there are no active correspondences, allow the translation to vary freely.
-                M = 2.*max_scene_extent_in_any_dir
-                no_correspondences = 1. - sum([obs_var for (_, obs_var, _) in observed_node.possible_observations])
-                for i in range(3):
-                    prog.AddLinearConstraint(t_optim[i] <= observed_t[i] + no_correspondences*M)
-                    prog.AddLinearConstraint(t_optim[i] >= observed_t[i] - no_correspondences*M)
-        else:
-            # Put some reasonable bounds on the unknown t_optim.
-            prog.AddBoundingBoxConstraint(-np.ones(3)*max_scene_extent_in_any_dir, np.ones(3)*max_scene_extent_in_any_dir, t_optim)
+        # Put some reasonable bounds on the unknown t_optim.
+        prog.AddBoundingBoxConstraint(-np.ones(3)*max_scene_extent_in_any_dir, np.ones(3)*max_scene_extent_in_any_dir, t_optim)
+    
+        proto_node = next(iter(t_equivalent_set))
+        t_observed_nodes = proto_node.t_equivalent_to_observed_nodes
+        for observed_node in t_observed_nodes:
+            if len(observed_node.possible_observations) == 0:
+                continue
+            observed_t = sum([
+                obs_var * obs_tf.translation()
+                for (_, obs_var, obs_tf) in observed_node.possible_observations
+            ])
+            # If there are no active correspondences, allow the translation to vary freely.
+            M = 2.*max_scene_extent_in_any_dir
+            no_correspondences = 1. - sum([obs_var for (_, obs_var, _) in observed_node.possible_observations])
+            for i in range(3):
+                prog.AddLinearConstraint(t_optim[i] <= observed_t[i] + no_correspondences*M)
+                prog.AddLinearConstraint(t_optim[i] >= observed_t[i] - no_correspondences*M)
         for node in t_equivalent_set:
             node.t_optim = t_optim.reshape(3)
 
@@ -262,24 +354,26 @@ def add_mle_tree_parsing_to_prog(
         R_optim = R_optim_pre_offset.dot(R_random_offset.matrix())
         R_optim_mip_info = None
 
-        R_observed_nodes = next(iter(R_equivalent_set)).R_equivalent_to_observed_nodes
-        if len(R_observed_nodes) > 0:
-            for observed_node in R_observed_nodes:
-                if len(observed_node.possible_observations) == 0:
-                    continue
-                observed_R = sum([
-                    obs_var * obs_tf.rotation().matrix()
-                    for (_, obs_var, obs_tf) in observed_node.possible_observations
-                ])
-                # If there are no active correspondences, allow the rotation to vary freely.
-                M = 2.
-                no_correspondences = 1. - sum([obs_var for (_, obs_var, _) in observed_node.possible_observations])
-                for i in range(3):
-                    for j in range(3):
-                        prog.AddLinearConstraint(R_optim[i, j] <= observed_R[i, j] + M * no_correspondences)
-                        prog.AddLinearConstraint(R_optim[i, j] >= observed_R[i, j] - M * no_correspondences)
-        else:
-            # Trivial rotation matrix bounds
+        proto_node = next(iter(R_equivalent_set))
+        R_observed_nodes = proto_node.R_equivalent_to_observed_nodes
+        R_always_observed = proto_node.R_always_observed
+        for observed_node in R_observed_nodes:
+            if len(observed_node.possible_observations) == 0:
+                continue
+            observed_R = sum([
+                obs_var * obs_tf.rotation().matrix()
+                for (_, obs_var, obs_tf) in observed_node.possible_observations
+            ])
+            # If there are no active correspondences, allow the rotation to vary freely.
+            M = 2.
+            no_correspondences = 1. - sum([obs_var for (_, obs_var, _) in observed_node.possible_observations])
+            for i in range(3):
+                for j in range(3):
+                    prog.AddLinearConstraint(R_optim[i, j] <= observed_R[i, j] + M * no_correspondences)
+                    prog.AddLinearConstraint(R_optim[i, j] >= observed_R[i, j] - M * no_correspondences)
+        if not R_always_observed:
+            # Add expensive rotation constraints if we can't guarantee R will
+            # always correspond to some observed rotation.
             prog.AddBoundingBoxConstraint(-np.ones(9), np.ones(9), R_optim_pre_offset.flatten())
             # SO(3) constraint
             R_optim_mip_info = {
@@ -328,6 +422,8 @@ def add_mle_tree_parsing_to_prog(
 
     ## For each node in the super tree, add logical implications on the child activations
     # under the parent, depending on the parent type.
+    # Root node must be active.
+    prog.AddLinearConstraint(root_node.active == 1)
     for parent_node in super_tree:
         children = super_tree.get_children(parent_node)
         ## Get child rule list. Can't use get_children_and_rules
@@ -483,7 +579,7 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
     if solver == "gurobi":
         solver = GurobiSolver()
         options = SolverOptions()
-        logfile = "/tmp/gurobi.log"
+        logfile = "/tmp/gurobi_%s.log" % datetime.now().strftime("%Y%m%dT%H%M%S")
         os.system("rm -f %s" % logfile)
         options.SetOption(solver.id(), "LogFile", logfile)
         options.SetOption(solver.id(), "MIPGap", 1E-3)
@@ -786,7 +882,7 @@ def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, o
     setup_time = time.time()
     solver = SnoptSolver()
     options = SolverOptions()
-    logfile = "/tmp/snopt.log"
+    logfile = "/tmp/snopt_%s.log" % datetime.now().strftime("%Y%m%dT%H%M%S")
     os.system("rm %s" % logfile)
     options.SetOption(solver.id(), "Print file", logfile)
     options.SetOption(solver.id(), "Major feasibility tolerance", eps)

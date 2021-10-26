@@ -38,6 +38,24 @@ def assert_explains_observeds(observed_tree, optimized_tree):
             closest_dist = min(closest_dist, R_dist + t_dist)
         assert torch.isclose(closest_dist, torch.zeros(1), atol=1E-4, rtol=1E-4), "Didn't match observation well enough: err %f" % closest_dist
 
+# Parse a simple infeasible scene, and show that it's infeasible.
+def test_parsing_infeasible():
+    grammar = SpatialSceneGrammar(
+        root_node_type = NodeG,
+        root_node_tf = torch.eye(4)
+    )
+    tree = grammar.sample_tree(detach=True)
+    observed_nodes = tree.get_observed_nodes()
+    assert len(observed_nodes) == 1
+
+    # Parsing with no observeds is going to be a problem,
+    # since this grammar *must* produce an observation.
+    inference_results = infer_mle_tree_with_mip(
+        grammar, [], verbose=True,
+        solver="branch_and_bound"
+    )
+    assert not inference_results.optim_result[1], "This scene should not be feasible."
+
 # Try to parse a trivial subset of our grammar with a
 # simple solver. (The solver is very slow with additional
 # complexity.)
@@ -45,11 +63,12 @@ def assert_explains_observeds(observed_tree, optimized_tree):
                     reason='This test relies on Gurobi and SNOPT.')
 def test_parsing_simple(set_seed):
     grammar = SpatialSceneGrammar(
-        root_node_type = NodeC,
+        root_node_type = NodeD,
         root_node_tf = torch.eye(4)
     )
     tree = grammar.sample_tree(detach=True)
     observed_nodes = tree.get_observed_nodes()
+    print(tree, observed_nodes)
 
     start_time = time.time()
     inference_results = infer_mle_tree_with_mip(

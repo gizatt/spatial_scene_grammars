@@ -578,7 +578,7 @@ class VariationalPosteriorSuperTree(torch.nn.Module):
 
 def _get_map_trees(grammar, observed_nodes, verbose, max_scene_extent_in_any_dir, N_solutions, throw_on_failure):
     mip_results = infer_mle_tree_with_mip(
-        grammar, observed_nodes, verbose=verbose>1, max_scene_extent_in_any_dir=10.,
+        grammar, observed_nodes, verbose=verbose>1, max_scene_extent_in_any_dir=max_scene_extent_in_any_dir,
         N_solutions=N_solutions
     )
     mip_optimized_trees = get_optimized_trees_from_mip_results(mip_results)
@@ -589,11 +589,12 @@ def _get_map_trees(grammar, observed_nodes, verbose, max_scene_extent_in_any_dir
             if throw_on_failure:
                 raise RuntimeError(error_msg)
             else:
-                logging.warning(error_msg)
+                logging.error(error_msg)
                 refined_trees = None
                 break
         
-        refinement_results = optimize_scene_tree_with_nlp(grammar, mip_optimized_tree, verbose=verbose>1)
+        refinement_results = optimize_scene_tree_with_nlp(grammar, mip_optimized_tree, verbose=verbose>1,
+                                                          max_scene_extent_in_any_dir=max_scene_extent_in_any_dir)
         refined_tree = refinement_results.refined_tree
         if refined_tree is None:
             error_msg = "Nonlinear refinement failed for observed set %d" % k
@@ -612,7 +613,7 @@ def _get_map_trees_thread_wrapper(arg_dict):
         refined_trees = _get_map_trees(**arg_dict)
         return [_cleanup_tree_for_pickling(tree) for tree in refined_trees]
     except Exception as e:
-        logging.error("Error in thread: ", e)
+        logging.error("Error in thread: %s" % e)
         return []
     
 def get_map_trees_for_observed_node_sets(grammar, observed_node_sets,
@@ -678,9 +679,10 @@ class EMWrapper():
                 by that rule. Fit the parameters of the rule to the parent/child observations,
                 weighting by the tree weight of the tree that the parent/child pair came from.
     '''
-    def __init__(self, grammar, observed_node_sets):
+    def __init__(self, grammar, observed_node_sets, max_scene_extent_in_any_dir=10.):
         self.grammar = grammar
         self.observed_node_sets = observed_node_sets
+        self.max_scene_extent_in_any_dir = max_scene_extent_in_any_dir
 
     def do_iterated_em_fitting(self, em_iterations=5, throw_on_map_failure=False,
                                verbose=0, tqdm=None, max_recursion_depth=10, N_solutions=1,
@@ -693,7 +695,7 @@ class EMWrapper():
         for iter_k in iterator:
             refined_tree_sets = get_map_trees_for_observed_node_sets(
                 self.grammar, self.observed_node_sets, N_solutions=N_solutions, tqdm=tqdm,
-                num_workers=num_workers
+                num_workers=num_workers, max_scene_extent_in_any_dir=self.max_scene_extent_in_any_dir
             )
             self.grammar = fit_grammar_params_to_sample_sets_with_uninformative_prior(
                 self.grammar, refined_tree_sets, weight_by_sample_prob=True
