@@ -130,6 +130,9 @@ def equivalent_set_activity_implies_observability(equivalent_nodes, super_tree):
     if num_observable_nodes == 0:
         # Can never be observable, as there are no observed nodes.
         return False
+    if num_observable_nodes == len(equivalent_nodes):
+        # Trivially observable
+        return True
 
     prog = MathematicalProgram()
     # Create activations per node
@@ -763,7 +766,7 @@ def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, o
     4) Uses the scene tree's current (possibly infeasible) configuration
         as the initial guess.
     '''
-    eps = 1E-4 # Need relatively loose epsilon, or NLP gets stuck.
+    eps = 1E-3 # Need relatively loose epsilon, or NLP gets stuck.
     start_time = time.time()
     prog = MathematicalProgram()
     grammar = prepare_grammar_for_parsing(prog, grammar, optimize_parameters=False)
@@ -881,7 +884,7 @@ def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, o
     solver = SnoptSolver()
     options = SolverOptions()
     logfile = "/tmp/snopt_%s.log" % datetime.now().strftime("%Y%m%dT%H%M%S")
-    os.system("rm %s" % logfile)
+    os.system("rm -f %s" % logfile)
     options.SetOption(solver.id(), "Print file", logfile)
     options.SetOption(solver.id(), "Major feasibility tolerance", eps)
     result = solver.Solve(prog, None, options)
@@ -907,4 +910,5 @@ def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, o
             out_node.rotation = torch.tensor(result.GetSolution(orig_node.R_optim))
     else:
         logging.warning("Nonlinear refinement unsuccessful.")
+    logging.info("Done")
     return TreeRefinementResults(result, out_tree, scene_tree)

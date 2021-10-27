@@ -443,11 +443,9 @@ class ParentFrameGaussianOffsetRule(WorldFrameGaussianOffsetRule):
                 xyz_offset = prog.NewContinuousVariables(3)
                 # For all observed nodes that could determine the parent rotation...
                 for observed_node in parent.R_equivalent_to_observed_nodes:
-                    logging.warning("TODO here")
-                    # TODO(gizatt) What happens if there are no correspondences for any of the observed
-                    # nodes? Then the xyz_offset slack is totally unconstrained, as none of them can be active.
-                    # So the node's cost is unconnected to the node's actual translation. But in this situation,
-                    # I don't think this node can ever be active.
+                    # By construction of the equivalent set, we will have an active correspondence
+                    # if this node is active, so either xyz_offset is properly constrained, or it
+                    # doesn't matter.
                     for k, (_, obs_var, obs_tf) in enumerate(observed_node.possible_observations):
                         parent_fixed_R = obs_tf.rotation().matrix()
                         observed_xyz_offset = parent_fixed_R.T.dot(child.t_optim - (parent.t_optim + mean))

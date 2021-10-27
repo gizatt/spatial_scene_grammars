@@ -22,6 +22,8 @@ except RuntimeError as e:
 import torch
 torch.set_default_tensor_type(torch.DoubleTensor)
 from torch.distributions import transform_to
+# https://discuss.pytorch.org/t/runtimeerror-received-0-items-of-ancdata/4999
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 import pydrake
 from pydrake.all import (
@@ -196,6 +198,19 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
                 variance = torch.sum( torch.square((offsets - mean)).T * weights, axis=1 )
                 xyz_param_dict["mean"].set(mean)
                 xyz_param_dict["variance"].set(variance)
+            elif type(xyz_rule) == ParentFrameGaussianOffsetRule:
+                # Same as WorldFrame case, but calculate offsets using rotations.
+                offsets = torch.stack([
+                    torch.matmul(parent.rotation.T, (child.translation - parent.translation))
+                    for (parent, child, _) in parent_child_pairs
+                ]) # Nx3
+                weights = torch.stack([weight for (_, _, weight) in parent_child_pairs]) # N
+                weights = weights / torch.sum(weights) # Renormalize, as we may not have one-to-one parent-child pair to rules.
+                mean = torch.sum(offsets.T * weights, axis=1) # 3
+                # Weighted average of squared deviations as variance estimate
+                variance = torch.sum( torch.square((offsets - mean)).T * weights, axis=1 )
+                xyz_param_dict["mean"].set(mean)
+                xyz_param_dict["variance"].set(variance)
             elif type(xyz_rule) == SamePositionRule:
                 # No parameters
                 pass
@@ -220,26 +235,6 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
                 ub = torch.max(offsets)
                 rot_param_dict["center"].set((lb + ub) / 2.)
                 rot_param_dict["width"].set(ub - lb)
-            elif type(rot_rule) == GaussianChordOffsetRule:
-                # Infer concentration and variance by gathering parent/child
-                # angles around axis, and apply parameter estimates from
-                # https://en.wikipedia.org/wiki/Von_Mises%E2%80%93Fisher_distribution
-                raise NotImplementedError("Need to update this to work with weights.")
-                offsets = []
-                for parent, child in parent_child_pairs:
-                    angle, _ = recover_relative_angle_axis(parent, child, rot_rule.axis)
-                    offsets.append(angle)
-                angle_offsets = torch.stack(offsets)
-                # Turn the set of angle offsets into vectors
-                xs = torch.stack([torch.cos(angle_offsets), torch.sin(angle_offsets)], axis=1)
-                # The loc is the angle of the average vector
-                x_avg = torch.mean(xs, dim=0)
-                x_norm = x_avg.square().sum().sqrt()
-                x_avg = x_avg / x_norm
-                loc = torch.atan2(x_avg[1], x_avg[0])
-                # The concentration is approximately 
-                concentration = (x_norm * (2 - x_norm**2)) / (1 - x_norm**2)
-                rot_param_dict["loc"].set(loc)
             elif type(rot_rule) == WorldFrameBinghamRotationRule:
                 child_quats = [matrix_to_quaternion(child.rotation) for _, child, _ in parent_child_pairs]
                 child_quats = torch.stack(child_quats)
@@ -248,7 +243,18 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
                 new_m, new_z = BinghamDistribution.fit(child_quats, weights)
                 rot_param_dict["M"].set(new_m)
                 rot_param_dict["Z"].set(new_z)
-
+            elif type(rot_rule) == ParentFrameBinghamRotationRule:
+                # Same as  above case, but use parent/child rotation delta.
+                child_quats = [
+                    matrix_to_quaternion(torch.matmul(parent.rotation.T, child.rotation))
+                    for _, child, _ in parent_child_pairs
+                ]
+                child_quats = torch.stack(child_quats)
+                weights = torch.stack([weight for (_, _, weight) in parent_child_pairs]) 
+                weights = weights / torch.sum(weights) # Renormalize, as we may not have one-to-one parent-child pair to rules.
+                new_m, new_z = BinghamDistribution.fit(child_quats, weights)
+                rot_param_dict["M"].set(new_m)
+                rot_param_dict["Z"].set(new_z)
             else:
                 raise NotImplementedError("type %s under node %s" % (type(rot_rule), node_type))
 
@@ -688,6 +694,7 @@ class EMWrapper():
                                verbose=0, tqdm=None, max_recursion_depth=10, N_solutions=1,
                                num_workers=1, weight_by_sample_prob=True, min_weight=1E-4):
         self.grammar_iters = [deepcopy(self.grammar.state_dict())]
+        self.log_evidence_iters = []
         if tqdm is None:
             iterator = range(em_iterations)
         else:
@@ -697,6 +704,14 @@ class EMWrapper():
                 self.grammar, self.observed_node_sets, N_solutions=N_solutions, tqdm=tqdm,
                 num_workers=num_workers, max_scene_extent_in_any_dir=self.max_scene_extent_in_any_dir
             )
+            # Compute tree score for each tree, and sum them to get a (very approximate)
+            # estimate of the log-evidence.
+            log_evidence_population = []
+            for tree_set in refined_tree_sets:
+                approx_log_evidence = torch.logsumexp(torch.tensor([tree.score().detach() for tree in tree_set]), dim=0).item()
+                log_evidence_population.append(approx_log_evidence)
+            self.log_evidence_iters.append(log_evidence_population)
+            # Do grammar update.
             self.grammar = fit_grammar_params_to_sample_sets_with_uninformative_prior(
                 self.grammar, refined_tree_sets, weight_by_sample_prob=weight_by_sample_prob,
                 min_weight=min_weight
