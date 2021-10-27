@@ -763,7 +763,7 @@ def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, o
     4) Uses the scene tree's current (possibly infeasible) configuration
         as the initial guess.
     '''
-    eps = 1E-6
+    eps = 1E-4 # Need relatively loose epsilon, or NLP gets stuck.
     start_time = time.time()
     prog = MathematicalProgram()
     grammar = prepare_grammar_for_parsing(prog, grammar, optimize_parameters=False)

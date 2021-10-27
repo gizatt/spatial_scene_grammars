@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<sdf version="1.7">
+  <model name="xwing">
+    <link name="xwing">
+      <inertial>
+        <mass>1.0</mass>
+        <inertia>
+          <ixx>0.001736</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.001098</iyy>
+          <iyz>0</iyz>
+          <izz>0.002481</izz>
+        </inertia>
+      </inertial>
+      <visual name="xwing_visual">
+        <geometry>
+          <mesh>
+            <uri>xwing.obj</uri>
+          </mesh>
+        </geometry>
+      </visual>
+    </link>
+  </model>
+</sdf>

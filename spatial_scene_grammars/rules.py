@@ -483,7 +483,7 @@ class ParentFrameGaussianOffsetRule(WorldFrameGaussianOffsetRule):
                 # Approximate the constraint w = x*y for every bilinear product
                 # used to assemble the R*t bilinear terms. We reuse the subdivisions
                 # for the terms of R.
-                N_t_subdivisions = 5
+                N_t_subdivisions = 3
                 for j in range(3):
                     t_offset = prog.NewBinaryVariables(N_t_subdivisions)
                     t_phi = np.linspace(-max_scene_extent_in_any_dir, max_scene_extent_in_any_dir, N_t_subdivisions+1)
@@ -1010,7 +1010,32 @@ def add_bingham_cost(prog, R, active, M, Z, log_normalizer):
         [wy, xy, yy, yz],
         [wz, xz, yz, zz]
     ])
+    # The square terms are further obviously positive.
+    prog.AddLinearConstraint(ww >= 0.)
+    prog.AddLinearConstraint(xx >= 0.)
+    prog.AddLinearConstraint(yy >= 0.)
+    prog.AddLinearConstraint(zz >= 0.)
+    # And the quaternion has unit norm.
     prog.AddLinearEqualityConstraint(ww + xx + yy + zz == 1.)
+
+    # In dev, see sandbox/snopt_optimal_cost_replication
+    if isinstance(active, bool):
+        assert active is True
+        # Adding *any* constraints here causes both SNOPT and IPOPT
+        # to have trouble converging. But without it, the solutions
+        # are still great. I guess I have enough constraints from
+        # the rotation matrix?
+        #prog.AddConstraint(ww * xx == wx**2.)
+        #prog.AddConstraint(ww * yy == wy**2.)
+        #prog.AddConstraint(ww * zz == wz**2.)
+
+    else:
+        # Approximation
+        pass
+        #prog.AddRotatedLorentzConeConstraint(ww, xx, wx**2.)
+        #prog.AddRotatedLorentzConeConstraint(ww, yy, wy**2.)
+        #prog.AddRotatedLorentzConeConstraint(ww, zz, wz**2.)
+        #prog.AddRotatedLorentzConeConstraint(ww, 1., ww**2 + wx**2 + wy**2 + wz**2)
 
     # Enforce quaternion-bilinear-term-to-rotmat correspondence.
     prog.AddLinearEqualityConstraint(R[0, 0] == 1 - 2*yy - 2*zz)
@@ -1045,6 +1070,8 @@ def add_bingham_cost(prog, R, active, M, Z, log_normalizer):
                 prog.AddLinearConstraint(qqt[i, j] - qqt_slack[i, j] <= 2. * (inactive))
         ll = np.trace(Z.dot(M.T.dot(qqt_slack.dot(M)))) - log_normalizer * active
     prog.AddLinearCost(-ll)
+
+    return qqt
 
 
 class WorldFrameBinghamRotationRule(RotationProductionRule):
@@ -1240,7 +1267,7 @@ class ParentFrameBinghamRotationRule(WorldFrameBinghamRotationRule):
         
         if isinstance(active, bool):
             # NLP context; just add the nonlinear cost and run.
-            add_bingham_cost(prog, R, active, M, Z)
+            add_bingham_cost(prog, R, active, M, Z, log_normalizer)
         else:
             parent_R_observed = len(parent.R_equivalent_to_observed_nodes) > 0
             child_R_observed = len(child.R_equivalent_to_observed_nodes) > 0
