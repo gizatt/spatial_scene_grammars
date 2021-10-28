@@ -115,14 +115,34 @@ class TerminalCup(OrNode):
             ) for model_type in CupModels
         ]
         return ModelRules
+class TerminalObject(OrNode):
+    def __init__(self, tf):
+        super().__init__(
+            rule_probs=torch.tensor([1., 1., 1.]),
+            tf=tf,
+            physics_geometry_info=None,
+            observed=False
+        )
+
+    @classmethod
+    def generate_rules(cls):
+        ObjectTypes = [TerminalPlate, TerminalBowl, TerminalCup]
+        ObjectRules = [
+            ProductionRule(
+                child_type=object_type,
+                xyz_rule=SamePositionRule(),
+                rotation_rule=SameRotationRule()
+            ) for object_type in ObjectTypes
+        ]
+        return ObjectRules
 
 BowlModels = reify_models_from_folder_to_object_types(
     "sink/plates_cups_and_bowls/bowls"
 )
-class TerminalBowl(IndependentSetNode):
+class TerminalBowl(OrNode):
     def __init__(self, tf):
         super().__init__(
-            rule_probs=torch.tensor([1.0, 0.5]),
+            rule_probs=torch.ones(len(BowlModels)),
             tf=tf,
             physics_geometry_info=None,
             observed=False
@@ -138,6 +158,67 @@ class TerminalBowl(IndependentSetNode):
         ]
         return ModelRules
 
+class ObjectsOnPlate(GeometricSetNode):
+    def __init__(self, tf):
+        super().__init__(
+            tf=tf,
+            p=0.5,
+            max_children=3,
+            physics_geometry_info=None,
+            observed=False
+        )
+    @classmethod
+    def generate_rules(cls):
+        rule = ProductionRule(
+            child_type=TerminalObject,
+            xyz_rule=ParentFrameGaussianOffsetRule(
+                mean=torch.tensor([0.0, 0.0, 0.01]),
+                variance=torch.tensor([0.001, 0.001, 0.001])),
+            rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-100, -100, -1, 0.]))
+        )
+        return [rule]
+class MaybeObjectsOnPlate(IndependentSetNode):
+    def __init__(self, tf):
+        super().__init__(
+            tf=tf,
+            rule_probs=torch.tensor([0.5]),
+            physics_geometry_info=None,
+            observed=False
+        )
+    @classmethod
+    def generate_rules(cls):
+        return [
+            ProductionRule(
+                child_type=ObjectsOnPlate,
+                xyz_rule=SamePositionRule(),
+                rotation_rule=SameRotationRule()
+            )
+        ]
+class Plate(AndNode):
+    # Always make a plate; sometimes produces
+    # additional stuff on top of it.
+    def __init__(self, tf):
+        super().__init__(
+            tf=tf,
+            physics_geometry_info=None,
+            observed=False
+        )
+
+    @classmethod
+    def generate_rules(cls):
+        rules = [
+            ProductionRule(
+                child_type=TerminalPlate,
+                xyz_rule=SamePositionRule(),
+                rotation_rule=SameRotationRule()
+            ),
+            ProductionRule(
+                child_type=MaybeObjectsOnPlate,
+                xyz_rule=SamePositionRule(),
+                rotation_rule=SameRotationRule()
+            )
+        ]
+        return rules
 
 class ObjectsInBowl(GeometricSetNode):
     def __init__(self, tf):
@@ -151,18 +232,18 @@ class ObjectsInBowl(GeometricSetNode):
     @classmethod
     def generate_rules(cls):
         rule = ProductionRule(
-            child_type=Object,
+            child_type=TerminalObject,
             xyz_rule=ParentFrameGaussianOffsetRule(
-                mean=torch.tensor([0.0, 0.0, 0.025]),
+                mean=torch.tensor([0.0, 0.0, 0.05]),
                 variance=torch.tensor([0.01, 0.01, 0.01])),
-            rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-1, -1, -1, 0.]))
+            rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-0.01, -0.01, -0.01, 0.]))
         )
         return [rule]
 class MaybeObjectsInBowl(IndependentSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            rule_probs=torch.tensor([0.5])
+            rule_probs=torch.tensor([0.5]),
             physics_geometry_info=None,
             observed=False
         )
@@ -189,7 +270,7 @@ class Bowl(AndNode):
     def generate_rules(cls):
         rules = [
             ProductionRule(
-                child_type=Bowl,
+                child_type=TerminalBowl,
                 xyz_rule=SamePositionRule(),
                 rotation_rule=SameRotationRule()
             ),
@@ -212,7 +293,7 @@ class Object(OrNode):
 
     @classmethod
     def generate_rules(cls):
-        ObjectTypes = [TerminalPlate, Bowl, TerminalCup]
+        ObjectTypes = [Plate, Bowl, TerminalCup]
         ObjectRules = [
             ProductionRule(
                 child_type=object_type,
@@ -228,7 +309,8 @@ class DishBin(GeometricSetNode):
         geom.register_model_file(torch.eye(4), "sink/bin.sdf")
         super().__init__(
             tf=tf,
-            rule_probs=torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5]),
+            p=0.2,
+            max_children=6,
             physics_geometry_info=geom,
             observed=True
         )
@@ -238,7 +320,7 @@ class DishBin(GeometricSetNode):
             ProductionRule(
                 child_type=Object,
                 xyz_rule=WorldFrameGaussianOffsetRule(
-                    mean=torch.tensor([0.0, 0.0, 0.00]),
+                    mean=torch.tensor([0.0, 0.0, 0.05]),
                     variance=torch.tensor([0.05, 0.05, 0.05])),
                 rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-1, -1, -1, 0.]))
             )

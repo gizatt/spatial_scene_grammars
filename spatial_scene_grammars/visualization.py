@@ -51,7 +51,10 @@ def draw_scene_tree_contents_meshcat(scene_tree, prefix="scene", zmq_url=None, a
     del vis.vis
 
 def draw_scene_tree_structure_meshcat(scene_tree, prefix="scene_tree", zmq_url=None,
-        alpha=0.775, node_sphere_size=0.05, linewidth=2, with_triad=True, quiet=True):
+        alpha=0.775, node_sphere_size=0.05, linewidth=2, with_triad=True, quiet=True,
+        color_by_score=None):
+    # Color by score can be a tuple of min, max score. It'll go from red at min score
+    # to blue at max score.
     # Do actual drawing in meshcat, starting from root of tree
     # So first find the root...
     root_node = scene_tree.get_root()
@@ -67,24 +70,35 @@ def draw_scene_tree_structure_meshcat(scene_tree, prefix="scene_tree", zmq_url=N
     node_queue = [root_node]
     
     # Assign functionally random colors to each new node
-    # type we discover.
+    # type we discover, or color my their scores.
     node_class_to_color_dict = {}
     cmap = plt.cm.get_cmap('jet')
     cmap_counter = 0.
+
     
     k = 0
     while len(node_queue) > 0:
         node = node_queue.pop(0)
-        children = list(scene_tree.successors(node))
+        children, rules = scene_tree.get_children_and_rules(node)
         node_queue += children
-        # Draw this node
-        node_type_string = node.__class__.__name__
-        if node_type_string in node_class_to_color_dict.keys():
-            color = node_class_to_color_dict[node_type_string]
-        else:
-            color = rgb_2_hex(cmap(cmap_counter))
-            node_class_to_color_dict[node_type_string] = color
-            cmap_counter = np.fmod(cmap_counter + np.pi*2., 1.)
+
+        # 
+        if color_by_score is not None:
+            assert len(color_by_score) == 2, "Color by score should be a tuple of (min, max)"
+            score = node.score_child_set(children)
+            score = (score - color_by_score[0]) / (color_by_score[1] - color_by_score[0])
+            score = 1. - np.clip(score.item(), 0., 1.)
+            color = rgb_2_hex(cmap(score))
+            color = 0x555555
+        else: 
+            # Draw this node
+            node_type_string = node.__class__.__name__
+            if node_type_string in node_class_to_color_dict.keys():
+                color = node_class_to_color_dict[node_type_string]
+            else:
+                color = rgb_2_hex(cmap(cmap_counter))
+                node_class_to_color_dict[node_type_string] = color
+                cmap_counter = np.fmod(cmap_counter + np.pi*2., 1.)
 
         vis[prefix][node.name + "%d/sphere" % k].set_object(
             meshcat_geom.Sphere(node_sphere_size),
@@ -97,14 +111,20 @@ def draw_scene_tree_structure_meshcat(scene_tree, prefix="scene_tree", zmq_url=N
         tf = node.tf.cpu().detach().numpy()
         vis[prefix][node.name + "%d" % k].set_transform(tf)
 
-        # Draw connections to children
-        verts = []
-        for child in children:
+        # Draw connections to each child
+        for child, rule in zip(children, rules):
+            verts = []
             verts.append(node.tf[:3, 3].cpu().detach().numpy())
             verts.append(child.tf[:3, 3].cpu().detach().numpy())
-        if len(verts) > 0:
             verts = np.vstack(verts).T
-            vis[prefix][node.name + "%d" % k + "_child_connections"].set_object(
+
+            if color_by_score is not None:
+                score = rule.score_child(node, child)
+                score = (score - color_by_score[0]) / (color_by_score[1] - color_by_score[0])
+                score = 1. - np.clip(score.item(), 0., 1.)
+                color = rgb_2_hex(cmap(score))
+
+            vis[prefix][node.name + "_to_" + child.name].set_object(
                 meshcat_geom.Line(meshcat_geom.PointsGeometry(verts),
                                   meshcat_geom.LineBasicMaterial(linewidth=linewidth, color=color, depthTest=False)))
-        k += 1
+            k += 1
