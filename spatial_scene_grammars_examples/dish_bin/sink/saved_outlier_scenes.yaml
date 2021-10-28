@@ -1,0 +1,222 @@
+env_1633395445178:
+  objects:
+  - metadata:
+      class: cup
+    model_file: plates_cups_and_bowls/cups/Room_Essentials_Mug_White_Yellow/model_simplified.sdf
+    pose:
+      rpy:
+      - -1.2137379019439156
+      - 0.6196758145167635
+      - -1.3338985610594203
+      xyz:
+      - 0.23955801931513498
+      - 0.3769222564551841
+      - 0.28795603946613485
+  - metadata:
+      class: bowl
+    model_file: plates_cups_and_bowls/bowls/Room_Essentials_Bowl_Turquiose/model_simplified.sdf
+    pose:
+      rpy:
+      - -0.005275421530040125
+      - 0.020466779131510147
+      - 2.2424250130605534
+      xyz:
+      - 0.29926406324012766
+      - 0.37703470969684544
+      - 0.2107921804050751
+  - metadata:
+      class: bowl
+    model_file: plates_cups_and_bowls/bowls/Cole_Hardware_Bowl_Scirocco_YellowBlue/model_simplified.sdf
+    pose:
+      rpy:
+      - 3.0317626599224092
+      - 0.10365807630070133
+      - 2.26006154501183
+      xyz:
+      - 0.2889996291668253
+      - 0.3888287931830919
+      - 0.41716830093778295
+  world_description:
+    has_ground: true
+    models:
+    - model_file: bin.sdf
+      pose:
+        rpy:
+        - 0.0
+        - 0.0
+        - 0.0
+        xyz:
+        - 0.5
+        - 0.0
+        - 0.0
+      root_body_name: bin_base
+      metadata:
+          class: "bin"
+env_1633395553868:
+  objects:
+  - metadata:
+      class: plate
+    model_file: plates_cups_and_bowls/plates/Room_Essentials_Salad_Plate_Turquoise/model_simplified.sdf
+    pose:
+      rpy:
+      - 0.8692541187037914
+      - 0.017066908596723777
+      - 1.5034713727524949
+      xyz:
+      - 0.32450960533124656
+      - 0.24149737384039863
+      - 0.08359651359722797
+  - metadata:
+      class: bowl
+    model_file: plates_cups_and_bowls/bowls/Bradshaw_International_11642_7_Qt_MP_Plastic_Bowl/model_simplified.sdf
+    pose:
+      rpy:
+      - -3.140150501128197
+      - -0.014552270754552721
+      - -3.0312408272156635
+      xyz:
+      - 0.5283019996864454
+      - 0.10451543206977679
+      - 0.1690269960132805
+  - metadata:
+      class: plate
+    model_file: plates_cups_and_bowls/plates/Threshold_Bistro_Ceramic_Dinner_Plate_Ruby_Ring/model_simplified.sdf
+    pose:
+      rpy:
+      - -3.036268577326524
+      - 0.09023581984733467
+      - 1.9938701416163145
+      xyz:
+      - 0.5751991990956502
+      - 0.2693842837859928
+      - 0.2597485872172219
+  - metadata:
+      class: cup
+    model_file: plates_cups_and_bowls/cups/Threshold_Porcelain_Coffee_Mug_All_Over_Bead_White/model_simplified.sdf
+    pose:
+      rpy:
+      - 3.061797516390583
+      - -0.13454718851154135
+      - -1.5695573583623288
+      xyz:
+      - 0.5736816722118118
+      - 0.2936899426150487
+      - 0.37223686455044735
+  - metadata:
+      class: bowl
+    model_file: plates_cups_and_bowls/bowls/Room_Essentials_Bowl_Turquiose/model_simplified.sdf
+    pose:
+      rpy:
+      - -2.9490710197662784
+      - -0.4655651631040449
+      - -2.2978988479281366
+      xyz:
+      - 0.554927746216648
+      - 0.1850161015524852
+      - 0.22789440952933582
+  world_description:
+    has_ground: true
+    models:
+    - model_file: bin.sdf
+      pose:
+        rpy:
+        - 0.0
+        - 0.0
+        - 0.0
+        xyz:
+        - 0.5
+        - 0.0
+        - 0.0
+      root_body_name: bin_base
+      metadata:
+          class: "bin"
+env_1633400396383:
+  objects:
+  - metadata:
+      class: plate
+    model_file: plates_cups_and_bowls/plates/Ecoforms_Plate_S20Avocado/model_simplified.sdf
+    pose:
+      rpy:
+      - -0.03341526706032116
+      - -0.09359231822426065
+      - -3.082317583015606
+      xyz:
+      - 0.5446775236112179
+      - 0.1797589787434217
+      - 0.06119224684283208
+  - metadata:
+      class: plate
+    model_file: plates_cups_and_bowls/plates/Ecoforms_Plate_S20Avocado/model_simplified.sdf
+    pose:
+      rpy:
+      - -0.004578506530289017
+      - -0.014824247363509032
+      - 2.9596119056862324
+      xyz:
+      - 0.5316957879123622
+      - 0.18032106299053327
+      - 0.015119294319144834
+  - metadata:
+      class: plate
+    model_file: plates_cups_and_bowls/plates/Ecoforms_Plate_S20Avocado/model_simplified.sdf
+    pose:
+      rpy:
+      - 0.07280292232215979
+      - -0.13378149614305276
+      - 2.2474961055649367
+      xyz:
+      - 0.5860633614284503
+      - -0.10328783297427303
+      - 0.039958795157565764
+  - metadata:
+      class: plate
+    model_file: plates_cups_and_bowls/plates/Ecoforms_Plate_S20Avocado/model_simplified.sdf
+    pose:
+      rpy:
+      - 0.2128017124912046
+      - 0.07567059693818236
+      - 1.2152228211864444
+      xyz:
+      - 0.5040722112254932
+      - 0.17818719213544143
+      - 0.041821555099423785
+  - metadata:
+      class: plate
+    model_file: plates_cups_and_bowls/plates/Ecoforms_Plate_S20Avocado/model_simplified.sdf
+    pose:
+      rpy:
+      - -0.03327918763021609
+      - -0.18963827838350247
+      - -2.451787740133951
+      xyz:
+      - 0.5867553944254899
+      - -0.1205605095617818
+      - 0.06432095689405985
+  - metadata:
+      class: plate
+    model_file: plates_cups_and_bowls/plates/Ecoforms_Plate_S20Avocado/model_simplified.sdf
+    pose:
+      rpy:
+      - -0.0045629006471596956
+      - -0.014781566680244206
+      - 1.7319311964811583
+      xyz:
+      - 0.609048629771033
+      - -0.10798081120550536
+      - 0.015114944093166693
+  world_description:
+    has_ground: true
+    models:
+    - model_file: bin.sdf
+      pose:
+        rpy:
+        - 0.0
+        - 0.0
+        - 0.0
+        xyz:
+        - 0.5
+        - 0.0
+        - 0.0
+      root_body_name: bin_base
+      metadata:
+          class: "bin"
