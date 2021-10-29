@@ -120,6 +120,7 @@ def draw_scene_tree_structure_meshcat(scene_tree, prefix="scene_tree", zmq_url=N
 
             if color_by_score is not None:
                 score = rule.score_child(node, child)
+                print(score)
                 score = (score - color_by_score[0]) / (color_by_score[1] - color_by_score[0])
                 score = 1. - np.clip(score.item(), 0., 1.)
                 color = rgb_2_hex(cmap(score))

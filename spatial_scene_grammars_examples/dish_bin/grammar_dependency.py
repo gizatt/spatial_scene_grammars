@@ -173,15 +173,15 @@ class ObjectsOnPlate(GeometricSetNode):
             child_type=TerminalObject,
             xyz_rule=ParentFrameGaussianOffsetRule(
                 mean=torch.tensor([0.0, 0.0, 0.01]),
-                variance=torch.tensor([0.001, 0.001, 0.001])),
-            rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-100, -100, -1, 0.]))
+                variance=torch.tensor([0.0025, 0.0025, 0.0025])),
+            rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-0.1, -0.1, -0.1, 0.]))
         )
         return [rule]
 class MaybeObjectsOnPlate(IndependentSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            rule_probs=torch.tensor([0.5]),
+            rule_probs=torch.tensor([0.8]),
             physics_geometry_info=None,
             observed=False
         )
@@ -235,7 +235,7 @@ class ObjectsInBowl(GeometricSetNode):
             child_type=TerminalObject,
             xyz_rule=ParentFrameGaussianOffsetRule(
                 mean=torch.tensor([0.0, 0.0, 0.05]),
-                variance=torch.tensor([0.01, 0.01, 0.01])),
+                variance=torch.tensor([0.005, 0.005, 0.005])),
             rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-0.01, -0.01, -0.01, 0.]))
         )
         return [rule]
@@ -243,7 +243,7 @@ class MaybeObjectsInBowl(IndependentSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            rule_probs=torch.tensor([0.5]),
+            rule_probs=torch.tensor([0.8]),
             physics_geometry_info=None,
             observed=False
         )
@@ -309,7 +309,7 @@ class DishBin(GeometricSetNode):
         geom.register_model_file(torch.eye(4), "sink/bin.sdf")
         super().__init__(
             tf=tf,
-            p=0.2,
+            p=0.4,
             max_children=6,
             physics_geometry_info=geom,
             observed=True
@@ -320,8 +320,8 @@ class DishBin(GeometricSetNode):
             ProductionRule(
                 child_type=Object,
                 xyz_rule=WorldFrameGaussianOffsetRule(
-                    mean=torch.tensor([0.0, 0.0, 0.05]),
-                    variance=torch.tensor([0.05, 0.05, 0.05])),
+                    mean=torch.tensor([0.0, 0.0, 0.1]),
+                    variance=torch.tensor([0.01, 0.02, 0.005])),
                 rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-1, -1, -1, 0.]))
             )
         ]

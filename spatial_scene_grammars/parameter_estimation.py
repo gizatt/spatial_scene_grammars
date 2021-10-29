@@ -624,15 +624,17 @@ def _get_map_trees(grammar, observed_nodes, verbose, max_scene_extent_in_any_dir
 
 def _get_map_trees_thread_wrapper(arg_dict):
     try:
+        start_time = time.time()
         refined_trees = _get_map_trees(**arg_dict)
-        return [_cleanup_tree_for_pickling(tree) for tree in refined_trees]
+        elapsed = time.time() - start_time
+        return [_cleanup_tree_for_pickling(tree) for tree in refined_trees], elapsed
     except Exception as e:
         logging.error("Error in thread: %s" % e)
         return []
     
 def get_map_trees_for_observed_node_sets(grammar, observed_node_sets,
         throw_on_failure=False, verbose=0, tqdm=None, N_solutions=1,
-        num_workers=1, max_scene_extent_in_any_dir=10.):
+        num_workers=1, max_scene_extent_in_any_dir=10., report_timing=False):
     ''' Get MAP parse list for each tree in dataset using our current grammar params.
         If parsing fails for a tree, will return None for that tree and throw
         if requsted. '''
@@ -654,10 +656,16 @@ def get_map_trees_for_observed_node_sets(grammar, observed_node_sets,
         if tqdm:
             iterator = tqdm(iterator, desc="Getting MAP parses", total=len(observed_node_sets))
 
+        times = []
         for k, observed_nodes in iterator:
+            start_time = time.time()
             refined_tree_sets.append(
                 _get_map_trees(**make_arg_dict(k))
             )
+            times.append(start_time - time.time())
+        if report_timing:
+            print("Elapsed %fs +/ %f (min %f, median %f, max %f)" % (np.mean(times), np.std(times), np.median(times), min(times), max(times)))
+
     else:
         # Multi-processing case.
         pool = mp.Pool(min(num_workers, mp.cpu_count()))
@@ -668,10 +676,18 @@ def get_map_trees_for_observed_node_sets(grammar, observed_node_sets,
         if tqdm is not None:
             imap = tqdm(imap, total=len(args))
         refined_tree_sets = []
-        for refined_trees in imap:
+        times = []
+        for refined_trees, elapsed in imap:
             refined_tree_sets.append(refined_trees)
+            times.append(elapsed)
         pool.close()
-    return refined_tree_sets
+        if report_timing:
+            print("Elapsed %fs +/ %f (min %f, median %f, max %f)" % (np.mean(times), np.std(times), np.median(times), min(times), max(times)))
+
+    if report_timing:
+        return refined_tree_sets, times
+    else:
+        return refined_tree_sets
 
 
 class EMWrapper():
