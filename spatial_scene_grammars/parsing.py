@@ -299,6 +299,7 @@ def add_mle_tree_parsing_to_prog(
     t_equivalent_sets = list(nx.connected_components(t_equivalence_graph))
     R_equivalent_sets = list(nx.connected_components(R_equivalence_graph))
 
+    print("Equivalent sets: ", len(t_equivalent_sets), len(R_equivalent_sets))
     # For each set, figure out if activation of any node in the set implies that
     # an observed node will be active. Record the result and a reference to the
     # corresponding set of observed nodes to the rest of the set.

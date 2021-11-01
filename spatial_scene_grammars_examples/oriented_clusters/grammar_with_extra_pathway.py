@@ -42,10 +42,10 @@ class OrientedCluster(GeometricSetNode):
     def generate_rules(cls):
         return [ProductionRule(
             child_type=LongBox,
-            xyz_rule=WorldFrameGaussianOffsetRule(
-                mean=torch.zeros(3),
-                variance=torch.tensor([0.05, 0.05, 0.001])
-            ),
+            xyz_rule=SamePositionRule(),#WorldFrameGaussianOffsetRule(
+                #mean=torch.zeros(3),
+                #variance=torch.tensor([0.05, 0.05, 0.001])
+            #),
             rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
                 RotationMatrix(RollPitchYaw(0., 0., 1.)),
                 [1000., 1000., 1.]
@@ -65,10 +65,10 @@ class AssortedOrientedClusters(GeometricSetNode):
     def generate_rules(cls):
         return [ProductionRule(
             child_type=OrientedCluster,
-            xyz_rule=WorldFrameGaussianOffsetRule(
-                mean=torch.zeros(3),
-                variance=torch.tensor([1.0, 1.0, 1.0])
-            ),
+            xyz_rule=SamePositionRule(),#WorldFrameGaussianOffsetRule(
+                #mean=torch.zeros(3),
+                #variance=torch.tensor([1.0, 1.0, 1.0])
+            #),
             rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
                 RotationMatrix(RollPitchYaw(1., 0., 0.)),
                 [0.1, 0.1, 0.1]
@@ -89,10 +89,10 @@ class AssortedOutliers(GeometricSetNode):
     def generate_rules(cls):
         return [ProductionRule(
             child_type=LongBox,
-            xyz_rule=WorldFrameGaussianOffsetRule(
-                mean=torch.zeros(3),
-                variance=torch.tensor([1.0, 1.0, 1.0])
-            ),
+            xyz_rule=SamePositionRule(),#WorldFrameGaussianOffsetRule(
+                #mean=torch.zeros(3),
+                #variance=torch.tensor([1.0, 1.0, 1.0])
+            #),
             rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
                 RotationMatrix(RollPitchYaw(1., 0., 0.)),
                 [0.1, 0.1, 0.1]

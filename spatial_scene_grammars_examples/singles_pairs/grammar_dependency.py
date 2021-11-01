@@ -103,11 +103,14 @@ class Singles(GeometricSetNode):
 
 class Root(IndependentSetNode):
     def __init__(self, tf):
+        geom = PhysicsGeometryInfo()
+        geom.register_model_file(torch.eye(4), "models/deathstar.sdf")
         super().__init__(
             tf=tf,
             rule_probs=torch.tensor([0.8, 0.8]),
-            physics_geometry_info=None,
-            observed=False
+            physics_geometry_info=geom,
+            observed=True,
+
         )
     @classmethod
     def generate_rules(cls):
