@@ -25,7 +25,7 @@ def set_seed(request):
                     reason='This test relies on Gurobi and SNOPT.')
 @pytest.mark.parametrize("perturb_in_config_space", [True, False])
 @pytest.mark.parametrize("do_hit_and_run_postprocess", [True, False])
-def test_grammar(set_seed, perturb_in_config_space, do_hit_and_run_postprocess):
+def test_sampling(set_seed, perturb_in_config_space, do_hit_and_run_postprocess):
     grammar = SpatialSceneGrammar(
         root_node_type = NodeA,
         root_node_tf = torch.eye(4)
@@ -35,15 +35,16 @@ def test_grammar(set_seed, perturb_in_config_space, do_hit_and_run_postprocess):
     # Hack tree to be totally unobserved to get more code coverage
     for node in tree:
         node.observed = False
+    N_samples = 5
     sampled_trees = do_fixed_structure_mcmc(
-        grammar, tree, num_samples=5,
+        grammar, tree, num_samples=N_samples,
         perturb_in_config_space=perturb_in_config_space, verbose=2,
         vis_callback=None,
-        translation_variance=0.1,
-        rotation_variance=0.1,
+        translation_variance=0.05,
+        rotation_variance=0.05,
         do_hit_and_run_postprocess=do_hit_and_run_postprocess)
 
-    assert len(sampled_trees) == 5
+    assert len(sampled_trees) == N_samples
     new_tree = sampled_trees[-1]
     # Should be true that the last tree isn't exactly the same as the
     # first tree.

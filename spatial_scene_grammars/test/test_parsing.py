@@ -24,9 +24,9 @@ def assert_feasible(optimized_tree):
         R = opt_node.rotation
         t = opt_node.translation
         RtR = torch.matmul(R, R.transpose(0, 1))
-        assert torch.allclose(RtR, torch.eye(3), rtol=1E-4, atol=1E-4), RtR
+        assert torch.allclose(RtR, torch.eye(3), rtol=1E-3, atol=1E-3), RtR
         det = torch.det(R)
-        assert torch.isclose(det, torch.tensor(1.)), det
+        assert torch.isclose(det, torch.tensor(1.), rtol=1E-3, atol=1E-4), det
 
 def assert_explains_observeds(observed_tree, optimized_tree):
     # Assert optimized tree structure explains observed nodes.

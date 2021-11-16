@@ -333,10 +333,13 @@ class SpatialSceneGrammar(torch.nn.Module):
 
     def make_super_tree(self, max_recursion_depth=15, detach=False):
         # Forms a graph of nodes for which any actual sampled tree would be a subgraph.
-        # (TF's are all set to 0.)
         tree = SceneTree()
 
-        root = self.root_node_type(tf = torch.eye(4))
+        root_tf = self.root_node_tf
+        if detach:
+            root_tf = root_tf.detach()
+        root = self.root_node_type(tf=root_tf)
+
         self._set_node_parameters(root, detach=detach)
         # Label recursion depth in on nodes of super tree.
         root._recursion_depth = 0
@@ -345,14 +348,14 @@ class SpatialSceneGrammar(torch.nn.Module):
         while len(node_queue) > 0:
             parent = node_queue.pop(0)
             if isinstance(parent, (AndNode, OrNode, IndependentSetNode, TerminalNode)):
-                maximal_children = [r.child_type for r in parent.rules]
+                rules = parent.rules
             elif isinstance(parent, GeometricSetNode):
-                maximal_children = [parent.rule.child_type for k in range(parent.max_children)]
+                rules = [parent.rule for k in range(parent.max_children)]
             else:
                 raise ValueError(type(parent))
 
-            for k, child_type in enumerate(maximal_children):
-                child = child_type(tf = torch.eye(4))
+            for k, rule in enumerate(rules):
+                child = rule.sample_child(parent)
                 self._set_node_parameters(child, detach=detach)
                 child.rule_k = k
                 child._recursion_depth = parent._recursion_depth + 1
