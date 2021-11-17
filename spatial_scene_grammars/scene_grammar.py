@@ -129,7 +129,13 @@ class SceneTree(nx.DiGraph):
     def score(self, include_discrete=True, include_continuous=True, verbose=False):
         # Compute total score of parents and children.
         total_score = torch.tensor(0.)
+        root = self.get_root()
         for node in self.nodes:
+            if node is not root:
+                if self.get_parent(node) is None:
+                    logging.warning("Orphan non-root node %s detected", node)
+                    total_score = torch.score - np.inf
+                    break
             children = list(self.successors(node))
             if include_discrete:
                 contrib = node.score_child_set(children)
@@ -145,7 +151,7 @@ class SceneTree(nx.DiGraph):
                     elif isinstance(node, GeometricSetNode):
                         rule = node.rule
                     else:
-                        raise ValueError("Unknown node type has children.")
+                        raise ValueError("Unknown node type %s has children." % type(node))
                     contrib = rule.score_child(node, child, verbose=verbose)
                     total_score = total_score + contrib
                     if verbose:
