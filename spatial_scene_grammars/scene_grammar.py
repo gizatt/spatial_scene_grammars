@@ -265,6 +265,16 @@ class SpatialSceneGrammar(torch.nn.Module):
                 continue
             all_types.add(type(node))
             for rule in node.rules:
+                # Having the root type be produced by anything makes it
+                # much more awkward to rebuild scene trees in a
+                # bottom-up way, as it's not obvious when you're done
+                # (since if you hit a node of root type, you *could*
+                # be done, or you could keep going...)
+                # I don't think this is fundamental, but making sure grammars
+                # satisfy this assumption makes my parsing procedures a
+                # little easier to write.
+                assert rule.child_type is not self.root_node_type,\
+                    "The root type shouldn't be produced by any node."
                 if rule.child_type not in all_types:
                     input_queue.append(rule.child_type(tf = torch.eye(4)))
         return all_types
