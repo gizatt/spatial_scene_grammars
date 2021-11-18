@@ -3,6 +3,8 @@ from collections import namedtuple, OrderedDict
 from dataclasses import dataclass
 from functools import partial
 import networkx as nx
+import numpy as np
+import logging
 
 import pyro
 from pyro.contrib.autoname import scope, name_count
@@ -134,7 +136,7 @@ class SceneTree(nx.DiGraph):
             if node is not root:
                 if self.get_parent(node) is None:
                     logging.warning("Orphan non-root node %s detected", node)
-                    total_score = torch.score - np.inf
+                    total_score -= np.inf
                     break
             children = list(self.successors(node))
             if include_discrete:
