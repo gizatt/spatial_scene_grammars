@@ -62,6 +62,10 @@ from .scene_grammar import *
 from .drake_interop import *
 
 
+###############################################################################
+### Common helper functions.
+###############################################################################
+
 def prepare_grammar_for_parsing(prog, grammar, optimize_parameters=False, inequality_eps=1E-6):
     # Populates grammar.rule_params_by_node_type_optim, which has parallel
     # structure to grammar.rule_params_by_node_type, which with appropriately
@@ -109,6 +113,260 @@ def prepare_grammar_for_parsing(prog, grammar, optimize_parameters=False, inequa
             )
     return grammar
 
+
+###############################################################################
+### Greedy bottom-up parsing.
+###############################################################################
+
+def get_score_of_orphan_set_under_parent(parent_node, existing_children, orphan_set):
+    '''
+    Given a parent node, its current children, and an additional set of nodes,
+    try to add the orphan set to this parent's child set.
+    Returns:
+    - The log-prob score of the parent under this whole orphan set.
+    - A dictionary mapping from orphan set nodes to their rule_k mapping
+      into the parent ordered rule list, if the log-prob score isn't -inf.
+    '''
+    # Try to add the orphan set under the parent, returning
+    # a log-prob score (or negative inf if infeasible).
+    # Trivial short-circuit: terminal nodes can't take children.
+    if isinstance(parent_node, TerminalNode):
+        return torch.tensor(-np.inf), None
+
+    full_child_set = existing_children + orphan_set
+    
+    print("Considering addition to ", parent_node, ": ")
+    print("\tExisting: ", existing_children, [child.rule_k for child in existing_children])
+    print("\tNew: ", orphan_set, [child.rule_k for child in orphan_set])
+    # For each node in the orphan set, we need to resolve its mapping
+    # into the parent rule list. Start by figuring out which rules are
+    # occupied, and greedily map each child onto the remaining rules
+    # if the types match.
+    if isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
+        all_rules = parent_node.rules
+    elif isinstance(parent_node, (GeometricSetNode,)):
+        all_rules = [parent_node.rules[0] for k in range(parent_node.max_children)]
+    else:
+        raise NotImplementedError(type(parent_node))
+    taken = np.zeros(len(all_rules), dtype=bool)
+    for child_node in existing_children:
+        assert child_node.rule_k is not None
+        assert taken[child_node.rule_k] == False, [child.rule_k for child in existing_children]
+        taken[child_node.rule_k] = True
+        print("Existing child at rule %d" % child_node.rule_k)
+    print("Taken: ", taken)
+    for child_node in orphan_set:
+        assert child_node.rule_k is None
+        for i, rule in enumerate(all_rules):
+            if taken[i] == False and isinstance(child_node, rule.child_type):
+                print("Using ind %d" % i)
+                # Match!
+                taken[i] = True
+                child_node.rule_k = i
+                break
+        if child_node.rule_k is None:
+            # We couldn't match this child, so return clean up
+            # our modifications to the orphan set and return infeasible.
+            for orphan_node in orphan_set:
+                orphan_node.rule_k = None
+            return torch.tensor(-np.inf), None
+    # Now all children have rule assignments, so we can use the node
+    # to score the child set, and use each rule to score the parent/child
+    # pair.
+    total_score = parent_node.score_child_set(full_child_set)
+    print("Total score from discrete: ", total_score)
+    for child_node in full_child_set:
+        total_score = total_score + all_rules[child_node.rule_k].score_child(parent_node, child_node)
+        print("Score after child node %s->%d: %f" % (child_node, child_node.rule_k, total_score))
+        
+    orphan_rule_mappings = {orphan_node: orphan_node.rule_k for orphan_node in orphan_set}
+    # Clean up our modifications to the orphan set.
+    for orphan_node in orphan_set:
+        orphan_node.rule_k = None
+    print("Final score: ", total_score)
+    return total_score, orphan_rule_mappings
+
+def attempt_tree_repair_in_place(tree_guess, root_node, candidate_intermediate_nodes,
+                                 max_iterations):
+    '''
+         Given a partial parse tree and its root node
+         and a list of candidate intermediate nodes, try
+         to rebuild the tree by connecting parent-less non-root
+         nodes to other nodes in the tree or new intermediate nodes.
+    '''
+    
+    num_iterations = 0
+    while (1):
+        ## Collect orphan nodes.
+        orphans = [node for node in tree_guess.nodes
+                   if (node is not root_node and tree_guess.get_parent(node) is None)]
+
+        if len(orphans) == 0:
+            # We should have a complete, feasible tree!
+            break
+        if num_iterations >= max_iterations:
+            logging.error("Exceeding iteration limit on greedy parsing attempt.")
+            break
+
+        ## Sample an orphan set randomly.
+        # Pick the size of the orphan set randomly.
+        number_of_sampled_nodes = min(np.random.geometric(p=0.8), len(orphans))
+        # Pick the orphan node set. 
+        orphan_set = np.random.permutation(orphans)[:number_of_sampled_nodes].tolist()
+
+        ## Enumerate ways of adding this orphan set:
+        #  - Parent this to an existing node.
+        #  - Parent this to a new node.
+        # And calculate a score for each one.
+        PotentialConnection = namedtuple(
+            "PotentialConnection",
+            ["score", "parent_node", "orphan_rule_mapping"]
+        )
+        potential_connections = []
+        for parent_node in tree_guess.nodes:
+            if isinstance(parent_node, TerminalNode) or parent_node in orphan_set:
+                # Skip some trivial cases.
+                continue
+            score, orphan_rule_mapping = get_score_of_orphan_set_under_parent(
+                parent_node, tree_guess.get_children(parent_node), orphan_set
+            )
+            if torch.isfinite(score):
+                potential_connections.append(
+                    PotentialConnection(
+                        score=score, parent_node=parent_node,
+                        orphan_rule_mapping=orphan_rule_mapping
+                    )
+                )
+        for parent_node in candidate_intermediate_nodes:
+            score, orphan_rule_mapping = get_score_of_orphan_set_under_parent(
+                parent_node, [], orphan_set
+            )
+            if torch.isfinite(score):
+                potential_connections.append(
+                    PotentialConnection(
+                        score=score, parent_node=parent_node,
+                        orphan_rule_mapping=orphan_rule_mapping
+                    )
+
+                )
+
+        ## Pick from among the options.
+        if len(potential_connections) == 0:
+            logging.warning("Found no potential parents for orphan set %s", orphan_set)
+        else:
+            if len(potential_connections) > 1:
+                scores = torch.stack([conn.score for conn in potential_connections])
+                # Rescale these values to the biggest one is 1, and use them as weights
+                # in a Categorical draw.
+                weights = torch.exp(scores - scores.max()).flatten()
+                ind = dist.Categorical(weights).sample()
+                print(weights, ind)
+                new_connection = potential_connections[ind]
+            else:
+                new_connection = potential_connections[0]
+
+            print("\n\n\n****** Adding to node ", new_connection.parent_node)
+
+            if new_connection.parent_node in candidate_intermediate_nodes:
+                candidate_intermediate_nodes.remove(new_connection.parent_node)
+
+            ## Add the resulting connection to the tree guess.
+            for orphan_node, rule_k in new_connection.orphan_rule_mapping.items():
+                orphan_node.rule_k = rule_k
+                print("\t %s->%s via rule %d" % (new_connection.parent_node, orphan_node, orphan_node.rule_k))
+                # Adding this edge will add the parent node into the
+                # tree if it's not already there.
+                tree_guess.add_edge(new_connection.parent_node, orphan_node)
+
+        ## Get ready for another loop.
+        num_iterations += 1
+    return tree_guess
+
+def sample_likely_tree_with_greedy_parsing(
+        grammar, observed_nodes, max_recursion_depth=10,
+        max_attempts=1, max_iterations_per_attempt=100, verbose=False):
+    ''' Given a grammar and an observed node set, find a posterior-likely tree
+    from the grammar that explains those observed nodes by growing a parse tree
+    bottom-up from the observations. Possible ways of explaining a given node
+    are found by searching over nodes in the current tree and a population
+    of proposed intermediate nodes as potential parents.
+
+
+    The algorithm is reimplemented (and hopefully improved) from the one
+    used in [Izatt & Tedrake '20]:
+    1) Initialize a partial scene tree that contains only grammar root node + pose,
+    the set of observed nodes, each with no connections. Sample a few supertrees
+    from the grammar and collect a population of sampled intermediate node
+    poses for each unobserved node pose.
+    2) Collect the current set of orphan nodes that need to be assigned parents.
+    3) Randomly sample a set of orphan nodes to attempt to parent.
+       OPPORTUNITY FOR EXTENSION: Sample these "intelligently" by forming orphan
+       node affinities based on their relative poses, and the typical relative poses
+       of objects of that type from a population of sampled scenes.
+    4) For that orphan set, enumerate all ways that they could be explained by
+       iterating over nodes in the candidate tree + proposal set, and checking if
+       the orphan set can be appended to the existing child set of the node. If
+       the parent node is already instantiated, then apply a score based on its
+       current pose.
+       OPPORTUNITY FOR EXTENSION: Use optimization to improve the parent (and maybe
+       child) poses here.
+    5) Sample the parent connection to commit, using the scores as sampling weights,
+       and make the appropriate modification to the tree.
+    6) Loop to 2 until there are no orphans left, or an orphan is found with no
+       possibly parents.
+    7) Perform nonlinear refinement of the completed tree.
+    '''
+
+    start_time = time.time()
+    if verbose:
+        print("Starting setup.")
+
+    ## Form the supertree for this grammar, with randomly (but feasibly) positioned
+    ## nodes, and use it to extract a set of candidate intermediate nodes.
+    super_tree = grammar.make_super_tree(max_recursion_depth=max_recursion_depth, detach=True)
+    super_tree_root = super_tree.get_root()
+    candidate_intermediate_nodes = [
+        node for node in super_tree.nodes
+        if node.observed is False and node is not super_tree_root
+    ]
+    
+    ## Copy observed node set, as we'll be mutating their rule_k variables.
+    observed_nodes = deepcopy(observed_nodes)
+    
+    ## Rebuild starting from this partial, with a couple of restarts
+    # in case one attempt fails.
+    for attempt_k in range(max_attempts):
+        for observed_node in observed_nodes:
+            observed_node.rule_k = None
+        for node in candidate_intermediate_nodes:
+            node.rule_k = None
+        tree_guess = SceneTree.make_from_observed_nodes(observed_nodes)
+        # If one of the observed nodes is of root type, then don't
+        # add a root node. Otherwise, go ahead and add the root node.
+        root_node = None
+        for node in tree_guess.nodes:
+            if isinstance(node, grammar.root_node_type):
+                root_node = node
+        if root_node is None:
+            root_node = grammar.root_node_type(tf=grammar.root_node_tf.detach())
+            tree_guess.add_node(root_node)
+
+        tree_guess = attempt_tree_repair_in_place(
+            tree_guess, root_node, candidate_intermediate_nodes,
+            max_iterations=max_iterations_per_attempt
+        )
+        score = tree_guess.score()
+        if torch.isfinite(score):
+            break
+   
+    if not torch.isfinite(score):
+        logging.error("Failed to find feasible tree by greedy parsing.")
+    return tree_guess, score
+
+
+###############################################################################
+### Mixed-integer parsing.
+###############################################################################
 
 def equivalent_set_activity_implies_observability(equivalent_nodes, super_tree):
     ''' For a list of nodes `equivalent_set` from the supertree for
@@ -756,6 +1014,11 @@ def get_optimized_trees_from_mip_results(inference_results, assert_on_failure=Fa
     assert N_solutions >= 1
     return [get_optimized_tree_from_mip_results(inference_results, assert_on_failure, k) for k in range(N_solutions)]
 
+
+
+###############################################################################
+### Nonlinear refinement of a parse tree.
+###############################################################################
 TreeRefinementResults = namedtuple("TreeRefinementResults", ["optim_result", "refined_tree", "unrefined_tree"])
 def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, objective="mle", verbose=False, max_scene_extent_in_any_dir=10.):
     ''' Given a scene tree, set up a nonlinear optimization:
@@ -767,7 +1030,7 @@ def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, o
     4) Uses the scene tree's current (possibly infeasible) configuration
         as the initial guess.
     '''
-    eps = 1E-3 # Need relatively loose epsilon, or NLP gets stuck.
+    eps = 1E-4 # Need relatively loose epsilon, or NLP gets stuck.
     start_time = time.time()
     prog = MathematicalProgram()
     grammar = prepare_grammar_for_parsing(prog, grammar, optimize_parameters=False)
