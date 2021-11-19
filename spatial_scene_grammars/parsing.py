@@ -134,10 +134,7 @@ def get_score_of_orphan_set_under_parent(parent_node, existing_children, orphan_
         return torch.tensor(-np.inf), None
 
     full_child_set = existing_children + orphan_set
-    
-    print("Considering addition to ", parent_node, ": ")
-    print("\tExisting: ", existing_children, [child.rule_k for child in existing_children])
-    print("\tNew: ", orphan_set, [child.rule_k for child in orphan_set])
+
     # For each node in the orphan set, we need to resolve its mapping
     # into the parent rule list. Start by figuring out which rules are
     # occupied, and greedily map each child onto the remaining rules
@@ -153,13 +150,10 @@ def get_score_of_orphan_set_under_parent(parent_node, existing_children, orphan_
         assert child_node.rule_k is not None
         assert taken[child_node.rule_k] == False, [child.rule_k for child in existing_children]
         taken[child_node.rule_k] = True
-        print("Existing child at rule %d" % child_node.rule_k)
-    print("Taken: ", taken)
     for child_node in orphan_set:
         assert child_node.rule_k is None
         for i, rule in enumerate(all_rules):
             if taken[i] == False and isinstance(child_node, rule.child_type):
-                print("Using ind %d" % i)
                 # Match!
                 taken[i] = True
                 child_node.rule_k = i
@@ -174,17 +168,24 @@ def get_score_of_orphan_set_under_parent(parent_node, existing_children, orphan_
     # to score the child set, and use each rule to score the parent/child
     # pair.
     total_score = parent_node.score_child_set(full_child_set)
-    print("Total score from discrete: ", total_score)
     for child_node in full_child_set:
         total_score = total_score + all_rules[child_node.rule_k].score_child(parent_node, child_node)
-        print("Score after child node %s->%d: %f" % (child_node, child_node.rule_k, total_score))
         
     orphan_rule_mappings = {orphan_node: orphan_node.rule_k for orphan_node in orphan_set}
     # Clean up our modifications to the orphan set.
     for orphan_node in orphan_set:
         orphan_node.rule_k = None
-    print("Final score: ", total_score)
     return total_score, orphan_rule_mappings
+
+def sample_randomly_sized_random_orphan_set(orphans):
+    ''' Naive and simple way of selecting orphans to parent: randomly
+    pick the # of orphans, and then randomly select that many from the
+    orphan set (without replacement).
+    This will tend to select smaller groups, and is very unlikely to sample
+    all members of a large cluster. '''
+    number_of_sampled_nodes = min(np.random.geometric(p=0.8), len(orphans))
+    # Pick the orphan node set. 
+    return np.random.permutation(orphans)[:number_of_sampled_nodes].tolist()
 
 def attempt_tree_repair_in_place(tree_guess, root_node, candidate_intermediate_nodes,
                                  max_iterations):
@@ -210,10 +211,8 @@ def attempt_tree_repair_in_place(tree_guess, root_node, candidate_intermediate_n
 
         ## Sample an orphan set randomly.
         # Pick the size of the orphan set randomly.
-        number_of_sampled_nodes = min(np.random.geometric(p=0.8), len(orphans))
-        # Pick the orphan node set. 
-        orphan_set = np.random.permutation(orphans)[:number_of_sampled_nodes].tolist()
-
+        orphan_set = sample_randomly_sized_random_orphan_set(orphans)
+        
         ## Enumerate ways of adding this orphan set:
         #  - Parent this to an existing node.
         #  - Parent this to a new node.
@@ -251,21 +250,16 @@ def attempt_tree_repair_in_place(tree_guess, root_node, candidate_intermediate_n
                 )
 
         ## Pick from among the options.
-        if len(potential_connections) == 0:
-            logging.warning("Found no potential parents for orphan set %s", orphan_set)
-        else:
+        if len(potential_connections) > 0:
             if len(potential_connections) > 1:
                 scores = torch.stack([conn.score for conn in potential_connections])
                 # Rescale these values to the biggest one is 1, and use them as weights
                 # in a Categorical draw.
                 weights = torch.exp(scores - scores.max()).flatten()
                 ind = dist.Categorical(weights).sample()
-                print(weights, ind)
                 new_connection = potential_connections[ind]
             else:
                 new_connection = potential_connections[0]
-
-            print("\n\n\n****** Adding to node ", new_connection.parent_node)
 
             if new_connection.parent_node in candidate_intermediate_nodes:
                 candidate_intermediate_nodes.remove(new_connection.parent_node)
@@ -273,7 +267,6 @@ def attempt_tree_repair_in_place(tree_guess, root_node, candidate_intermediate_n
             ## Add the resulting connection to the tree guess.
             for orphan_node, rule_k in new_connection.orphan_rule_mapping.items():
                 orphan_node.rule_k = rule_k
-                print("\t %s->%s via rule %d" % (new_connection.parent_node, orphan_node, orphan_node.rule_k))
                 # Adding this edge will add the parent node into the
                 # tree if it's not already there.
                 tree_guess.add_edge(new_connection.parent_node, orphan_node)
@@ -282,9 +275,34 @@ def attempt_tree_repair_in_place(tree_guess, root_node, candidate_intermediate_n
         num_iterations += 1
     return tree_guess
 
+def generate_top_down_intermediate_nodes_by_supertree(grammar, observed_nodes, max_recursion_depth=10):
+    '''
+    Given a grammar and a set of observed nodes (which are assumed to all be
+    generate-able by the grammar), generates a set of candidate intermediate
+    nodes by forward-sampling N supertrees rooted at each observed node and
+    the grammar root. These supertrees terminate when they reach another
+    observed node or reach a maximum tree depth.
+
+    Doing expansion from each observed node rather than just the grammar root
+    creates intermediate nodes that are correctly positioned relative to
+    those observed nodes. For example, a cabinet may create latent cluster nodes
+    at each shelf level within the cabinet; this makes sure there are good
+    proposed shelf levels from each actual observed cabinet.
+    '''
+
+    ## Form the supertree for this grammar, with randomly (but feasibly) positioned
+    ## nodes, and use it to extract a set of candidate intermediate nodes.
+    super_tree = grammar.make_super_tree(max_recursion_depth=max_recursion_depth, detach=True)
+    super_tree_root = super_tree.get_root()
+    candidate_intermediate_nodes = [
+        node for node in super_tree.nodes
+        if node.observed is False and node is not super_tree_root
+    ]
+    return candidate_intermediate_nodes
+
 def sample_likely_tree_with_greedy_parsing(
         grammar, observed_nodes, max_recursion_depth=10,
-        max_attempts=1, max_iterations_per_attempt=100, verbose=False):
+        max_attempts=10, max_iterations_per_attempt=100, verbose=False):
     ''' Given a grammar and an observed node set, find a posterior-likely tree
     from the grammar that explains those observed nodes by growing a parse tree
     bottom-up from the observations. Possible ways of explaining a given node
@@ -318,24 +336,19 @@ def sample_likely_tree_with_greedy_parsing(
     '''
 
     start_time = time.time()
-    if verbose:
-        print("Starting setup.")
 
-    ## Form the supertree for this grammar, with randomly (but feasibly) positioned
-    ## nodes, and use it to extract a set of candidate intermediate nodes.
-    super_tree = grammar.make_super_tree(max_recursion_depth=max_recursion_depth, detach=True)
-    super_tree_root = super_tree.get_root()
-    candidate_intermediate_nodes = [
-        node for node in super_tree.nodes
-        if node.observed is False and node is not super_tree_root
-    ]
-    
-    ## Copy observed node set, as we'll be mutating their rule_k variables.
+    # Start out by copying observed node set, as we'll be mutating their rule_k variables.
     observed_nodes = deepcopy(observed_nodes)
+
+    candidate_intermediate_nodes = generate_top_down_intermediate_nodes_by_supertree(
+        grammar, observed_nodes, max_recursion_depth=max_recursion_depth
+    )
     
     ## Rebuild starting from this partial, with a couple of restarts
     # in case one attempt fails.
     for attempt_k in range(max_attempts):
+        # Remove child-to-rule assignments for all nodes whose parents we don't
+        # know yet.
         for observed_node in observed_nodes:
             observed_node.rule_k = None
         for node in candidate_intermediate_nodes:
@@ -361,6 +374,10 @@ def sample_likely_tree_with_greedy_parsing(
    
     if not torch.isfinite(score):
         logging.error("Failed to find feasible tree by greedy parsing.")
+
+    end_time = time.time()
+    if verbose:
+        print("Found tree with score %f in %fs" % (score, end_time - start_time))
     return tree_guess, score
 
 
