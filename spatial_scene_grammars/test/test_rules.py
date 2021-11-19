@@ -40,7 +40,7 @@ def test_SamePositionRule(set_seed):
     child = make_dummy_node()
     child.translation = rule.sample_xyz(parent)
     ll = rule.score_child(parent, child)
-    assert torch.isclose(ll, torch.tensor(0.))
+    assert torch.isclose(ll, torch.tensor(0.)), ll
     assert torch.allclose(parent.translation + offset, child.translation)
     assert torch.allclose(parent.rotation, child.rotation)
 

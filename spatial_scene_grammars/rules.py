@@ -221,7 +221,11 @@ class SamePositionRule(XyzProductionRule):
     def sample_xyz(self, parent):
         return parent.translation + torch.matmul(parent.rotation, self.offset)
     def score_child(self, parent, child):
-        return torch.tensor(0.)
+        if torch.allclose(
+                parent.translation + torch.matmul(parent.rotation, self.offset),
+                child.translation):
+            return torch.tensor(0.)
+        return torch.tensor(-np.inf)
     def get_site_values(self, parent, child):
         return {}
 
@@ -661,7 +665,9 @@ class SameRotationRule(RotationProductionRule):
     def sample_rotation(self, parent):
         return torch.matmul(parent.rotation, self.offset)
     def score_child(self, parent, child):
-        return torch.tensor(0.)
+        if torch.allclose(torch.matmul(parent.rotation, self.offset), child.rotation):
+            return torch.tensor(0.)
+        return torch.tensor(-np.inf)
     def get_site_values(self, parent, child):
         return {}
 
