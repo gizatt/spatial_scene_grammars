@@ -300,6 +300,55 @@ def generate_top_down_intermediate_nodes_by_supertree(grammar, observed_nodes, m
     ]
     return candidate_intermediate_nodes
 
+def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_nodes):
+    '''
+    Given a grammar and a set of observed nodes (which are assumed to all be
+    generate-able by the grammar), generates a set of candidate intermediate
+    nodes by looking at all of the rules from unobserved nodes in the grammar
+    that can generate each observed node, and for those rules that we know how
+    to invert, producing a parent that would be able to produce this child.
+
+    This is useful for rules like "SamePositionRule" or "SameRotationRule", where
+    top-down randomly sampling an intermediate node with exactly the same
+    position as an observed node is impossible or unlikely.
+    '''
+    def invert_rot_rule(child, rot_rule):
+        # Return a rotation tensor or None.
+        if isinstance(rot_rule, SameRotationRule):
+            return torch.matmul(child.rotation, rot_rule.offset.T)
+        else:
+            return None
+    
+    def invert_xyz_rule(child, xyz_rule, parent_rotation):
+        # Return a translation tensor or None.
+        if isinstance(xyz_rule, SamePositionRule):
+            return child.translation - torch.matmul(parent_rotation, xyz_rule.offset)
+        else:
+            return None
+
+    candidate_intermediate_nodes = []
+    for observed_node in observed_nodes:
+        for node_type in grammar.all_types:
+            prototype = node_type(torch.eye(4))
+            if prototype.observed:
+                continue
+            for rule in prototype.rules:
+                if isinstance(observed_node, rule.child_type):
+                    # This rule from this unobserved intermediate node could
+                    # produce this observed node. For invertible rule types,
+                    # create a candidate intermediate node at the right pose
+                    # to have high score for this child.
+                    parent_rotation = invert_rot_rule(observed_node, rule.rotation_rule)
+                    if parent_rotation is None:
+                        continue
+                    parent_translation = invert_xyz_rule(observed_node, rule.xyz_rule, parent_rotation)
+                    if parent_translation is None:
+                        continue
+                    prototype.rotation = parent_rotation
+                    prototype.translation = parent_translation
+                    candidate_intermediate_nodes.append(prototype)
+    return candidate_intermediate_nodes
+
 def sample_likely_tree_with_greedy_parsing(
         grammar, observed_nodes, max_recursion_depth=10,
         max_attempts=10, max_iterations_per_attempt=100, verbose=False):
@@ -340,9 +389,17 @@ def sample_likely_tree_with_greedy_parsing(
     # Start out by copying observed node set, as we'll be mutating their rule_k variables.
     observed_nodes = deepcopy(observed_nodes)
 
-    candidate_intermediate_nodes = generate_top_down_intermediate_nodes_by_supertree(
+    top_down_candidate_intermediate_nodes = generate_top_down_intermediate_nodes_by_supertree(
         grammar, observed_nodes, max_recursion_depth=max_recursion_depth
     )
+    bottom_up_candidate_intermediate_nodes = generate_bottom_up_intermediate_nodes_by_inverting_rules(
+        grammar, observed_nodes
+    )
+    print("%d top-down, %d bottom-up candidates." %
+          (len(top_down_candidate_intermediate_nodes),
+           len(bottom_up_candidate_intermediate_nodes)))
+    candidate_intermediate_nodes = top_down_candidate_intermediate_nodes + bottom_up_candidate_intermediate_nodes
+
     
     ## Rebuild starting from this partial, with a couple of restarts
     # in case one attempt fails.
