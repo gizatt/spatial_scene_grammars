@@ -270,6 +270,7 @@ def attempt_tree_repair_in_place(tree_guess, root_node, candidate_intermediate_n
                 # Adding this edge will add the parent node into the
                 # tree if it's not already there.
                 tree_guess.add_edge(new_connection.parent_node, orphan_node)
+                print("Connecting %s to %s" % (new_connection.parent_node, orphan_node))
 
         ## Get ready for another loop.
         num_iterations += 1
@@ -316,14 +317,29 @@ def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_n
         # Return a rotation tensor or None.
         if isinstance(rot_rule, SameRotationRule):
             return torch.matmul(child.rotation, rot_rule.offset.T)
+        elif isinstance(rot_rule, WorldFrameBinghamRotationRule):
+            # Parent rotation doesn't matter, so use identity.
+            return torch.eye(3)
+        elif isinstance(rot_rule, ParentFrameBinghamRotationRule):
+            # Return child times (inverse rotation of) mode of offset distribution.
+            R = quaternion_to_matrix(rot_rule.M[:, -1])
+            return torch.matmul(child.rotation, R.T)
         else:
+            logging.warn("Not sure how to invert rot rule of type %s" % type(rot_rule))
             return None
     
     def invert_xyz_rule(child, xyz_rule, parent_rotation):
         # Return a translation tensor or None.
         if isinstance(xyz_rule, SamePositionRule):
             return child.translation - torch.matmul(parent_rotation, xyz_rule.offset)
+        elif isinstance(xyz_rule, WorldFrameGaussianOffsetRule):
+            # Parent translation doesn't matter, so use identity.
+            return torch.zeros(3)
+        elif isinstance(xyz_rule, ParentFrameGaussianOffsetRule):
+            mean_offset = xyz_rule.parameters["mean"]
+            return child.translation - torch.matmul(parent_rotation, mean_offset)
         else:
+            logging.warn("Not inverting translation rule of type %s" % type(xyz_rule))
             return None
 
     candidate_intermediate_nodes = []
