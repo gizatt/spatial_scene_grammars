@@ -291,27 +291,58 @@ def generate_top_down_intermediate_nodes_by_supertree(grammar, observed_nodes, m
     proposed shelf levels from each actual observed cabinet.
     '''
 
-    ## Form the supertree for this grammar, with randomly (but feasibly) positioned
-    ## nodes, and use it to extract a set of candidate intermediate nodes.
-    super_tree = grammar.make_super_tree(max_recursion_depth=max_recursion_depth, detach=True)
-    super_tree_root = super_tree.get_root()
-    candidate_intermediate_nodes = [
-        node for node in super_tree.nodes
-        if node.observed is False and node is not super_tree_root
-    ]
+    root_types = [type(n) for n in observed_nodes]
+    root_tfs = [n.tf.detach() for n in observed_nodes]
+    if grammar.root_node_type not in root_types:
+        root_types += [grammar.root_node_type,]
+        root_tfs += [grammar.root_node_tf.detach(),]
+
+    candidate_intermediate_nodes = []
+    for root_type, root_tf in zip(root_types, root_tfs):
+        super_tree = grammar.make_super_tree_from_root_node_type(
+            root_type, root_tf, max_recursion_depth=max_recursion_depth,
+            detach=True, terminate_at_observed=True
+        )
+        # Grab all of the non-root nodes in this tree.
+        super_tree_root = super_tree.get_root()
+        candidate_intermediate_nodes += [
+            node for node in super_tree.nodes
+            if node is not super_tree_root
+        ]
+    assert all([n.observed is False for n in candidate_intermediate_nodes])
+    print(candidate_intermediate_nodes)
     return candidate_intermediate_nodes
 
-def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_nodes):
+def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_nodes, max_recursion_depth=10):
     '''
     Given a grammar and a set of observed nodes (which are assumed to all be
     generate-able by the grammar), generates a set of candidate intermediate
-    nodes by looking at all of the rules from unobserved nodes in the grammar
-    that can generate each observed node, and for those rules that we know how
-    to invert, producing a parent that would be able to produce this child.
+    nodes with the property that every candidate intermediate node is guaranteed
+    to be possible to be created at its given pose from the grammar.
+    
+    For each observed node, search through all unobserved node types
+    in the grammar, and search for rules on those types that could
+    create the observed node type. For each such rule, create a candidate
+    parent by inverting the rule (for those rules that are easy to invert).
+    Add that parent to a list of unverified parents.
+    
+    Add the nodes from the list of unverified parents, the grammar root,
+    and the observed nodes to a digraph (with no edges yet). For each parent
+    on the list of unverified parents, search for a way to explain it from
+    another node: check if it can be produced from an observed
+    node in the observed node set, from the grammar root, or from an unobserved
+    node type in the grammar. If the former, add an edge from the observed/root
+    to the now-verified parent.
+    If the latter, try to create a new node of that type by inverting the
+    appropriate rules, push *that* node onto the queue of unverified parents,
+    and connect the new parent to the still-unverified node. Repeat until the list
+    of unverified parents is done. (Track recursion to be sure this terminates.)
+    
+    Return the (recursive) children of al observed/root nodes in this digraph.
 
-    This is useful for rules like "SamePositionRule" or "SameRotationRule", where
-    top-down randomly sampling an intermediate node with exactly the same
-    position as an observed node is impossible or unlikely.
+    THIS CURRENTLY LEADS TO INVALID PARSES VERY FREQUENTLY; IN SINGLES-PAIRS,
+    THIS GENERATES MANY "SINGLES" OBJECTS THAT CAN ALL BE ADDED AT PARSE TIME
+    SIMULTANEOUSLY. NEED SMARTER PARSING?
     '''
     def invert_rot_rule(child, rot_rule):
         # Return a rotation tensor or None.
@@ -342,27 +373,75 @@ def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_n
             logging.warn("Not inverting translation rule of type %s" % type(xyz_rule))
             return None
 
-    candidate_intermediate_nodes = []
-    for observed_node in observed_nodes:
+    def get_potential_parents_for_node(node):
+        new_parents = []
         for node_type in grammar.all_types:
             prototype = node_type(torch.eye(4))
             if prototype.observed:
                 continue
             for rule in prototype.rules:
-                if isinstance(observed_node, rule.child_type):
+                if isinstance(node, rule.child_type):
                     # This rule from this unobserved intermediate node could
                     # produce this observed node. For invertible rule types,
                     # create a candidate intermediate node at the right pose
                     # to have high score for this child.
-                    parent_rotation = invert_rot_rule(observed_node, rule.rotation_rule)
+                    parent_rotation = invert_rot_rule(node, rule.rotation_rule)
                     if parent_rotation is None:
                         continue
-                    parent_translation = invert_xyz_rule(observed_node, rule.xyz_rule, parent_rotation)
+                    parent_translation = invert_xyz_rule(node, rule.xyz_rule, parent_rotation)
                     if parent_translation is None:
                         continue
                     prototype.rotation = parent_rotation
                     prototype.translation = parent_translation
-                    candidate_intermediate_nodes.append(prototype)
+                    new_parents.append(prototype)
+        return new_parents
+                    
+    # Build initial parent set.
+    unverified_parent_nodes = []
+    for observed_node in observed_nodes:
+        unverified_parent_nodes += get_potential_parents_for_node(observed_node)
+        
+    # Set up verification graph
+    root_node = grammar.root_node_type(grammar.root_node_tf)
+    explaining_nodes = observed_nodes + [root_node,]
+    verification_graph = nx.DiGraph()
+    verification_graph.add_nodes_from(explaining_nodes)
+    for node in unverified_parent_nodes:
+        node.__recursion_count = 0
+    while len(unverified_parent_nodes) > 0:
+        node = unverified_parent_nodes.pop(0)
+        if node.__recursion_count > max_recursion_depth:
+            continue
+        verification_graph.add_node(node)
+        # Try to explain with observed or root
+        explained = False
+        for explaining_node in explaining_nodes:
+            for rule in explaining_node.rules:
+                if isinstance(node, rule.child_type) and torch.isfinite(rule.score_child(explaining_node, node)):
+                    verification_graph.add_edge(explaining_node, node)
+                    explained = True
+                    break
+            if explained == True:
+                break
+        if not explained:
+            # Try to explain with new node
+            new_parents = get_potential_parents_for_node(node)
+            for new_parent in new_parents:
+                new_parent.__recursion_count = node.__recursion_count + 1
+            unverified_parent_nodes += new_parents
+
+    # Collect verified nodes.
+    candidate_intermediate_nodes = []
+    explore_node_queue = []
+    for node in explaining_nodes:
+        explore_node_queue += list(verification_graph.successors(node))
+    while len(explore_node_queue) > 0:
+        node = explore_node_queue.pop(0)
+        if node.observed or node is root_node:
+            continue
+        candidate_intermediate_nodes.append(node)
+        print("Candidate %s with pose %s" % (node, node.tf))
+        explore_node_queue += list(verification_graph.successors(node))
     return candidate_intermediate_nodes
 
 def sample_likely_tree_with_greedy_parsing(
@@ -408,9 +487,10 @@ def sample_likely_tree_with_greedy_parsing(
     top_down_candidate_intermediate_nodes = generate_top_down_intermediate_nodes_by_supertree(
         grammar, observed_nodes, max_recursion_depth=max_recursion_depth
     )
-    bottom_up_candidate_intermediate_nodes = generate_bottom_up_intermediate_nodes_by_inverting_rules(
-        grammar, observed_nodes
-    )
+    #bottom_up_candidate_intermediate_nodes = generate_bottom_up_intermediate_nodes_by_inverting_rules(
+    #    grammar, observed_nodes
+    #)
+    bottom_up_candidate_intermediate_nodes = []
     print("%d top-down, %d bottom-up candidates." %
           (len(top_down_candidate_intermediate_nodes),
            len(bottom_up_candidate_intermediate_nodes)))

@@ -349,14 +349,21 @@ class SpatialSceneGrammar(torch.nn.Module):
         for node in tree.nodes:
             self._set_node_parameters(node, detach=False)
 
-    def make_super_tree(self, max_recursion_depth=15, detach=False):
+    def make_super_tree_from_root_node_type(self, root_node_type, root_node_tf, max_recursion_depth=15, detach=False,
+                                            terminate_at_observed=False):
         # Forms a graph of nodes for which any actual sampled tree would be a subgraph.
+        # This form exposes some special cases that can be useful in e.g. parsing:
+        #  - Ability to start a supertree from any node type in the grammar.
+        #  - Ability to terminate supertree when it hits observed nodes (for use
+        #    in top-down node proposal generation.) This'll generate a supertree
+        #    whose non-root nodes are all unobserved, and the root node is the
+        #    requested root node type.
         tree = SceneTree()
 
-        root_tf = self.root_node_tf
+        root_tf = root_node_tf
         if detach:
             root_tf = root_tf.detach()
-        root = self.root_node_type(tf=root_tf)
+        root = root_node_type(tf=root_tf)
 
         self._set_node_parameters(root, detach=detach)
         # Label recursion depth in on nodes of super tree.
@@ -377,8 +384,20 @@ class SpatialSceneGrammar(torch.nn.Module):
                 self._set_node_parameters(child, detach=detach)
                 child.rule_k = k
                 child._recursion_depth = parent._recursion_depth + 1
-                if child._recursion_depth <= max_recursion_depth:
-                    tree.add_node(child)
-                    tree.add_edge(parent, child)
+                if terminate_at_observed is True and child.observed:
+                    continue
+                tree.add_node(child)
+                tree.add_edge(parent, child)
+                if child._recursion_depth < max_recursion_depth:
                     node_queue.append(child)
         return tree
+
+    def make_super_tree(self, max_recursion_depth=15, detach=False):
+        return self.make_super_tree_from_root_node_type(
+            self.root_node_type,
+            self.root_node_tf,
+            max_recursion_depth=max_recursion_depth,
+            detach=detach,
+            terminate_at_observed=False
+        )
+        
