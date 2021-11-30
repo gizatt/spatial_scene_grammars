@@ -1,21 +1,36 @@
 '''
-# Scene Parsing utilities for this grammar
+Scene Parsing utilities for this grammar
 
-We're given the grammar description (implicit in the node definitions); can we recover a MAP parse tree?
+Given the grammar description (the set of node types and their
+rules) and an observed set of nodes in the language, can we
+recover likely parse trees?
 
-Parameterize the space of parse trees via the "super tree" for the grammar (with a recursion
-limit). Create decision variables for each possible node pose and activation.
+We provide a few approaches:
 
-Impose feasibility constraints on each parent/child pair:
-- Child activation implies parent activation
-- If the parent is an AND node and is active, all children are active.
-- If the parent is an OR node and is active, exactly one child is active.
-- Child pose in feasible region w.r.t parent node.
+1) MIP MAP Parsing: Parameterize the space of parse trees by
+forming a "super tree" for the grammar. Create binary activation
+variables and continuous pose variables for each node that the grammar
+could possibly produce. Optimize those variables to form a
+maximum-probability tree that explains the observed nodes.
 
-Impose additional symmetry breaking constraints:
-- Prefer children activate in left-to-right order, and are assigned ascending poses in the x coordinate (symmetry breaking).
+Depending on the types of rules in the grammar, this approach returns
+highly optimized parse trees pretty efficiently, but it becomes inefficient
+when there are many nodes with unknown rotations. It does *not* require
+proposal generation for unobserved intermediate nodes.
 
-Add costs summing up activation of each child node.
+
+2) MIP MAP Parsing with greedy proposals: Instead of optimizing
+over the poses of unobserved nodes that could participate in the parse
+tree, we instead use a set of heuristic methods to propose reasonable
+intermediate nodes, and write a binary-only MIP that decides how to
+link together the grammar root, the observed nodes, and a subset of
+those intermediate nodes to create a feasible, maximal-score parse tree.
+
+We provide some additional utilities:
+
+1) Nonlinear-optimized based refinement of a parse tree: given a parse
+tree, optimize its node poses while keeping the same tree structure.
+
 '''
 
 from datetime import datetime
@@ -61,11 +76,12 @@ from .rules import *
 from .scene_grammar import *
 from .drake_interop import *
 
-
+'''
 ###############################################################################
-### Common helper functions.
+###                         Common helper functions.
+###
 ###############################################################################
-
+'''
 def prepare_grammar_for_parsing(prog, grammar, optimize_parameters=False, inequality_eps=1E-6):
     # Populates grammar.rule_params_by_node_type_optim, which has parallel
     # structure to grammar.rule_params_by_node_type, which with appropriately
@@ -114,10 +130,19 @@ def prepare_grammar_for_parsing(prog, grammar, optimize_parameters=False, inequa
     return grammar
 
 
+'''
 ###############################################################################
-### Greedy bottom-up parsing.
-###############################################################################
+                     Heuristic proposal-based parsing.
 
+   Given an observed node set and grammar, build a library of candidate
+   intermediate nodes (i.e. unobserved nodes that might be necessary to
+   explain observations using the grammar) by a combination of top-down
+   sampling and bottom-up proposal generation. These intermediate nodes
+   can be assembled together with the grammar root and observed nodes
+   to form feasible trees by a (hopefully!) efficient MIP.
+
+###############################################################################
+'''
 def get_score_of_orphan_set_under_parent(parent_node, existing_children, orphan_set):
     '''
     Given a parent node, its current children, and an additional set of nodes,
@@ -338,10 +363,6 @@ def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_n
     of unverified parents is done. (Track recursion to be sure this terminates.)
     
     Return the (recursive) children of al observed/root nodes in this digraph.
-
-    THIS CURRENTLY LEADS TO INVALID PARSES VERY FREQUENTLY; IN SINGLES-PAIRS,
-    THIS GENERATES MANY "SINGLES" OBJECTS THAT CAN ALL BE ADDED AT PARSE TIME
-    SIMULTANEOUSLY. NEED SMARTER PARSING?
     '''
     def invert_rot_rule(child, rot_rule):
         # Return a rotation tensor or None.
@@ -486,15 +507,13 @@ def sample_likely_tree_with_greedy_parsing(
     top_down_candidate_intermediate_nodes = generate_top_down_intermediate_nodes_by_supertree(
         grammar, observed_nodes, max_recursion_depth=max_recursion_depth
     )
-    #bottom_up_candidate_intermediate_nodes = generate_bottom_up_intermediate_nodes_by_inverting_rules(
-    #    grammar, observed_nodes
-    #)
-    bottom_up_candidate_intermediate_nodes = []
+    bottom_up_candidate_intermediate_nodes = generate_bottom_up_intermediate_nodes_by_inverting_rules(
+        grammar, observed_nodes
+    )
     print("%d top-down, %d bottom-up candidates." %
           (len(top_down_candidate_intermediate_nodes),
            len(bottom_up_candidate_intermediate_nodes)))
-    candidate_intermediate_nodes = top_down_candidate_intermediate_nodes + bottom_up_candidate_intermediate_nodes
-
+    candidate_intermediate_nodes = top_down_candidate_intermediate_nodes + bottom_up_candidate_intermediate_nodes   
     
     ## Rebuild starting from this partial, with a couple of restarts
     # in case one attempt fails.
@@ -532,10 +551,239 @@ def sample_likely_tree_with_greedy_parsing(
         print("Found tree with score %f in %fs" % (score, end_time - start_time))
     return tree_guess, score
 
+def infer_mle_tree_with_mip_from_proposals(
+        grammar, observed_nodes, candidate_intermediate_nodes,
+        verbose=False, N_solutions=1):
+    '''
+        Set up a MIP to try to glue a valid tree together.
+        We can build a graph where each node is an observed
+        or candidate intermediate node, and there is a directed
+        edge for every legal rule, with a weight corresponding to its
+        probability. We add one binary variable per edge indicating
+        its activation.
+         - Every observed node except the root needs exactly one active incoming
+           edge. The root needs exactly zero. (It shouldn't have any incoming
+           edges anyway by assumptions about construction of the grammar.)
+           Unobserved nodes have outgoing edges iff they have an active
+           incoming edge.
+         - The score (and constraints on) a node's set of outgoing edges
+           depends on the node type. This includes symmetry breaking
+           where appropriate.
+         - Maximize the total score.
+    '''
+    # Make local copy of node sets, since I'll be mutating the input
+    # nodes a bit.
+    observed_nodes = deepcopy(observed_nodes)
+    candidate_intermediate_nodes = deepcopy(candidate_intermediate_nodes)
+    prog = MathematicalProgram()
+
+    # Extract root node; it may have been observed,
+    # otherwise produce a new one.
+    root = None
+    for node in observed_nodes:
+        if isinstance(node, grammar.root_node_type):
+            root = node
+    if root is None:
+        root = grammar.root_node_type(tf=grammar.root_node_tf)
+        observed_nodes += [root, ]
+
+    # For each node, iterate over its rules and add appropriate edges.
+    all_nodes = observed_nodes + candidate_intermediate_nodes
+    # Important to use a MultiDiGraph, as there may be multiple edges
+    # between two nodes (corresponding to different rules being used
+    # to generate the same node).
+    parse_graph = nx.MultiDiGraph()
+    parse_graph.add_nodes_from(all_nodes)
+    def add_edges_for_rule(parent, rule, rule_k, rule_activation_expr):
+        # Given a parent node and one of its rules, add directed
+        # edges from this parent node to all children that rule could
+        # create.
+        # rule_activation_expr should be a linear expression of
+        # decision variables that evaluates to 1 when this rule
+        # is active and 0 when not.
+        if isinstance(parent, GeometricSetNode):
+            assert rule_k >= 0 and rule_k <= parent.max_children
+            assert rule is parent.rules[0]
+        elif isinstance(parent, (AndNode, OrNode, IndependentSetNode)):
+            assert rule is parent.rules[rule_k]
+        else:
+            raise ValueError(type(rule), "Bad type.")
+        all_outgoing_activations = []
+        for node in all_nodes:
+            if isinstance(node, rule.child_type) and node is not parent:
+                score = rule.score_child(parent, node).detach().item()
+                var_name = "%s:%s_%d:%s" % (parent.name, type(rule).__name__, rule_k, node.name)
+                if np.isfinite(score):
+                    active = prog.NewBinaryVariables(1, var_name)[0]
+                    parse_graph.add_edge(
+                        parent, node, active=active, score=score, rule_k=rule_k
+                    )
+                    all_outgoing_activations.append(active)
+                    # If this edge is active, it adds this score to the total cost.
+                    prog.AddLinearCost(-score * active)
+                elif verbose:
+                    logging.warning("Skipping rule ", var_name, " as its infeasible")
+        if len(all_outgoing_activations) > 0:
+            prog.AddLinearConstraint(sum(all_outgoing_activations) == rule_activation_expr)
+        else:
+            if verbose:
+                logging.warning("No outgoing connections for %s:%s_%d" % (parent.name, type(rule), rule_k))
+        
+    for node in all_nodes:
+        # Add activation variable for this node.
+        node.active = prog.NewBinaryVariables(1, node.name + "_active")[0]
+
+        if isinstance(node, TerminalNode):
+            # No rules / children to worry about.
+            continue
+
+        elif isinstance(node, AndNode):
+            # Rules are gated on parent activation.
+            for rule_k, rule in enumerate(node.rules):
+                add_edges_for_rule(node, rule, rule_k, node.active)
+            
+        elif isinstance(node, OrNode):
+            activation_vars = prog.NewBinaryVariables(len(node.rules), node.name + "_outgoing")
+            # Rules are gated on parent activation, and exactly one
+            # is active.
+            prog.AddLinearConstraint(sum(activation_vars) == node.active)
+            for rule_k, (rule, activation_var) in enumerate(zip(node.rules, activation_vars)):
+                add_edges_for_rule(node, rule, rule_k, activation_var)
+                # Each rule activation has a corresponding score based
+                # on its log-prob.
+                prog.AddLinearCost(-activation_var * np.log(node.rule_probs[rule_k].detach().item()))
+            
+        elif isinstance(node, IndependentSetNode):
+            activation_vars = prog.NewBinaryVariables(len(node.rules), node.name + "_outgoing")
+            for rule_k, (rule, activation_var) in enumerate(zip(node.rules, activation_vars)):
+                add_edges_for_rule(node, rule, rule_k, activation_var)
+                # The rules are only active if the parent is active.
+                prog.AddLinearConstraint(activation_var <= node.active)
+                # Each rule activation incurs an independent score based
+                # on its log-prob.
+                prog.AddLinearCost(-activation_var * np.log(node.rule_probs[rule_k].detach().item()))
+                
+        elif isinstance(node, GeometricSetNode):
+            activation_vars = prog.NewBinaryVariables(node.max_children, node.name + "_outgoing")
+            # Ensure that these variables activate in order by constraining
+            # that for a rule to be active, the preceeding rule must also be
+            # active.
+            for k in range(len(activation_vars) - 1):
+                prog.AddLinearConstraint(activation_vars[k + 1] <= activation_vars[k])
+            # Ensure at least one is active if the node is active.
+            # If the node is inactive, then all will be deactivated.
+            prog.AddLinearConstraint(activation_vars[0] == node.active)
+            rules = [node.rules[0] for k in range(node.max_children)]
+            for rule_k, (rule, activation_var) in enumerate(zip(rules, activation_vars)):
+                add_edges_for_rule(node, rule, rule_k, activation_var)
+                # Each rule activation incurs an independent score based
+                # on its log-prob; a rule being active disables the score
+                # from the previous activation and enables the current score.
+                if rule_k > 0:
+                    last_score = np.log(node.rule_probs[rule_k - 1].detach().item())
+                else:
+                    last_score = 0.
+                this_score = np.log(node.rule_probs[rule_k].detach().item())
+                prog.AddLinearCost(-activation_var * (-last_score + this_score))
+
+        else:
+            raise NotImplementedError(type(node))
+        
+    # Now that the DiGraph is fully formed, go in an constrain node
+    # activation vars to depend on explanatory incoming edges.
+    for node in observed_nodes:
+        prog.AddLinearConstraint(node.active == True)
+    for node in all_nodes:
+        if node is root:
+            continue
+        incoming_edges = parse_graph.in_edges(nbunch=node, data="active")
+        activations = [edge[-1] for edge in incoming_edges]
+        prog.AddLinearConstraint(sum(activations) == node.active)
+
+    solver = GurobiSolver()
+    options = SolverOptions()
+    logfile = "/tmp/gurobi_%s.log" % datetime.now().strftime("%Y%m%dT%H%M%S")
+    os.system("rm -f %s" % logfile)
+    options.SetOption(solver.id(), "LogFile", logfile)
+    options.SetOption(solver.id(), "MIPGap", 1E-3)
+    N_solutions = 1
+    if N_solutions > 1:
+        options.SetOption(solver.id(), "PoolSolutions", N_solutions)
+        options.SetOption(solver.id(), "PoolSearchMode", 2)
+
+    result = solver.Solve(prog, None, options)
+    # Hacky method getter because `num_suboptimal_solution()` was bound with () in its
+    # method name. Should fix this upstream!
+    actual_N_solutions = getattr(result, "num_suboptimal_solution()")()
+    if actual_N_solutions < N_solutions:
+        logging.warning("MIP got %d solutions, but requested %d. ", actual_N_solutions, N_solutions)
+    if verbose:
+        print("Optimization success?: ", result.is_success())
+        print("Logfile: ")
+        with open(logfile) as f:
+            print(f.read())
+
+    # Build tree for each solution
+    out_trees = []
+    for sol_k in range(actual_N_solutions):
+        if verbose:
+            print("Building tree for sol %d..." % sol_k)
+        def get_sol(var):
+            return result.GetSuboptimalSolution(var, sol_k)
+        tree = SceneTree()
+        new_root = deepcopy(root)
+        tree.add_node(new_root)
+        expand_queue = [(root, new_root)]
+        while len(expand_queue) > 0:
+            optim_node, new_node = expand_queue.pop(0)
+            assert get_sol(optim_node.active)
+            for optim_child in parse_graph.successors(optim_node):
+                if get_sol(optim_child.active):
+                    # Make sure the edge, too, was labeled active. Since we have
+                    # a MultiDiGraph, there may be multiple edges from this parent
+                    # to child, but exactly one should be active.
+                    edge_infos = parse_graph.get_edge_data(optim_node, optim_child)
+                    found_active_edge = False
+                    for edge_info in edge_infos.values():
+                        if get_sol(edge_info["active"]):
+                            assert not found_active_edge
+                            new_child = deepcopy(optim_child)
+                            new_child.rule_k = edge_info["rule_k"]
+                            tree.add_edge(new_node, new_child)
+                            if verbose:
+                                print("Parsing edge %s -(%d)> %s" % (new_node.name, new_child.rule_k, new_child.name))
+                            expand_queue.append((optim_child, new_child))
+                            found_active_edge = True
+        
+        optim_score = torch.tensor(result.get_suboptimal_objective(sol_k))
+        assert torch.isclose(tree.score(), -optim_score), "%f vs %f" % (tree.score(), -optim_score)
+        out_trees.append(tree)
+    return out_trees
+
+
+'''
+###############################################################################
+                          Mixed-integer parsing.
+
+Parameterize the space of parse trees by forming a "super tree"
+for the grammar. Create binary activation variables and continuous
+pose variables for each node that the grammar could possibly produce.
+Optimize those variables to form a maximum-probability tree that
+explains the observed nodes.
+
+Impose feasibility constraints on each parent/child pair:
+- Child activation implies parent activation
+- If the parent is an AND node and is active, all children are active.
+- If the parent is an OR node and is active, exactly one child is active.
+- Child pose in feasible region w.r.t parent node.
+
+Impose additional symmetry breaking constraints:
+- Prefer children activate in left-to-right order, and are assigned ascending poses in the x coordinate (symmetry breaking).
+
+Add costs summing up activation of each child node.
 
 ###############################################################################
-### Mixed-integer parsing.
-###############################################################################
+'''
 
 def equivalent_set_activity_implies_observability(equivalent_nodes, super_tree):
     ''' For a list of nodes `equivalent_set` from the supertree for
@@ -1019,7 +1267,7 @@ def infer_mle_tree_with_mip(grammar, observed_nodes, max_recursion_depth=10, sol
         # Hacky method getter because `num_suboptimal_solution()` was bound with () in its
         # method name. Should fix this upstream!
         actual_N_solutions = getattr(result, "num_suboptimal_solution()")()
-        if actual_N_solutions != N_solutions:
+        if actual_N_solutions < N_solutions:
             logging.warning("MIP got %d solutions, but requested %d. ", actual_N_solutions, N_solutions)
         if verbose:
             print("Optimization success?: ", result.is_success())
@@ -1185,9 +1433,14 @@ def get_optimized_trees_from_mip_results(inference_results, assert_on_failure=Fa
 
 
 
+'''
 ###############################################################################
-### Nonlinear refinement of a parse tree.
+###                    Nonlinear refinement of a parse tree.
+###
+###
 ###############################################################################
+'''
+
 TreeRefinementResults = namedtuple("TreeRefinementResults", ["optim_result", "refined_tree", "unrefined_tree"])
 def optimize_scene_tree_with_nlp(grammar, scene_tree, initial_guess_tree=None, objective="mle", verbose=False, max_scene_extent_in_any_dir=10.):
     ''' Given a scene tree, set up a nonlinear optimization:
