@@ -224,7 +224,8 @@ def test_AngleAxisInversion(set_seed, angle):
     child = make_dummy_node()
     child.rotation = R
 
-    recovered_angle, recovered_axis = recover_relative_angle_axis(parent, child, target_axis=rule.axis, zero_angle_width=1E-4)
+    recovered_angle, recovered_axis, in_range = recover_relative_angle_axis(parent, child, target_axis=rule.axis, zero_angle_width=1E-4)
+    assert in_range
     assert torch.allclose(recovered_angle, angle)
     if torch.abs(angle) > 0:
         assert torch.allclose(recovered_axis, random_axis, atol=1E-4, rtol=1E-4)

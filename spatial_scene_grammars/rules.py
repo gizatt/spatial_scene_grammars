@@ -789,15 +789,16 @@ class UnconstrainedRotationRule(RotationProductionRule):
 
 def recover_relative_angle_axis(parent, child, target_axis, zero_angle_width=1E-2, allowed_axis_diff=10. * np.pi/180.):
     # Recover angle-axis relationship between a parent and child.
-    # Thrrows if we can't find a rotation axis between the two within
-    # requested diff of our expected axis.
+    # Warns if we can't find a rotation axis between the two within
+    # requested diff of our expected axis. Last return value is a boolean
+    # of whether that rotation axis is close to the epxected axis.
     relative_R = torch.matmul(torch.transpose(parent.rotation, 0, 1), child.rotation)
     axis_angle = quaternion_to_axis_angle(matrix_to_quaternion(relative_R))
     angle = torch.norm(axis_angle, p=2)
 
     # *Why* is this tolerance so high? This is ridiculous
     if angle <= zero_angle_width:
-        return torch.tensor(0.), target_axis
+        return torch.tensor(0.), target_axis, True
 
     axis = axis_angle / angle
     axis_misalignment = torch.acos(torch.clip((axis * target_axis).sum(), -1., 1.))
@@ -806,12 +807,12 @@ def recover_relative_angle_axis(parent, child, target_axis, zero_angle_width=1E-
         axis = -axis
         angle = -angle
 
-    axis_misalignment = torch.acos((axis * target_axis).sum()).item()
+    axis_inner_prod = torch.clip((axis * target_axis).sum(), -1+1E-9, 1-1E-9)
+    axis_misalignment = np.abs(torch.acos(axis_inner_prod).item())
     if axis_misalignment >= allowed_axis_diff:
         # No saving this; axis doesn't match.
-        raise ValueError("Parent %s, Child %s: " % (parent, child),
-                         "Child illegal rotated from parent: %s vs %s, error of %f deg" % (axis, target_axis, axis_misalignment * 180./np.pi))
-    return angle, axis
+        logging.warning("Parent %s, Child %s:\nChild illegal rotated from parent: %s vs %s, error of %f deg" % (parent.name, child.name, axis, target_axis, axis_misalignment * 180./np.pi))
+    return angle, axis, axis_misalignment < allowed_axis_diff
 
 class UniformBoundedRevoluteJointRule(RotationProductionRule):
     '''
@@ -851,7 +852,9 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
         if (self.ub - self.lb) >= 2. * np.pi:
             # Uniform rotation in 1D base case
             return torch.log(torch.ones(1) / (2. * np.pi))
-        angle, axis = recover_relative_angle_axis(parent, child, target_axis=self.axis, allowed_axis_diff=allowed_axis_diff)
+        angle, axis, aligned = recover_relative_angle_axis(parent, child, target_axis=self.axis, allowed_axis_diff=allowed_axis_diff)
+        if not aligned:
+            return -torch.tensor(np.inf)
         # Correct angle to be within 2pi of both LB and UB -- which should be possible,
         # since ub - lb is <= 2pi.
         while angle < self.lb - 2.*np.pi or angle < self.ub - 2*np.pi:
@@ -862,7 +865,7 @@ class UniformBoundedRevoluteJointRule(RotationProductionRule):
 
     def get_site_values(self, parent, child):
         # TODO: Not exactly reverse-engineering, but hopefully close.
-        theta, _ = recover_relative_angle_axis(parent, child, target_axis=self.axis)
+        theta, _, _ = recover_relative_angle_axis(parent, child, target_axis=self.axis)
         return {"UniformBoundedRevoluteJointRule_theta": SiteValue(self._angle_dist, theta)}
 
     @classmethod

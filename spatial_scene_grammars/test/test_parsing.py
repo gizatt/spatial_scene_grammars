@@ -60,7 +60,7 @@ def test_parsing_infeasible():
 # simple solver. (The solver is very slow with additional
 # complexity.)
 @pytest.mark.skipif(not SnoptSolver().available(),
-                    reason='This test relies on Gurobi and SNOPT.')
+                    reason='This test relies on SNOPT.')
 def test_parsing_simple(set_seed):
     grammar = SpatialSceneGrammar(
         root_node_type = NodeD,
@@ -83,6 +83,9 @@ def test_parsing_simple(set_seed):
     assert len(mip_optimized_trees) == 1
     mip_optimized_tree = mip_optimized_trees[0]
     assert_explains_observeds(tree, mip_optimized_tree), "MIP parsing failed."
+
+    optim_score = torch.tensor(inference_results.optim_result[0].GetOptimalCost())
+    assert torch.allclose(mip_optimized_tree.score(), -optim_score), "%f vs %f" % (mip_optimized_tree.score(), -optim_score)
     
     start_time = time.time()
     refinement_results = optimize_scene_tree_with_nlp(grammar, mip_optimized_tree, verbose=True)
@@ -269,3 +272,28 @@ def test_parsing_rules_in_each_observed_case(set_seed, rule, parent_observed, ch
     assert inference_results.optim_result.is_success(), "MIP parsing failed."
 
     mip_optimized_trees = get_optimized_trees_from_mip_results(inference_results)
+
+
+@pytest.mark.skipif(os.environ.get('GUROBI_PATH') is None,
+                    reason='This test relies on Gurobi.')
+def test_proposal_parsing(set_seed):
+    grammar = SpatialSceneGrammar(
+        root_node_type = NodeA,
+        root_node_tf = torch.eye(4)
+    )
+    tree = grammar.sample_tree(detach=True)
+    observed_nodes = tree.get_observed_nodes()
+
+    start_time = time.time()
+    candidate_intermediate_nodes = generate_candidate_intermediate_nodes(
+        grammar, observed_nodes, max_recursion_depth=10, verbose=True
+    )
+    parse_trees = infer_mle_tree_with_mip_from_proposals(
+        grammar, observed_nodes, candidate_intermediate_nodes, verbose=True, N_solutions=1
+    )
+    elapsed = time.time() - start_time
+    print("Parsing took %f secs." % elapsed)
+    assert len(parse_trees) >= 1, "MIP parsing failed."
+
+    for parse_tree in parse_trees:
+        assert_explains_observeds(tree, parse_tree)

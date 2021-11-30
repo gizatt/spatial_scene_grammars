@@ -47,7 +47,7 @@ class NodeD(IndependentSetNode):
         return [
             ProductionRule(
                 child_type=NodeG,
-                xyz_rule=WorldFrameBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+                xyz_rule=WorldFrameBBoxOffsetRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
                 rotation_rule=SameRotationRule()
             )
         ]
@@ -84,12 +84,12 @@ class NodeB(OrNode):
         return [
             ProductionRule(
                 child_type=NodeD,
-                xyz_rule=WorldFrameBBoxOffsetRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+                xyz_rule=WorldFrameBBoxRule.from_bounds(lb=-torch.ones(3), ub=torch.ones(3)),
                 rotation_rule=UniformBoundedRevoluteJointRule.from_bounds(axis=torch.tensor([0., 0., 1.]), lb=-1., ub=1.)
             ),
             ProductionRule(
                 child_type=NodeE,
-                xyz_rule=WorldFrameBBoxOffsetRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)),
+                xyz_rule=WorldFrameBBoxOffsetRule.from_bounds(lb=-torch.ones(3), ub=torch.ones(3)),
                 rotation_rule=UnconstrainedRotationRule()
             )
         ]

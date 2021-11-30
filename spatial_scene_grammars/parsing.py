@@ -368,29 +368,35 @@ def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_n
         # Return a rotation tensor or None.
         if isinstance(rot_rule, SameRotationRule):
             return torch.matmul(child.rotation, rot_rule.offset.T)
-        elif isinstance(rot_rule, WorldFrameBinghamRotationRule):
-            # Parent rotation doesn't matter, so use identity.
+        elif isinstance(rot_rule, (UnconstrainedRotationRule, WorldFrameBinghamRotationRule)):
+            # We have no dependence on the parent rotation here, so take a wild guess.
             return torch.eye(3)
         elif isinstance(rot_rule, ParentFrameBinghamRotationRule):
             # Return child times (inverse rotation of) mode of offset distribution.
             R = quaternion_to_matrix(rot_rule.M[:, -1])
             return torch.matmul(child.rotation, R.T)
+        elif isinstance(rot_rule, UniformBoundedRevoluteJointRule):
+            angle_axis = rot_rule.axis * rot_rule.parameters["center"]
+            R_offset = axis_angle_to_matrix(angle_axis.unsqueeze(0))[0, ...]
+            return torch.matmul(child.rotation, R_offset.T)
         else:
-            logging.warn("Not sure how to invert rot rule of type %s" % type(rot_rule))
+            logging.warning("Not inverting rotation rule of type %s" % type(rot_rule))
             return None
     
     def invert_xyz_rule(child, xyz_rule, parent_rotation):
         # Return a translation tensor or None.
         if isinstance(xyz_rule, SamePositionRule):
             return child.translation - torch.matmul(parent_rotation, xyz_rule.offset)
-        elif isinstance(xyz_rule, WorldFrameGaussianOffsetRule):
-            # Parent translation doesn't matter, so use identity.
-            return torch.zeros(3)
         elif isinstance(xyz_rule, ParentFrameGaussianOffsetRule):
             mean_offset = xyz_rule.parameters["mean"]
             return child.translation - torch.matmul(parent_rotation, mean_offset)
+        elif isinstance(xyz_rule, WorldFrameBBoxOffsetRule):
+            return child.translation - xyz_rule.parameters["center"]
+        elif isinstance(xyz_rule, (WorldFrameBBoxRule, WorldFrameGaussianOffsetRule)):
+            # We have no dependence on the parent translation here, so take a wild guess.
+            return torch.zeros(3)
         else:
-            logging.warn("Not inverting translation rule of type %s" % type(xyz_rule))
+            logging.warning("Not inverting translation rule of type %s" % type(xyz_rule))
             return None
 
     def get_potential_parents_for_node(node):
@@ -420,7 +426,7 @@ def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_n
     unverified_parent_nodes = []
     for observed_node in observed_nodes:
         unverified_parent_nodes += get_potential_parents_for_node(observed_node)
-        
+
     # Set up verification graph
     root_node = grammar.root_node_type(grammar.root_node_tf)
     explaining_nodes = observed_nodes + [root_node,]
@@ -437,10 +443,14 @@ def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_n
         explained = False
         for explaining_node in explaining_nodes:
             for rule in explaining_node.rules:
-                if isinstance(node, rule.child_type) and torch.isfinite(rule.score_child(explaining_node, node)):
-                    verification_graph.add_edge(explaining_node, node)
-                    explained = True
-                    break
+                if isinstance(node, rule.child_type):
+                    if torch.isfinite(rule.score_child(explaining_node, node)):
+                        verification_graph.add_edge(explaining_node, node)
+                        explained = True
+                        break
+                    else:
+                        logging.warning("Unverifying bottom-up node %s for score reasons." % node.name)
+                        print(explaining_node.tf, node.tf)
             if explained == True:
                 break
         if not explained:
@@ -551,6 +561,21 @@ def sample_likely_tree_with_greedy_parsing(
         print("Found tree with score %f in %fs" % (score, end_time - start_time))
     return tree_guess, score
 
+def generate_candidate_intermediate_nodes(grammar, observed_nodes, max_recursion_depth=10, verbose=False):
+    top_down_candidate_intermediate_nodes = generate_top_down_intermediate_nodes_by_supertree(
+        grammar, observed_nodes, max_recursion_depth=max_recursion_depth
+    )
+    bottom_up_candidate_intermediate_nodes = generate_bottom_up_intermediate_nodes_by_inverting_rules(
+        grammar, observed_nodes
+    )
+    if verbose:
+        print("%d top-down, %d bottom-up candidates." %
+              (len(top_down_candidate_intermediate_nodes),
+               len(bottom_up_candidate_intermediate_nodes)))
+    candidate_intermediate_nodes = top_down_candidate_intermediate_nodes + bottom_up_candidate_intermediate_nodes
+    assert all([not node.observed for node in candidate_intermediate_nodes])
+    return candidate_intermediate_nodes
+
 def infer_mle_tree_with_mip_from_proposals(
         grammar, observed_nodes, candidate_intermediate_nodes,
         verbose=False, N_solutions=1):
@@ -622,7 +647,7 @@ def infer_mle_tree_with_mip_from_proposals(
                     # If this edge is active, it adds this score to the total cost.
                     prog.AddLinearCost(-score * active)
                 elif verbose:
-                    logging.warning("Skipping rule ", var_name, " as its infeasible")
+                    logging.warning("Skipping rule %s as its infeasible." % var_name)
         if len(all_outgoing_activations) > 0:
             prog.AddLinearConstraint(sum(all_outgoing_activations) == rule_activation_expr)
         else:
@@ -661,7 +686,14 @@ def infer_mle_tree_with_mip_from_proposals(
                 prog.AddLinearConstraint(activation_var <= node.active)
                 # Each rule activation incurs an independent score based
                 # on its log-prob.
-                prog.AddLinearCost(-activation_var * np.log(node.rule_probs[rule_k].detach().item()))
+                on_score = np.log(node.rule_probs[rule_k].detach().item())
+                off_score = np.log(1. - node.rule_probs[rule_k].detach().item())
+                # Node inactive, active var off -> 0
+                # Node active, active var on -> On score
+                # Node active, active var off -> Off score
+                prog.AddLinearCost(-
+                    (activation_var * on_score + (1. - activation_var) * off_score - (1. - node.active) * off_score)
+                )
                 
         elif isinstance(node, GeometricSetNode):
             activation_vars = prog.NewBinaryVariables(node.max_children, node.name + "_outgoing")
@@ -679,12 +711,12 @@ def infer_mle_tree_with_mip_from_proposals(
                 # Each rule activation incurs an independent score based
                 # on its log-prob; a rule being active disables the score
                 # from the previous activation and enables the current score.
-                if rule_k > 0:
-                    last_score = np.log(node.rule_probs[rule_k - 1].detach().item())
-                else:
-                    last_score = 0.
                 this_score = np.log(node.rule_probs[rule_k].detach().item())
-                prog.AddLinearCost(-activation_var * (-last_score + this_score))
+                if rule_k == 0:
+                    prog.AddLinearCost(-activation_var * (this_score))
+                else:
+                    last_score = np.log(node.rule_probs[rule_k - 1].detach().item())
+                    prog.AddLinearCost(-activation_var * (this_score - last_score))
 
         else:
             raise NotImplementedError(type(node))
@@ -751,12 +783,12 @@ def infer_mle_tree_with_mip_from_proposals(
                             new_child.rule_k = edge_info["rule_k"]
                             tree.add_edge(new_node, new_child)
                             if verbose:
-                                print("Parsing edge %s -(%d)> %s" % (new_node.name, new_child.rule_k, new_child.name))
+                                print("Parsing edge %s --(%d, score %f)-> %s" % (new_node.name, new_child.rule_k, edge_info["score"], new_child.name))
                             expand_queue.append((optim_child, new_child))
                             found_active_edge = True
         
         optim_score = torch.tensor(result.get_suboptimal_objective(sol_k))
-        assert torch.isclose(tree.score(), -optim_score), "%f vs %f" % (tree.score(), -optim_score)
+        assert torch.isclose(tree.score(), -optim_score), "%f vs %f" % (tree.score(verbose=True), -optim_score)
         out_trees.append(tree)
     return out_trees
 
@@ -1181,9 +1213,14 @@ def add_mle_tree_parsing_to_prog(
             pass
         elif isinstance(parent_node, (OrNode, IndependentSetNode)):
             # Binary variables * log of probabilities.
+            # Node inactive, active var off -> 0
+            # Node active, active var on -> On score
+            # Node active, active var off -> Off score
             # If parent is inactive, all children are inactive, so these probs go to zero.
             for p, child in zip(parent_node.rule_probs, children):
-                prog.AddLinearCost(-np.log(p) * child.active)
+                prog.AddLinearCost(-(
+                    np.log(p) * child.active + np.log(1 - p) * (1 - child.active) - np.log(1 - p) * (1 - parent_node.active)
+                ))
         elif isinstance(parent_node, GeometricSetNode):
             # Copy probabilities out from the "fake" geometric dist.
             count_probs = parent_node.rule_probs.detach().numpy()

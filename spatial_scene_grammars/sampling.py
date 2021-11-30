@@ -229,7 +229,8 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                     if not np.isclose(rotation_rule.lb, rotation_rule.ub):
                         scale = rotation_rule.ub - rotation_rule.lb
                         random_angle = dist.Normal(torch.zeros(1), scale*translation_variance).sample()
-                        orig_angle, orig_axis = recover_relative_angle_axis(current_parent, current_child, target_axis=rotation_rule.axis)
+                        orig_angle, orig_axis, in_range = recover_relative_angle_axis(current_parent, current_child, target_axis=rotation_rule.axis)
+                        assert in_range
                         # Add angle to orig angle, and rotate around the joint's actual axis to get
                         # the new rotation offset.
                         new_angle_axis = rotation_rule.axis * (orig_angle + random_angle)
@@ -242,7 +243,8 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
                     # Apply small rotation around axis
                     scale = rotation_rule.concentration
                     random_angle = dist.Normal(torch.zeros(1), scale*translation_variance).sample()
-                    orig_angle, orig_axis = recover_relative_angle_axis(current_parent, current_child, target_axis=rotation_rule.axis)
+                    orig_angle, orig_axis, in_range = recover_relative_angle_axis(current_parent, current_child, target_axis=rotation_rule.axis)
+                    assert in_range
                     # Add angle to orig angle, and rotate around the joint's actual axis to get
                     # the new rotation offset.
                     new_angle_axis = rotation_rule.axis * (orig_angle + random_angle)
