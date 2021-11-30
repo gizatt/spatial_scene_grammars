@@ -310,7 +310,6 @@ def generate_top_down_intermediate_nodes_by_supertree(grammar, observed_nodes, m
             if node is not super_tree_root
         ]
     assert all([n.observed is False for n in candidate_intermediate_nodes])
-    print(candidate_intermediate_nodes)
     return candidate_intermediate_nodes
 
 def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_nodes, max_recursion_depth=10):
