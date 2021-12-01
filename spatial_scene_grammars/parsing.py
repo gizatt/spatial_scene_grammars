@@ -366,33 +366,33 @@ def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_n
     '''
     def invert_rot_rule(child, rot_rule):
         # Return a rotation tensor or None.
-        if isinstance(rot_rule, SameRotationRule):
+        if type(rot_rule) is SameRotationRule:
             return torch.matmul(child.rotation, rot_rule.offset.T)
-        elif isinstance(rot_rule, (UnconstrainedRotationRule, WorldFrameBinghamRotationRule)):
-            # We have no dependence on the parent rotation here, so take a wild guess.
-            return torch.eye(3)
-        elif isinstance(rot_rule, ParentFrameBinghamRotationRule):
+        elif type(rot_rule) is ParentFrameBinghamRotationRule:
             # Return child times (inverse rotation of) mode of offset distribution.
             R = quaternion_to_matrix(rot_rule.M[:, -1])
             return torch.matmul(child.rotation, R.T)
-        elif isinstance(rot_rule, UniformBoundedRevoluteJointRule):
+        elif type(rot_rule) is UniformBoundedRevoluteJointRule:
             angle_axis = rot_rule.axis * rot_rule.parameters["center"]
             R_offset = axis_angle_to_matrix(angle_axis.unsqueeze(0))[0, ...]
             return torch.matmul(child.rotation, R_offset.T)
+        elif type(rot_rule) in (UnconstrainedRotationRule, WorldFrameBinghamRotationRule):
+            # We have no dependence on the parent rotation here, so take a wild guess.
+            return torch.eye(3)
         else:
             logging.warning("Not inverting rotation rule of type %s" % type(rot_rule))
             return None
     
     def invert_xyz_rule(child, xyz_rule, parent_rotation):
         # Return a translation tensor or None.
-        if isinstance(xyz_rule, SamePositionRule):
+        if type(xyz_rule) is SamePositionRule:
             return child.translation - torch.matmul(parent_rotation, xyz_rule.offset)
-        elif isinstance(xyz_rule, ParentFrameGaussianOffsetRule):
+        elif type(xyz_rule) is ParentFrameGaussianOffsetRule:
             mean_offset = xyz_rule.parameters["mean"]
             return child.translation - torch.matmul(parent_rotation, mean_offset)
-        elif isinstance(xyz_rule, WorldFrameBBoxOffsetRule):
+        elif type(xyz_rule) is WorldFrameBBoxOffsetRule:
             return child.translation - xyz_rule.parameters["center"]
-        elif isinstance(xyz_rule, (WorldFrameBBoxRule, WorldFrameGaussianOffsetRule)):
+        elif type(xyz_rule) in (WorldFrameBBoxRule, WorldFrameGaussianOffsetRule):
             # We have no dependence on the parent translation here, so take a wild guess.
             return torch.zeros(3)
         else:
@@ -421,58 +421,78 @@ def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_n
                     prototype.translation = parent_translation
                     new_parents.append(prototype)
         return new_parents
-                    
-    # Build initial parent set.
-    unverified_parent_nodes = []
-    for observed_node in observed_nodes:
-        unverified_parent_nodes += get_potential_parents_for_node(observed_node)
-
-    # Set up verification graph
-    root_node = grammar.root_node_type(grammar.root_node_tf)
-    explaining_nodes = observed_nodes + [root_node,]
-    verification_graph = nx.DiGraph()
-    verification_graph.add_nodes_from(explaining_nodes)
-    for node in unverified_parent_nodes:
+        
+    expand_queue = [] + observed_nodes
+    for node in expand_queue:
         node.__recursion_count = 0
-    while len(unverified_parent_nodes) > 0:
-        node = unverified_parent_nodes.pop(0)
+    candidate_intermediate_nodes = []
+    while len(expand_queue) > 0:
+        node = expand_queue.pop(0)
+        print("Expanding ", node.name)
         if node.__recursion_count > max_recursion_depth:
             continue
-        verification_graph.add_node(node)
-        # Try to explain with observed or root
-        explained = False
-        for explaining_node in explaining_nodes:
-            for rule in explaining_node.rules:
-                if isinstance(node, rule.child_type):
-                    if torch.isfinite(rule.score_child(explaining_node, node)):
-                        verification_graph.add_edge(explaining_node, node)
-                        explained = True
-                        break
-                    else:
-                        logging.warning("Unverifying bottom-up node %s for score reasons." % node.name)
-                        print(explaining_node.tf, node.tf)
-            if explained == True:
-                break
-        if not explained:
-            # Try to explain with new node
-            new_parents = get_potential_parents_for_node(node)
-            for new_parent in new_parents:
-                new_parent.__recursion_count = node.__recursion_count + 1
-            unverified_parent_nodes += new_parents
+        new_nodes = get_potential_parents_for_node(node)
+        for new_node in new_nodes:
+            new_node.__recursion_count = node.__recursion_count + 1
+            print("New candidate: ", new_node.name, " at ", new_node.tf)
+        expand_queue += new_nodes
+        candidate_intermediate_nodes += new_nodes
 
-    # Collect verified nodes.
-    candidate_intermediate_nodes = []
-    explore_node_queue = []
-    for node in explaining_nodes:
-        explore_node_queue += list(verification_graph.successors(node))
-    while len(explore_node_queue) > 0:
-        node = explore_node_queue.pop(0)
-        if node.observed or node is root_node:
-            continue
-        candidate_intermediate_nodes.append(node)
-        print("Candidate %s with pose %s" % (node, node.tf))
-        explore_node_queue += list(verification_graph.successors(node))
-    return candidate_intermediate_nodes
+    # Build initial parent set.
+    #unverified_parent_nodes = []
+    #for observed_node in observed_nodes:
+    #    unverified_parent_nodes += get_potential_parents_for_node(observed_node)
+#
+    ## Set up verification graph
+    #root_node = grammar.root_node_type(grammar.root_node_tf)
+    #explaining_nodes = observed_nodes + [root_node,]
+    #verification_graph = nx.DiGraph()
+    #verification_graph.add_nodes_from(explaining_nodes)
+    #for node in unverified_parent_nodes:
+    #    node.__recursion_count = 0
+    #while len(unverified_parent_nodes) > 0:
+    #    node = unverified_parent_nodes.pop(0)
+    #    if node.__recursion_count > max_recursion_depth:
+    #        continue
+    #    verification_graph.add_node(node)
+    #    # Try to explain with observed or root
+    #    explained = False
+    #    for explaining_node in explaining_nodes:
+    #        for rule in explaining_node.rules:
+    #            if isinstance(node, rule.child_type):
+    #                if torch.isfinite(rule.score_child(explaining_node, node)):
+    #                    verification_graph.add_edge(explaining_node, node)
+    #                    explained = True
+    #                    break
+    #                else:
+    #                    logging.warning("Unverifying bottom-up node %s for score reasons." % node.name)
+    #                    print(explaining_node.tf, node.tf)
+    #        if explained == True:
+    #            break
+    #    if not explained:
+    #        # Try to explain with new node
+    #        new_parents = get_potential_parents_for_node(node)
+    #        for new_parent in new_parents:
+    #            new_parent.__recursion_count = node.__recursion_count + 1
+    #            verification_graph.add_edge(new_parent, node)
+    #        unverified_parent_nodes += new_parents
+#
+    ## Collect verified nodes.
+    #candidate_intermediate_nodes = []
+    #explore_node_queue = []
+    #for node in explaining_nodes:
+    #    explore_node_queue += list(verification_graph.successors(node))
+    #while len(explore_node_queue) > 0:
+    #    node = explore_node_queue.pop(0)
+    #    if node.observed or node is root_node:
+    #        continue
+    #    candidate_intermediate_nodes.append(node)
+    #    print("Candidate ", node.name, " at tf ", node.tf)
+    #    explore_node_queue += list(verification_graph.successors(node))
+#
+    # Resolve any duplicates found by following multiple paths through the
+    # tree.
+    return list(set(candidate_intermediate_nodes))
 
 def sample_likely_tree_with_greedy_parsing(
         grammar, observed_nodes, max_recursion_depth=10,
@@ -600,6 +620,10 @@ def infer_mle_tree_with_mip_from_proposals(
     # nodes a bit.
     observed_nodes = deepcopy(observed_nodes)
     candidate_intermediate_nodes = deepcopy(candidate_intermediate_nodes)
+
+    # Make sure there are no duplicates in these sets.
+    assert len(set(observed_nodes)) == len(observed_nodes), "Duplicate observeds."
+    assert len(set(candidate_intermediate_nodes)) == len(candidate_intermediate_nodes), "Duplicate candidates."
     prog = MathematicalProgram()
 
     # Extract root node; it may have been observed,
@@ -645,6 +669,7 @@ def infer_mle_tree_with_mip_from_proposals(
                     )
                     all_outgoing_activations.append(active)
                     # If this edge is active, it adds this score to the total cost.
+                    print("Candidate edge %s --(%f, %d)-> %s" % (parent.name, score, rule_k, node.name))
                     prog.AddLinearCost(-score * active)
                 elif verbose:
                     logging.warning("Skipping rule %s as its infeasible." % var_name)
@@ -675,8 +700,11 @@ def infer_mle_tree_with_mip_from_proposals(
             for rule_k, (rule, activation_var) in enumerate(zip(node.rules, activation_vars)):
                 add_edges_for_rule(node, rule, rule_k, activation_var)
                 # Each rule activation has a corresponding score based
-                # on its log-prob.
-                prog.AddLinearCost(-activation_var * np.log(node.rule_probs[rule_k].detach().item()))
+                # on its log-prob. Short-circuit in zero-prob cases.
+                if torch.isclose(node.rule_probs[rule_k], torch.zeros(1)):
+                    prog.AddLinearConstraint(activation_var == 0)
+                else:
+                    prog.AddLinearCost(-activation_var * np.log(node.rule_probs[rule_k].detach().item()))
             
         elif isinstance(node, IndependentSetNode):
             activation_vars = prog.NewBinaryVariables(len(node.rules), node.name + "_outgoing")
@@ -685,15 +713,21 @@ def infer_mle_tree_with_mip_from_proposals(
                 # The rules are only active if the parent is active.
                 prog.AddLinearConstraint(activation_var <= node.active)
                 # Each rule activation incurs an independent score based
-                # on its log-prob.
-                on_score = np.log(node.rule_probs[rule_k].detach().item())
-                off_score = np.log(1. - node.rule_probs[rule_k].detach().item())
-                # Node inactive, active var off -> 0
-                # Node active, active var on -> On score
-                # Node active, active var off -> Off score
-                prog.AddLinearCost(-
-                    (activation_var * on_score + (1. - activation_var) * off_score - (1. - node.active) * off_score)
-                )
+                # on its log-prob. Short-circuit if this rule is always on
+                # or off.
+                if torch.isclose(node.rule_probs[rule_k], torch.ones(1)):
+                    prog.AddLinearConstraint(activation_var == node.active)
+                elif torch.isclose(node.rule_probs[rule_k], torch.zeros(1)):
+                    prog.AddLinearConstraint(activation_var == 0)
+                else:
+                    on_score = np.log(node.rule_probs[rule_k].detach().item())
+                    off_score = np.log(1. - node.rule_probs[rule_k].detach().item())
+                    # Node inactive, active var off -> 0
+                    # Node active, active var on -> On score
+                    # Node active, active var off -> Off score
+                    prog.AddLinearCost(-
+                        (activation_var * on_score + (1. - activation_var) * off_score - (1. - node.active) * off_score)
+                    )
                 
         elif isinstance(node, GeometricSetNode):
             activation_vars = prog.NewBinaryVariables(node.max_children, node.name + "_outgoing")
@@ -738,7 +772,6 @@ def infer_mle_tree_with_mip_from_proposals(
     os.system("rm -f %s" % logfile)
     options.SetOption(solver.id(), "LogFile", logfile)
     options.SetOption(solver.id(), "MIPGap", 1E-3)
-    N_solutions = 1
     if N_solutions > 1:
         options.SetOption(solver.id(), "PoolSolutions", N_solutions)
         options.SetOption(solver.id(), "PoolSearchMode", 2)
