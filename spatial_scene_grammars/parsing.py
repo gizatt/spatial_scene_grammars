@@ -428,13 +428,11 @@ def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_n
     candidate_intermediate_nodes = []
     while len(expand_queue) > 0:
         node = expand_queue.pop(0)
-        print("Expanding ", node.name)
         if node.__recursion_count > max_recursion_depth:
             continue
         new_nodes = get_potential_parents_for_node(node)
         for new_node in new_nodes:
             new_node.__recursion_count = node.__recursion_count + 1
-            print("New candidate: ", new_node.name, " at ", new_node.tf)
         expand_queue += new_nodes
         candidate_intermediate_nodes += new_nodes
 
@@ -669,9 +667,8 @@ def infer_mle_tree_with_mip_from_proposals(
                     )
                     all_outgoing_activations.append(active)
                     # If this edge is active, it adds this score to the total cost.
-                    print("Candidate edge %s --(%f, %d)-> %s" % (parent.name, score, rule_k, node.name))
                     prog.AddLinearCost(-score * active)
-                elif verbose:
+                elif verbose > 1:
                     logging.warning("Skipping rule %s as its infeasible." % var_name)
         if len(all_outgoing_activations) > 0:
             prog.AddLinearConstraint(sum(all_outgoing_activations) == rule_activation_expr)
@@ -693,7 +690,7 @@ def infer_mle_tree_with_mip_from_proposals(
             # Rules are gated on parent activation.
             for rule_k, rule in enumerate(node.rules):
                 add_edges_for_rule(node, rule, rule_k, node.active)
-            
+
         elif isinstance(node, OrNode):
             activation_vars = prog.NewBinaryVariables(len(node.rules), node.name + "_outgoing")
             # Rules are gated on parent activation, and exactly one
@@ -767,7 +764,7 @@ def infer_mle_tree_with_mip_from_proposals(
         incoming_edges = parse_graph.in_edges(nbunch=node, data="active")
         activations = [edge[-1] for edge in incoming_edges]
         prog.AddLinearConstraint(sum(activations) == node.active)
-
+        
     solver = GurobiSolver()
     options = SolverOptions()
     logfile = "/tmp/gurobi_%s.log" % datetime.now().strftime("%Y%m%dT%H%M%S")
