@@ -676,7 +676,9 @@ def infer_mle_tree_with_mip_from_proposals(
         if len(all_outgoing_activations) > 0:
             prog.AddLinearConstraint(sum(all_outgoing_activations) == rule_activation_expr)
         else:
-            if verbose:
+            # No possible outgoing edges, so the rule better not be activated.
+            prog.AddLinearConstraint(rule_activation_expr == 0)
+            if verbose > 1:
                 logging.warning("No outgoing connections for %s:%s_%d" % (parent.name, type(rule), rule_k))
         
     for node in all_nodes:
