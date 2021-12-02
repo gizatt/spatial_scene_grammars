@@ -301,27 +301,17 @@ def attempt_tree_repair_in_place(tree_guess, root_node, candidate_intermediate_n
         num_iterations += 1
     return tree_guess
 
-def generate_top_down_intermediate_nodes_by_supertree(grammar, observed_nodes, max_recursion_depth=10):
+def generate_top_down_intermediate_nodes_by_supertree(grammar, nodes_to_expand, max_recursion_depth=10):
     '''
-    Given a grammar and a set of observed nodes (which are assumed to all be
-    generate-able by the grammar), generates a set of candidate intermediate
-    nodes by forward-sampling N supertrees rooted at each observed node and
+    Given a grammar and a set of nodes to expand, generates an additional set of
+    unobserved nodes by forward-sampling N supertrees rooted at each candidate node and
     the grammar root. These supertrees terminate when they reach another
     observed node or reach a maximum tree depth.
-
-    Doing expansion from each observed node rather than just the grammar root
-    creates intermediate nodes that are correctly positioned relative to
-    those observed nodes. For example, a cabinet may create latent cluster nodes
-    at each shelf level within the cabinet; this makes sure there are good
-    proposed shelf levels from each actual observed cabinet.
     '''
 
-    root_types = [type(n) for n in observed_nodes]
-    root_tfs = [n.tf.detach() for n in observed_nodes]
-    if grammar.root_node_type not in root_types:
-        root_types += [grammar.root_node_type,]
-        root_tfs += [grammar.root_node_tf.detach(),]
-
+    root_types = [type(n) for n in nodes_to_expand]
+    root_tfs = [n.tf.detach() for n in nodes_to_expand]
+    
     candidate_intermediate_nodes = []
     for root_type, root_tf in zip(root_types, root_tfs):
         super_tree = grammar.make_super_tree_from_root_node_type(
@@ -339,31 +329,11 @@ def generate_top_down_intermediate_nodes_by_supertree(grammar, observed_nodes, m
 
 def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_nodes, max_recursion_depth=10):
     '''
-    Given a grammar and a set of observed nodes (which are assumed to all be
-    generate-able by the grammar), generates a set of candidate intermediate
-    nodes with the property that every candidate intermediate node is guaranteed
-    to be possible to be created at its given pose from the grammar.
-    
-    For each observed node, search through all unobserved node types
-    in the grammar, and search for rules on those types that could
-    create the observed node type. For each such rule, create a candidate
-    parent by inverting the rule (for those rules that are easy to invert).
-    Add that parent to a list of unverified parents.
-    
-    Add the nodes from the list of unverified parents, the grammar root,
-    and the observed nodes to a digraph (with no edges yet). For each parent
-    on the list of unverified parents, search for a way to explain it from
-    another node: check if it can be produced from an observed
-    node in the observed node set, from the grammar root, or from an unobserved
-    node type in the grammar. If the former, add an edge from the observed/root
-    to the now-verified parent.
-    If the latter, try to create a new node of that type by inverting the
-    appropriate rules, push *that* node onto the queue of unverified parents,
-    and connect the new parent to the still-unverified node. Repeat until the list
-    of unverified parents is done. (Track recursion to be sure this terminates.)
-    
-    Return the (recursive) children of al observed/root nodes in this digraph.
+    Given a grammar and a set of unobserve nodes, produces candidate unobserved
+    nodes by proposing parents for the observed nodes (and their proposed parents,
+    etc) by inverting those rule types that are obvious how to invert.
     '''
+
     def invert_rot_rule(child, rot_rule):
         # Return a rotation tensor or None.
         if type(rot_rule) is SameRotationRule:
@@ -436,76 +406,74 @@ def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_n
         expand_queue += new_nodes
         candidate_intermediate_nodes += new_nodes
 
-    # Build initial parent set.
-    #unverified_parent_nodes = []
-    #for observed_node in observed_nodes:
-    #    unverified_parent_nodes += get_potential_parents_for_node(observed_node)
-#
-    ## Set up verification graph
-    #root_node = grammar.root_node_type(grammar.root_node_tf)
-    #explaining_nodes = observed_nodes + [root_node,]
-    #verification_graph = nx.DiGraph()
-    #verification_graph.add_nodes_from(explaining_nodes)
-    #for node in unverified_parent_nodes:
-    #    node.__recursion_count = 0
-    #while len(unverified_parent_nodes) > 0:
-    #    node = unverified_parent_nodes.pop(0)
-    #    if node.__recursion_count > max_recursion_depth:
-    #        continue
-    #    verification_graph.add_node(node)
-    #    # Try to explain with observed or root
-    #    explained = False
-    #    for explaining_node in explaining_nodes:
-    #        for rule in explaining_node.rules:
-    #            if isinstance(node, rule.child_type):
-    #                if torch.isfinite(rule.score_child(explaining_node, node)):
-    #                    verification_graph.add_edge(explaining_node, node)
-    #                    explained = True
-    #                    break
-    #                else:
-    #                    logging.warning("Unverifying bottom-up node %s for score reasons." % node.name)
-    #                    print(explaining_node.tf, node.tf)
-    #        if explained == True:
-    #            break
-    #    if not explained:
-    #        # Try to explain with new node
-    #        new_parents = get_potential_parents_for_node(node)
-    #        for new_parent in new_parents:
-    #            new_parent.__recursion_count = node.__recursion_count + 1
-    #            verification_graph.add_edge(new_parent, node)
-    #        unverified_parent_nodes += new_parents
-#
-    ## Collect verified nodes.
-    #candidate_intermediate_nodes = []
-    #explore_node_queue = []
-    #for node in explaining_nodes:
-    #    explore_node_queue += list(verification_graph.successors(node))
-    #while len(explore_node_queue) > 0:
-    #    node = explore_node_queue.pop(0)
-    #    if node.observed or node is root_node:
-    #        continue
-    #    candidate_intermediate_nodes.append(node)
-    #    print("Candidate ", node.name, " at tf ", node.tf)
-    #    explore_node_queue += list(verification_graph.successors(node))
-#
-    # Resolve any duplicates found by following multiple paths through the
-    # tree.
     return list(set(candidate_intermediate_nodes))
 
-def generate_candidate_intermediate_nodes(grammar, observed_nodes, max_recursion_depth=10, verbose=False):
-    top_down_candidate_intermediate_nodes = generate_top_down_intermediate_nodes_by_supertree(
-        grammar, observed_nodes, max_recursion_depth=max_recursion_depth
-    )
+def get_unique_node_set(node_set):
+    '''
+    Given a set of nodes, returns a de-duplicated set of nodes that are
+    unique in terms of their combined type and pose.
+    '''
+    pruned_node_set = []
+    for node in node_set:
+        is_in_pruned_set = False
+        for existing_node in pruned_node_set:
+            if type(node) is type(existing_node) and torch.allclose(node.tf, existing_node.tf):
+                is_in_pruned_set = True
+                break
+        if not is_in_pruned_set:
+            pruned_node_set.append(node)
+    return pruned_node_set
+
+def generate_candidate_node_pose_sets(grammar, observed_nodes, max_recursion_depth=10, verbose=False):
+    '''
+    Given a grammar and a set of observed nodes (which are assumed to all be
+    generate-able by the grammar), generates a set of candidate poses for each
+    unobserved node type in the grammar by a bottom-up-then-top-down sampling procedure.
+
+    1) Initialize a queue with the observed nodes.
+    2) While the queue is not empty, pop off a node, and add new candidate
+    nodes to the queue by inverting any invertible rules from any unobserved node
+    in the grammar that could generate the target node.
+
+    This'll grow the tree upwards as far as possible.
+
+    Then grow the tree downwards:
+    1) Initialize a queue with the root + obserevd nodes + candidate intermediate node.
+    2) While the queue is not empty, pop off a node, and add new candidate
+    nodes, propose new nodes by sampling all rules from the node that generate unobserved
+    node types, and add these nodes to the queue.
+    '''
+
     bottom_up_candidate_intermediate_nodes = generate_bottom_up_intermediate_nodes_by_inverting_rules(
         grammar, observed_nodes
     )
+
+    # Prune down the set of nodes to forward-sample to only the unique / indistinguishable
+    # ones in terms of their poses.
+    unpruned_node_set = [grammar.root_node_type(grammar.root_node_tf),] + observed_nodes + bottom_up_candidate_intermediate_nodes
+    pruned_node_set = get_unique_node_set(unpruned_node_set)
     if verbose:
-        print("%d top-down, %d bottom-up candidates." %
-              (len(top_down_candidate_intermediate_nodes),
-               len(bottom_up_candidate_intermediate_nodes)))
-    candidate_intermediate_nodes = top_down_candidate_intermediate_nodes + bottom_up_candidate_intermediate_nodes
-    assert all([not node.observed for node in candidate_intermediate_nodes])
-    return candidate_intermediate_nodes
+        print("%d unique bottom-up candidates, including observeds and root." % len(pruned_node_set))
+
+    top_down_candidate_intermediate_nodes = generate_top_down_intermediate_nodes_by_supertree(
+        grammar, pruned_node_set, max_recursion_depth=max_recursion_depth
+    )
+    if verbose:
+        print("%d new top-down candidates." % len(top_down_candidate_intermediate_nodes))
+
+    # Prune again to get a complete set of unique proposed nodes.
+    all_candidate_nodes = get_unique_node_set(top_down_candidate_intermediate_nodes + pruned_node_set)
+    # Convert to a mapping from node type to node pose for non-observed nodes.
+    proposed_poses_by_type = {}
+    for node in all_candidate_nodes:
+        if node.observed or type(node) is grammar.root_node_type:
+            continue
+        type_name = type(node).__name__
+        if type_name not in proposed_poses_by_type.keys():
+            proposed_poses_by_type[type_name] = []
+        proposed_poses_by_type[type_name].append(node.tf)
+
+    return proposed_poses_by_type
 
 def sample_likely_tree_with_greedy_parsing(
         grammar, observed_nodes, max_recursion_depth=10,
@@ -588,10 +556,28 @@ def sample_likely_tree_with_greedy_parsing(
     return tree_guess, score
 
 def infer_mle_tree_with_mip_from_proposals(
-        grammar, observed_nodes, candidate_intermediate_nodes,
-        verbose=False, N_solutions=1):
+        grammar, observed_nodes, proposed_poses_by_unobserved_type,
+        verbose=False, N_solutions=1, max_recursion_depth=10,
+        min_ll_for_consideration=-100.):
     '''
-        Set up a MIP to try to glue a valid tree together.
+        Set up a MIP to recover MLE parse trees from proposed intermediate
+        node locations by finding a max-score tree that explains all
+        observed nodes with intermediate node poses chosen (without
+        replacement) from the proposed pose set.
+
+        Build a supertree for the grammar. For observed nodes, add
+
+        For each node in the supertree,
+        build a set of the actual poses that that node could take, and use
+        a set of binary variables to choose among them; for the root and
+        observed nodes, enforce 
+        root, add binary activation variables for each node in the supertree and appropriate constraints
+        and costs on parent/child activations implementing discrete
+        probabilities (in the same way as MIP MAP parsing). Correspond
+        the observed node types in the supertree to their corresponding
+        observed nodes in the observed node set, forcing all observed
+        nodes to be explained exactly once. 
+
         We can build a graph where each node is an observed
         or candidate intermediate node, and there is a directed
         edge for every legal rule, with a weight corresponding to its
@@ -610,153 +596,207 @@ def infer_mle_tree_with_mip_from_proposals(
     # Make local copy of node sets, since I'll be mutating the input
     # nodes a bit.
     observed_nodes = deepcopy(observed_nodes)
-    candidate_intermediate_nodes = deepcopy(candidate_intermediate_nodes)
-
-    # Make sure there are no duplicates in these sets.
     assert len(set(observed_nodes)) == len(observed_nodes), "Duplicate observeds."
-    assert len(set(candidate_intermediate_nodes)) == len(candidate_intermediate_nodes), "Duplicate candidates."
+
+    # Build supertree for the grammar.
+    super_tree = grammar.make_super_tree(max_recursion_depth=max_recursion_depth, detach=True)
+    super_tree_root = super_tree.get_root()
+
     prog = MathematicalProgram()
 
-    # Extract root node; it may have been observed,
-    # otherwise produce a new one.
-    root = None
-    for node in observed_nodes:
-        if isinstance(node, grammar.root_node_type):
-            root = node
-    if root is None:
-        root = grammar.root_node_type(tf=grammar.root_node_tf)
-        observed_nodes += [root, ]
+    # For every node in the supertree, build the list of poses that that
+    # node could take. Observed nodes get special handling since
+    # they need to be in one-to-one correspondence with the actual observations.
+    for n in super_tree:
+        n._possible_tfs = []
+        n._tf_actives = []
 
-    # For each node, iterate over its rules and add appropriate edges.
-    all_nodes = observed_nodes + candidate_intermediate_nodes
-    # Important to use a MultiDiGraph, as there may be multiple edges
-    # between two nodes (corresponding to different rules being used
-    # to generate the same node).
-    parse_graph = nx.MultiDiGraph()
-    parse_graph.add_nodes_from(all_nodes)
-    def add_edges_for_rule(parent, rule, rule_k, rule_activation_expr):
-        # Given a parent node and one of its rules, add directed
-        # edges from this parent node to all children that rule could
-        # create.
-        # rule_activation_expr should be a linear expression of
-        # decision variables that evaluates to 1 when this rule
-        # is active and 0 when not.
-        if isinstance(parent, GeometricSetNode):
-            assert rule_k >= 0 and rule_k <= parent.max_children
-            assert rule is parent.rules[0]
-        elif isinstance(parent, (AndNode, OrNode, IndependentSetNode)):
-            assert rule is parent.rules[rule_k]
+    # Populate correspondences for observed nodes.
+    for node_k, observed_node in enumerate(observed_nodes):
+        possible_sources = [n for n in super_tree if type(n) == type(observed_node)]
+        if len(possible_sources) == 0:
+            raise ValueError("Grammar invalid for observation: can't explain observed node ", observed_node)
+        source_actives = prog.NewBinaryVariables(len(possible_sources), observed_node.__class__.__name__ + str(node_k) + "_sources")
+
+        # Store these variables
+        observed_node._source_actives = source_actives
+        for k, n in enumerate(possible_sources):
+            n._possible_tfs.append(observed_node.tf)
+            n._tf_actives.append(source_actives[k])
+        # Each observed node needs exactly one explaining input.
+        prog.AddLinearEqualityConstraint(sum(source_actives) == 1)
+
+    # Populate the rest of the nodes and add appropriate correspondence constraints.
+    for node in super_tree:
+        # Bookkeeping variable of whether this node is active, which will be
+        # constrained to be equal to the number of active incoming edges, or
+        # 1 for the root node.
+        node._active = prog.NewBinaryVariables(1, "%s_active" % node.name)[0]
+        if node is super_tree_root:
+            node._possible_tfs = [super_tree_root.tf,]
+            node._tf_actives = [1,]
+            prog.AddLinearEqualityConstraint(node._active == 1)
+        elif node.observed:
+            # Possible TFs are the full set of observed node tfs,
+            # as populated in a previous loop. The observed node is
+            # active iff it is corresponded to an observation.
+            if len(node._tf_actives) > 0:
+                prog.AddLinearConstraint(sum(node._tf_actives) == node._active)
+            else:
+                prog.AddLinearConstraint(node._active == 0)
         else:
-            raise ValueError(type(rule), "Bad type.")
-        all_outgoing_activations = []
-        for node in all_nodes:
-            if isinstance(node, rule.child_type) and node is not parent:
-                score = rule.score_child(parent, node).detach().item()
-                var_name = "%s:%s_%d:%s" % (parent.name, type(rule).__name__, rule_k, node.name)
-                if np.isfinite(score):
-                    active = prog.NewBinaryVariables(1, var_name)[0]
-                    parse_graph.add_edge(
-                        parent, node, active=active, score=score, rule_k=rule_k
+            type_name = type(node).__name__
+            if type_name not in proposed_poses_by_unobserved_type.keys():
+                logging.warning("Didn't propose poses for node type %s." % (type_name))
+                continue
+            node._possible_tfs = proposed_poses_by_unobserved_type[type_name]
+            if len(node._possible_tfs) == 0:
+                logging.warning("Empty proposed poses for node type %s." % (type_name))
+                continue
+            node._tf_actives = prog.NewBinaryVariables(len(node._possible_tfs), type_name + "_tf_actives")
+            prog.AddLinearEqualityConstraint(sum(node._tf_actives) == node._active)
+
+    # For each parent/child pair in the supertree, choose among all
+    # possible edges weighted by the edge cost.
+    for parent_node in super_tree:
+        children = super_tree.get_children(parent_node)
+        ## Get child rule list. Can't use get_children_and_rules
+        # here since we're operating on a supertree, so the standard
+        # scene tree logic for getting rules isn't correct.
+        if isinstance(parent_node, GeometricSetNode):
+            rules = [parent_node.rule for k in range(len(children))]
+        elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
+            rules = parent_node.rules
+        elif isinstance(parent_node, TerminalNode):
+            rules = []
+        else:
+            raise ValueError("Unexpected node type: ", type(parent_node))
+
+        # Pick from every way of picking the pose of the parent + child,
+        # weighted by the score of that edge.
+        for child_node, rule in zip(children, rules):
+            # Build full set of possible parent/child tf pairs
+            # and their corresponding scores.
+            activation_pairs = []
+            scores = []
+            for parent_tf_active, parent_tf in zip(parent_node._tf_actives, parent_node._possible_tfs):
+                for child_tf_active, child_tf in zip(child_node._tf_actives, child_node._possible_tfs):
+                    # Use supertree nodes as proxies for rule evaluation.
+                    parent_node.tf = parent_tf
+                    child_node.tf = child_tf
+                    score = rule.score_child(parent_node, child_node)
+                    if score < min_ll_for_consideration:
+                        continue
+                    activation_pairs.append((parent_tf_active, child_tf_active))
+                    scores.append(score)
+            if len(activation_pairs) == 0:
+                # No way to generate this child set, so this edge in the supertree
+                # will never be active.
+                prog.AddLinearEqualityConstraint(child_node._active == 0)
+                continue
+            scores = np.array(scores)
+            # Decide which edge (if any) is active.
+            edge_actives = prog.NewBinaryVariables(len(activation_pairs), "%s-->%s_rule_choice" % (parent_node.name, child_node.name))
+            # Only one edge can be active; edges activate their corresponding rule scores;
+            # and the child is active iff an edge is on.
+            prog.AddLinearConstraint(sum(edge_actives) == child_node._active)
+            prog.AddLinearCost(-sum(edge_actives * scores))
+            # The edge can only be active if the parent and child tf activation is on,
+            # meaning the parent and child actually take that TF.
+            for edge_active, (parent_tf_active, child_tf_active) in zip(edge_actives, activation_pairs):
+                # If either is off, then edge_active is forced to 0.
+                prog.AddLinearConstraint(edge_active <= (parent_tf_active + child_tf_active)/2.)
+
+
+        # Apply constraints and costs over selecting this particular
+        # child set to be active.
+        child_actives = [c._active for c in children]
+
+        # Constraints
+        if isinstance(parent_node, GeometricSetNode):
+            # Geometric node child ordering to reduce duplicate parse: a child can
+            # only be active if the previous child is also active.
+            for k in range(len(child_actives) - 1):
+                # child_{k+1} implies child_k
+                # i.e. child_k >= child_{k+1}
+                prog.AddLinearConstraint(child_actives[k] >= child_actives[k+1])
+            # The geometric process we used (np.random.geometric) is only supported
+            # on k=1, ..., so constrain that the # of active children must be
+            # nonzero if this node is on.
+            if len(child_actives) > 0:
+                prog.AddLinearConstraint(sum(child_actives) >= parent_node._active)
+            # Assert some arbitrary ordering to child poses: that they
+            # ascend in their x coordinate. We can calculate the x coordinate
+            # of children as a linear expression of the tf correspondence variable
+            # and corresponding x coordinates. This constraint is deactivated by
+            # a big M term if the second child in the comparison isn't active.
+            child_xs = []
+            # Get biggest possible x for big M deactivation
+            max_child_x = max([max([tf[0, 3].detach().item() for tf in child._possible_tfs]) for child in children])
+            # Accumulate expressions of child x
+            for child in children:
+                child_x = sum([
+                    tf[0, 3].detach().item() * active for (tf, active) in zip(child._possible_tfs, child._tf_actives)
+                ])
+                child_xs.append(child_x)
+            for k in range(len(children) - 1):
+                child_x = child_xs[k]
+                next_child_x = child_xs[k+1]
+                next_child = children[k+1]
+                c = child_x <= next_child_x + max_child_x * (1. - next_child._active)
+                if len(c.GetFreeVariables()) > 0:
+                    # In some cases this formula simplifies to True, which breaks
+                    # AddLinearConstraint.
+                    prog.AddLinearConstraint(c)
+
+        elif isinstance(parent_node, AndNode):
+            # All children should be on if the parent node is on.
+            for k in range(len(child_actives)):
+                prog.AddLinearConstraint(child_actives[k] >= parent_node._active)
+            # TODO(gizatt) Could do symmetry breaking here for children of
+            # like type (e.g. singles-pairs constituency grammar).
+        elif isinstance(parent_node, OrNode):
+            # Exactly one child can be on if the parent is on.
+            prog.AddLinearConstraint(sum(child_actives) == parent_node._active)
+        elif isinstance(parent_node, (TerminalNode, IndependentSetNode)):
+            # No additional constraint on which set of children should be active.
+            pass
+        else:
+            raise ValueError("Unexpected node type: ", type(parent_node))
+
+        # Costs
+        if isinstance(parent_node, (AndNode, TerminalNode)):
+            pass
+        elif isinstance(parent_node, OrNode):
+            for p, child in zip(parent_node.rule_probs, children):
+                prog.AddLinearCost(-np.log(p) * child._active)
+        elif isinstance(parent_node, (OrNode, IndependentSetNode)):
+            # Binary variables * log of probabilities.
+            # Node inactive, active var off -> 0
+            # Node active, active var on -> On score
+            # Node active, active var off -> Off score
+            # If parent is inactive, all children are inactive, so these probs go to zero.
+            for p, child in zip(parent_node.rule_probs.detach().numpy(), children):
+                prog.AddLinearCost(-(
+                    np.log(p) * child._active + np.log(1 - p) * (1 - child._active) - np.log(1 - p) * (1 - parent_node._active)
+                ))
+        elif isinstance(parent_node, GeometricSetNode):
+            # Copy probabilities out from the "fake" geometric dist.
+            count_probs = parent_node.rule_probs.detach().numpy()
+            for child_k, child in enumerate(children):
+                # Any given child being active removes the prob of the last #
+                # of children being active, and adds the prob of this # of children
+                # being active.
+                if child_k == 0:
+                    prog.AddLinearCost(-np.log(count_probs[child_k]) * child._active)
+                else:
+                    prog.AddLinearCost(
+                        (np.log(count_probs[child_k-1]) -
+                         np.log(count_probs[child_k])) 
+                        * child._active
                     )
-                    all_outgoing_activations.append(active)
-                    # If this edge is active, it adds this score to the total cost.
-                    prog.AddLinearCost(-score * active)
-                elif verbose > 1:
-                    logging.warning("Skipping rule %s as its infeasible." % var_name)
-        if len(all_outgoing_activations) > 0:
-            prog.AddLinearConstraint(sum(all_outgoing_activations) == rule_activation_expr)
         else:
-            # No possible outgoing edges, so the rule better not be activated.
-            prog.AddLinearConstraint(rule_activation_expr == 0)
-            if verbose > 1:
-                logging.warning("No outgoing connections for %s:%s_%d" % (parent.name, type(rule), rule_k))
-        
-    for node in all_nodes:
-        # Add activation variable for this node.
-        node.active = prog.NewBinaryVariables(1, node.name + "_active")[0]
-
-        if isinstance(node, TerminalNode):
-            # No rules / children to worry about.
-            continue
-
-        elif isinstance(node, AndNode):
-            # Rules are gated on parent activation.
-            for rule_k, rule in enumerate(node.rules):
-                add_edges_for_rule(node, rule, rule_k, node.active)
-
-        elif isinstance(node, OrNode):
-            activation_vars = prog.NewBinaryVariables(len(node.rules), node.name + "_outgoing")
-            # Rules are gated on parent activation, and exactly one
-            # is active.
-            prog.AddLinearConstraint(sum(activation_vars) == node.active)
-            for rule_k, (rule, activation_var) in enumerate(zip(node.rules, activation_vars)):
-                add_edges_for_rule(node, rule, rule_k, activation_var)
-                # Each rule activation has a corresponding score based
-                # on its log-prob. Short-circuit in zero-prob cases.
-                if torch.isclose(node.rule_probs[rule_k], torch.zeros(1)):
-                    prog.AddLinearConstraint(activation_var == 0)
-                else:
-                    prog.AddLinearCost(-activation_var * np.log(node.rule_probs[rule_k].detach().item()))
-            
-        elif isinstance(node, IndependentSetNode):
-            activation_vars = prog.NewBinaryVariables(len(node.rules), node.name + "_outgoing")
-            for rule_k, (rule, activation_var) in enumerate(zip(node.rules, activation_vars)):
-                add_edges_for_rule(node, rule, rule_k, activation_var)
-                # The rules are only active if the parent is active.
-                prog.AddLinearConstraint(activation_var <= node.active)
-                # Each rule activation incurs an independent score based
-                # on its log-prob. Short-circuit if this rule is always on
-                # or off.
-                if torch.isclose(node.rule_probs[rule_k], torch.ones(1)):
-                    prog.AddLinearConstraint(activation_var == node.active)
-                elif torch.isclose(node.rule_probs[rule_k], torch.zeros(1)):
-                    prog.AddLinearConstraint(activation_var == 0)
-                else:
-                    on_score = np.log(node.rule_probs[rule_k].detach().item())
-                    off_score = np.log(1. - node.rule_probs[rule_k].detach().item())
-                    # Node inactive, active var off -> 0
-                    # Node active, active var on -> On score
-                    # Node active, active var off -> Off score
-                    prog.AddLinearCost(-
-                        (activation_var * on_score + (1. - activation_var) * off_score - (1. - node.active) * off_score)
-                    )
-                
-        elif isinstance(node, GeometricSetNode):
-            activation_vars = prog.NewBinaryVariables(node.max_children, node.name + "_outgoing")
-            # Ensure that these variables activate in order by constraining
-            # that for a rule to be active, the preceeding rule must also be
-            # active.
-            for k in range(len(activation_vars) - 1):
-                prog.AddLinearConstraint(activation_vars[k + 1] <= activation_vars[k])
-            # Ensure at least one is active if the node is active.
-            # If the node is inactive, then all will be deactivated.
-            prog.AddLinearConstraint(activation_vars[0] == node.active)
-            rules = [node.rules[0] for k in range(node.max_children)]
-            for rule_k, (rule, activation_var) in enumerate(zip(rules, activation_vars)):
-                add_edges_for_rule(node, rule, rule_k, activation_var)
-                # Each rule activation incurs an independent score based
-                # on its log-prob; a rule being active disables the score
-                # from the previous activation and enables the current score.
-                this_score = np.log(node.rule_probs[rule_k].detach().item())
-                if rule_k == 0:
-                    prog.AddLinearCost(-activation_var * (this_score))
-                else:
-                    last_score = np.log(node.rule_probs[rule_k - 1].detach().item())
-                    prog.AddLinearCost(-activation_var * (this_score - last_score))
-
-        else:
-            raise NotImplementedError(type(node))
-        
-    # Now that the DiGraph is fully formed, go in an constrain node
-    # activation vars to depend on explanatory incoming edges.
-    for node in observed_nodes:
-        prog.AddLinearConstraint(node.active == True)
-    for node in all_nodes:
-        if node is root:
-            continue
-        incoming_edges = parse_graph.in_edges(nbunch=node, data="active")
-        activations = [edge[-1] for edge in incoming_edges]
-        prog.AddLinearConstraint(sum(activations) == node.active)
+            raise ValueError("Unexpected node in cost assembly: ", type(parent_node))
         
     solver = GurobiSolver()
     options = SolverOptions()
@@ -787,34 +827,39 @@ def infer_mle_tree_with_mip_from_proposals(
             print("Building tree for sol %d..." % sol_k)
         def get_sol(var):
             return result.GetSuboptimalSolution(var, sol_k)
-        tree = SceneTree()
-        new_root = deepcopy(root)
-        tree.add_node(new_root)
-        expand_queue = [(root, new_root)]
-        while len(expand_queue) > 0:
-            optim_node, new_node = expand_queue.pop(0)
-            assert get_sol(optim_node.active)
-            for optim_child in parse_graph.successors(optim_node):
-                if get_sol(optim_child.active):
-                    # Make sure the edge, too, was labeled active. Since we have
-                    # a MultiDiGraph, there may be multiple edges from this parent
-                    # to child, but exactly one should be active.
-                    edge_infos = parse_graph.get_edge_data(optim_node, optim_child)
-                    found_active_edge = False
-                    for edge_info in edge_infos.values():
-                        if get_sol(edge_info["active"]):
-                            assert not found_active_edge
-                            new_child = deepcopy(optim_child)
-                            new_child.rule_k = edge_info["rule_k"]
-                            tree.add_edge(new_node, new_child)
-                            if verbose:
-                                print("Parsing edge %s --(%d, score %f)-> %s" % (new_node.name, new_child.rule_k, edge_info["score"], new_child.name))
-                            expand_queue.append((optim_child, new_child))
-                            found_active_edge = True
-        
+
+        # Sanity-check observed nodes are explained properly.
+        for observed_node in observed_nodes:
+            if not np.isclose(np.sum(get_sol(observed_node._source_actives)), 1.):
+                logging.error("Observed node %s not explained by MLE sol." % str(observed_node))
+
+        optimized_tree = SceneTree()
+
+        # Build tree top-down so we know parent is already in new tree.
+        potential_node_queue = [(super_tree.get_root(), None)]
+        while len(potential_node_queue) > 0:
+            node, parent = potential_node_queue.pop(0)
+            if get_sol(node._active) > 0.5:
+                if node is super_tree_root:
+                    tf_actives = [1]
+                else:
+                    tf_actives = get_sol(node._tf_actives)
+                assert sum(tf_actives) == 1, "Active node had no active TF."
+                tf = node._possible_tfs[np.argmax(tf_actives)]
+                new_node = deepcopy(node)
+                new_node.tf = tf
+                optimized_tree.add_node(new_node)
+                if parent is not None:
+                    if verbose:
+                        print("Added %s--(%d)>%s" % (parent.name, new_node.rule_k, new_node.name))
+                    optimized_tree.add_edge(parent, new_node)
+                children = list(super_tree.successors(node))
+                for child in children:
+                    potential_node_queue.append((child, new_node))
+
         optim_score = torch.tensor(result.get_suboptimal_objective(sol_k))
-        assert torch.isclose(tree.score(), -optim_score), "%f vs %f" % (tree.score(verbose=True), -optim_score)
-        out_trees.append(tree)
+        assert torch.isclose(optimized_tree.score(), -optim_score), "%f vs %f" % (optimized_tree.score(verbose=True), -optim_score)
+        out_trees.append(optimized_tree)
     return out_trees
 
 
@@ -1236,13 +1281,16 @@ def add_mle_tree_parsing_to_prog(
 
         if isinstance(parent_node, (AndNode, TerminalNode)):
             pass
-        elif isinstance(parent_node, (OrNode, IndependentSetNode)):
+        elif isinstance(parent_node, OrNode):
+            for p, child in zip(parent_node.rule_probs, children):
+                prog.AddLinearCost(-np.log(p) * child.active)
+        elif isinstance(parent_node, IndependentSetNode):
             # Binary variables * log of probabilities.
             # Node inactive, active var off -> 0
             # Node active, active var on -> On score
             # Node active, active var off -> Off score
             # If parent is inactive, all children are inactive, so these probs go to zero.
-            for p, child in zip(parent_node.rule_probs, children):
+            for p, child in zip(parent_node.rule_probs.detach().numpy(), children):
                 prog.AddLinearCost(-(
                     np.log(p) * child.active + np.log(1 - p) * (1 - child.active) - np.log(1 - p) * (1 - parent_node.active)
                 ))

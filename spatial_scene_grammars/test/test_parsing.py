@@ -285,12 +285,14 @@ def test_proposal_parsing(set_seed):
     observed_nodes = tree.get_observed_nodes()
 
     start_time = time.time()
-    candidate_intermediate_nodes = generate_candidate_intermediate_nodes(
+
+    proposed_poses_by_type = generate_candidate_node_pose_sets(
         grammar, observed_nodes, max_recursion_depth=10, verbose=True
     )
     parse_trees = infer_mle_tree_with_mip_from_proposals(
-        grammar, observed_nodes, candidate_intermediate_nodes, verbose=True, N_solutions=1
+        grammar, observed_nodes, proposed_poses_by_type, verbose=True, N_solutions=5
     )
+
     elapsed = time.time() - start_time
     print("Parsing took %f secs." % elapsed)
     assert len(parse_trees) >= 1, "MIP parsing failed."
