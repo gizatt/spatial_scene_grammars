@@ -129,6 +129,41 @@ def prepare_grammar_for_parsing(prog, grammar, optimize_parameters=False, inequa
             )
     return grammar
 
+def make_equivalent_sets(super_tree):
+    '''
+    For translations and rotations separately, figure out which connected sets of nodes in the
+    supertree have translations [or rotations] that are constrained to be exactly equal.
+    '''
+    t_equivalence_graph = nx.Graph()
+    R_equivalence_graph = nx.Graph()
+    t_equivalence_graph.add_nodes_from(super_tree.nodes)
+    R_equivalence_graph.add_nodes_from(super_tree.nodes)
+    for parent_node in super_tree.nodes:
+        children = super_tree.get_children(parent_node)
+        ## Get child rule list. Can't use get_children_and_rules
+        # here since we're operating on a supertree, so the standard
+        # scene tree logic for getting rules isn't correct.
+        if isinstance(parent_node, GeometricSetNode):
+            rules = [parent_node.rule for k in range(len(children))]
+        elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
+            rules = parent_node.rules
+        elif isinstance(parent_node, TerminalNode):
+            rules = []
+        else:
+            raise ValueError("Unexpected node type: ", type(parent_node))
+        for child_node, rule in zip(children, rules):
+            # TODO(gizatt) We may have other rule types that, depending on
+            # parameters, imply equality constraints. They could be included
+            # here generally if we query the rule whether it is fully constraining
+            # at the current parameter setting.
+            if isinstance(rule.xyz_rule, SamePositionRule):
+                t_equivalence_graph.add_edge(parent_node, child_node)
+            if isinstance(rule.rotation_rule, SameRotationRule):
+                R_equivalence_graph.add_edge(parent_node, child_node)
+    t_equivalent_sets = list(nx.connected_components(t_equivalence_graph))
+    R_equivalent_sets = list(nx.connected_components(R_equivalence_graph))
+    return t_equivalent_sets, R_equivalent_sets
+
 
 '''
 ###############################################################################
@@ -448,6 +483,7 @@ def generate_candidate_node_pose_sets(grammar, observed_nodes, max_recursion_dep
     nodes, propose new nodes by sampling all rules from the node that generate unobserved
     node types, and add these nodes to the queue.
     '''
+
 
     bottom_up_candidate_intermediate_nodes = generate_bottom_up_intermediate_nodes_by_inverting_rules(
         grammar, observed_nodes, max_recursion_depth=max_recursion_depth
@@ -979,7 +1015,6 @@ def equivalent_set_activity_implies_observability(equivalent_nodes, super_tree):
     else:
         return True
 
-
 def add_mle_tree_parsing_to_prog(
         prog, grammar, observed_nodes, max_recursion_depth=10,
         num_intervals_per_half_axis=2, max_scene_extent_in_any_dir=10.,
@@ -1052,36 +1087,8 @@ def add_mle_tree_parsing_to_prog(
 
     # For translations and rotations separately, figure out which connected sets of nodes in the
     # supertree have translations [or rotations] that are constrained to be exactly equal.
-    t_equivalence_graph = nx.Graph()
-    R_equivalence_graph = nx.Graph()
-    t_equivalence_graph.add_nodes_from(super_tree.nodes)
-    R_equivalence_graph.add_nodes_from(super_tree.nodes)
-    for parent_node in super_tree.nodes:
-        children = super_tree.get_children(parent_node)
-        ## Get child rule list. Can't use get_children_and_rules
-        # here since we're operating on a supertree, so the standard
-        # scene tree logic for getting rules isn't correct.
-        if isinstance(parent_node, GeometricSetNode):
-            rules = [parent_node.rule for k in range(len(children))]
-        elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
-            rules = parent_node.rules
-        elif isinstance(parent_node, TerminalNode):
-            rules = []
-        else:
-            raise ValueError("Unexpected node type: ", type(parent_node))
-        for child_node, rule in zip(children, rules):
-            # TODO(gizatt) We may have other rule types that, depending on
-            # parameters, imply equality constraints. They could be included
-            # here generally if we query the rule whether it is fully constraining
-            # at the current parameter setting.
-            if isinstance(rule.xyz_rule, SamePositionRule):
-                t_equivalence_graph.add_edge(parent_node, child_node)
-            if isinstance(rule.rotation_rule, SameRotationRule):
-                R_equivalence_graph.add_edge(parent_node, child_node)
-    t_equivalent_sets = list(nx.connected_components(t_equivalence_graph))
-    R_equivalent_sets = list(nx.connected_components(R_equivalence_graph))
+    t_equivalent_sets, R_equivalent_sets = make_equivalent_sets(super_tree)
 
-    print("Equivalent sets: ", len(t_equivalent_sets), len(R_equivalent_sets))
     # For each set, figure out if activation of any node in the set implies that
     # an observed node will be active. Record the result and a reference to the
     # corresponding set of observed nodes to the rest of the set.
