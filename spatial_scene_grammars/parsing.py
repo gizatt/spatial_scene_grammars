@@ -447,6 +447,49 @@ def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_n
 
     return list(set(candidate_intermediate_nodes))
 
+def generate_intermediate_nodes_from_equivalent_sets(grammar, observed_nodes, max_recursion_depth=10):
+    super_tree = grammar.make_super_tree(max_recursion_depth=max_recursion_depth, detach=True)
+
+    # For translations and rotations separately, figure out which connected sets of nodes in the
+    # supertree have translations [or rotations] that are constrained to be exactly equal.
+    t_equivalent_sets, R_equivalent_sets = make_equivalent_sets(super_tree)
+
+    # All nodes will be annotated with _t_possibilities and _R_possibilities based
+    # on equivalent set-to-observation correspondences.
+    for t_equivalent_set in t_equivalent_sets:
+        t_observed_node_types = set([type(node) for node in t_equivalent_set if node.observed])
+        set_t_possibilities = []
+        for observed_node in observed_nodes:
+            if type(observed_node) in t_observed_node_types:
+                set_t_possibilities.append(observed_node.translation)
+        for node in t_equivalent_set:
+            node._t_possibilities = set_t_possibilities
+
+    for R_equivalent_set in R_equivalent_sets:
+        R_observed_node_types = set([type(node) for node in R_equivalent_set if node.observed])
+        set_R_possibilities = []
+        for observed_node in observed_nodes:
+            if type(observed_node) in R_observed_node_types:
+                set_R_possibilities.append(observed_node.rotation)
+        for node in R_equivalent_set:
+            node._R_possibilities = set_R_possibilities
+
+    # For each unobserved node type in the supertree, produce proposals
+    # at the equivalent set locations.
+    candidate_intermediate_nodes = []
+    for node in super_tree:
+        if node.observed:
+            continue
+        # For unobserved nodes...
+        for t in node._t_possibilities:
+            for R in node._R_possibilities:
+                new_node = deepcopy(node)
+                new_node.translation = t
+                new_node.rotation = R
+                candidate_intermediate_nodes.append(new_node)
+
+    return candidate_intermediate_nodes
+
 def prune_node_set(node_set):
     '''
     Given a set of nodes, returns a de-duplicated set of nodes that are
@@ -470,38 +513,51 @@ def generate_candidate_node_pose_sets(grammar, observed_nodes, max_recursion_dep
     generate-able by the grammar), generates a set of candidate poses for each
     unobserved node type in the grammar by a bottom-up-then-top-down sampling procedure.
 
-    1) Initialize a queue with the observed nodes.
-    2) While the queue is not empty, pop off a node, and add new candidate
-    nodes to the queue by inverting any invertible rules from any unobserved node
-    in the grammar that could generate the target node.
+    Use a combination of approaches:
+    1) Randomly sample top-down from each observed node + the scene root until hitting
+    another observed node.
+    2) Starting from observed nodes, propose new intermediate nodes bottom-up by
+    inverting obvious-to-invert nodes.
+    3) Form the supertree for the grammar, and extract equivalent sets. For each equivalent
+    set, propose poses for all involved nodes for all possible observations of that
+    equivalent set.
 
-    This'll grow the tree upwards as far as possible.
-
-    Then grow the tree downwards:
-    1) Initialize a queue with the root + obserevd nodes + candidate intermediate node.
-    2) While the queue is not empty, pop off a node, and add new candidate
-    nodes, propose new nodes by sampling all rules from the node that generate unobserved
-    node types, and add these nodes to the queue.
+    I've played with seeding top-down sampling from bottom-up proposed nodes, but
+    it quickly gets out of hand in terms of number of proposals for complex
+    grammars. This set of rules is hopefully sufficient for many useful
+    examples.
     '''
 
+    # Randomly sample top-down from observed + root.
+    all_known_fixed_nodes = prune_node_set(observed_nodes + [grammar.root_node_type(grammar.root_node_tf),])
+    top_down_candidate_intermediate_nodes = generate_top_down_intermediate_nodes_by_supertree(
+        grammar, all_known_fixed_nodes, max_recursion_depth=max_recursion_depth
+    )
+    if verbose:
+        print("%d top-down candidates." % len(top_down_candidate_intermediate_nodes))
 
+    # Generate bottom-up candidates.
     bottom_up_candidate_intermediate_nodes = generate_bottom_up_intermediate_nodes_by_inverting_rules(
         grammar, observed_nodes, max_recursion_depth=max_recursion_depth
     )
-    tops_of_trees = [n for n in bottom_up_candidate_intermediate_nodes if n._produced_parent is True]
-    top_down_roots = [grammar.root_node_type(grammar.root_node_tf),] + observed_nodes + tops_of_trees
-    top_down_roots = prune_node_set(top_down_roots)
+    bottom_up_candidate_intermediate_nodes = prune_node_set(bottom_up_candidate_intermediate_nodes)
+    if verbose:
+        print("%d bottom-up candidates." % len(bottom_up_candidate_intermediate_nodes))
 
-    if verbose:
-        print("%d unique top-down roots, including observeds and root." % len(top_down_roots))
-    top_down_candidate_intermediate_nodes = generate_top_down_intermediate_nodes_by_supertree(
-        grammar, top_down_roots, max_recursion_depth=max_recursion_depth
+    # Use supertree to get equivalent sets, and use those to create proposals.
+    equivalent_set_candidate_intermediate_nodes = generate_intermediate_nodes_from_equivalent_sets(
+        grammar, observed_nodes, max_recursion_depth=max_recursion_depth
     )
+    equivalent_set_candidate_intermediate_nodes = prune_node_set(equivalent_set_candidate_intermediate_nodes)
     if verbose:
-        print("%d new top-down candidates." % len(top_down_candidate_intermediate_nodes))
+        print("%d equivalent-set candidates." % (len(equivalent_set_candidate_intermediate_nodes)))
 
     # Prune again to get a complete set of unique proposed nodes.
-    all_candidate_nodes = prune_node_set(top_down_candidate_intermediate_nodes + bottom_up_candidate_intermediate_nodes + observed_nodes + [grammar.root_node_type(grammar.root_node_tf),])
+    all_candidate_nodes = prune_node_set(
+        top_down_candidate_intermediate_nodes +
+        bottom_up_candidate_intermediate_nodes + 
+        equivalent_set_candidate_intermediate_nodes
+    )
     print("Post final pruning: ", len(all_candidate_nodes))
     
     # Convert to a mapping from node type to node pose for non-observed nodes.
@@ -642,6 +698,9 @@ def infer_mle_tree_with_mip_from_proposals(
     # Build supertree for the grammar.
     super_tree = grammar.make_super_tree(max_recursion_depth=max_recursion_depth, detach=True)
     super_tree_root = super_tree.get_root()
+    
+    # Form equivalent sets
+    
 
     prog = MathematicalProgram()
 
@@ -713,6 +772,7 @@ def infer_mle_tree_with_mip_from_proposals(
         else:
             raise ValueError("Unexpected node type: ", type(parent_node))
 
+        print("Processing ", parent_node.name)
         # Pick from every way of picking the pose of the parent + child,
         # weighted by the score of that edge.
         for child_node, rule in zip(children, rules):
@@ -839,6 +899,7 @@ def infer_mle_tree_with_mip_from_proposals(
         else:
             raise ValueError("Unexpected node in cost assembly: ", type(parent_node))
         
+    print("Starting")
     solver = GurobiSolver()
     options = SolverOptions()
     logfile = "/tmp/gurobi_%s.log" % datetime.now().strftime("%Y%m%dT%H%M%S")
