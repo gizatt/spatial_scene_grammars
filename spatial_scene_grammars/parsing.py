@@ -332,6 +332,7 @@ def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_n
     Given a grammar and a set of unobserve nodes, produces candidate unobserved
     nodes by proposing parents for the observed nodes (and their proposed parents,
     etc) by inverting those rule types that are obvious how to invert.
+    Annotates with a "_produced_parent" field if it produces parents.
     '''
 
     def invert_rot_rule(child, rot_rule):
@@ -401,14 +402,17 @@ def generate_bottom_up_intermediate_nodes_by_inverting_rules(grammar, observed_n
         if node.__recursion_count > max_recursion_depth:
             continue
         new_nodes = get_potential_parents_for_node(node)
+        if len(new_nodes) > 0:
+            node._produced_parent = True
         for new_node in new_nodes:
             new_node.__recursion_count = node.__recursion_count + 1
+            new_node._produced_parent = False
         expand_queue += new_nodes
         candidate_intermediate_nodes += new_nodes
 
     return list(set(candidate_intermediate_nodes))
 
-def get_unique_node_set(node_set):
+def prune_node_set(node_set):
     '''
     Given a set of nodes, returns a de-duplicated set of nodes that are
     unique in terms of their combined type and pose.
@@ -422,6 +426,7 @@ def get_unique_node_set(node_set):
                 break
         if not is_in_pruned_set:
             pruned_node_set.append(node)
+
     return pruned_node_set
 
 def generate_candidate_node_pose_sets(grammar, observed_nodes, max_recursion_depth=10, verbose=False):
@@ -445,24 +450,24 @@ def generate_candidate_node_pose_sets(grammar, observed_nodes, max_recursion_dep
     '''
 
     bottom_up_candidate_intermediate_nodes = generate_bottom_up_intermediate_nodes_by_inverting_rules(
-        grammar, observed_nodes
+        grammar, observed_nodes, max_recursion_depth=max_recursion_depth
     )
+    tops_of_trees = [n for n in bottom_up_candidate_intermediate_nodes if n._produced_parent is True]
+    top_down_roots = [grammar.root_node_type(grammar.root_node_tf),] + observed_nodes + tops_of_trees
+    top_down_roots = prune_node_set(top_down_roots)
 
-    # Prune down the set of nodes to forward-sample to only the unique / indistinguishable
-    # ones in terms of their poses.
-    unpruned_node_set = [grammar.root_node_type(grammar.root_node_tf),] + observed_nodes + bottom_up_candidate_intermediate_nodes
-    pruned_node_set = get_unique_node_set(unpruned_node_set)
     if verbose:
-        print("%d unique bottom-up candidates, including observeds and root." % len(pruned_node_set))
-
+        print("%d unique top-down roots, including observeds and root." % len(top_down_roots))
     top_down_candidate_intermediate_nodes = generate_top_down_intermediate_nodes_by_supertree(
-        grammar, pruned_node_set, max_recursion_depth=max_recursion_depth
+        grammar, top_down_roots, max_recursion_depth=max_recursion_depth
     )
     if verbose:
         print("%d new top-down candidates." % len(top_down_candidate_intermediate_nodes))
 
     # Prune again to get a complete set of unique proposed nodes.
-    all_candidate_nodes = get_unique_node_set(top_down_candidate_intermediate_nodes + pruned_node_set)
+    all_candidate_nodes = prune_node_set(top_down_candidate_intermediate_nodes + bottom_up_candidate_intermediate_nodes + observed_nodes + [grammar.root_node_type(grammar.root_node_tf),])
+    print("Post final pruning: ", len(all_candidate_nodes))
+    
     # Convert to a mapping from node type to node pose for non-observed nodes.
     proposed_poses_by_type = {}
     for node in all_candidate_nodes:
@@ -516,7 +521,7 @@ def sample_likely_tree_with_greedy_parsing(
     observed_nodes = deepcopy(observed_nodes)
 
     candidate_intermediate_nodes = generate_candidate_intermediate_nodes(
-        grammar, observed_nodes, max_recursion_depth=max_recursion_depth, verbose=verbose
+        grammar, observed_nodes, max_recursion_depth=max_recursion_depth, verbose=verbose,
     )
     
     ## Rebuild starting from this partial, with a couple of restarts
