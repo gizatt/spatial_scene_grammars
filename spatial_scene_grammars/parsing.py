@@ -129,10 +129,41 @@ def prepare_grammar_for_parsing(prog, grammar, optimize_parameters=False, inequa
             )
     return grammar
 
+
 def make_equivalent_sets(super_tree):
     '''
-    For translations and rotations separately, figure out which connected sets of nodes in the
-    supertree have translations [or rotations] that are constrained to be exactly equal.
+    Figure out which connected sets of nodes in the supertree have poses
+    that are  constrained to be exactly equal.
+    '''
+    equivalence_graph = nx.Graph()
+    equivalence_graph.add_nodes_from(super_tree.nodes)
+    for parent_node in super_tree.nodes:
+        children = super_tree.get_children(parent_node)
+        ## Get child rule list. Can't use get_children_and_rules
+        # here since we're operating on a supertree, so the standard
+        # scene tree logic for getting rules isn't correct.
+        if isinstance(parent_node, GeometricSetNode):
+            rules = [parent_node.rule for k in range(len(children))]
+        elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
+            rules = parent_node.rules
+        elif isinstance(parent_node, TerminalNode):
+            rules = []
+        else:
+            raise ValueError("Unexpected node type: ", type(parent_node))
+        for child_node, rule in zip(children, rules):
+            # TODO(gizatt) We may have other rule types that, depending on
+            # parameters, imply equality constraints. They could be included
+            # here generally if we query the rule whether it is fully constraining
+            # at the current parameter setting.
+            if isinstance(rule.xyz_rule, SamePositionRule) and isinstance(rule.rotation_rule, SameRotationRule):
+                equivalence_graph.add_edge(parent_node, child_node)
+    equivalent_sets = [EquivalentSet(super_tree, nodes) for nodes in nx.connected_components(equivalence_graph)]
+    return equivalent_sets
+
+def make_equivalent_sets_for_R_and_t(super_tree):
+    '''
+    Figure out which connected sets of nodes in the supertree have translations
+    [or rotations] that are constrained to be exactly equal.
     '''
     t_equivalence_graph = nx.Graph()
     R_equivalence_graph = nx.Graph()
@@ -160,10 +191,111 @@ def make_equivalent_sets(super_tree):
                 t_equivalence_graph.add_edge(parent_node, child_node)
             if isinstance(rule.rotation_rule, SameRotationRule):
                 R_equivalence_graph.add_edge(parent_node, child_node)
-    t_equivalent_sets = list(nx.connected_components(t_equivalence_graph))
-    R_equivalent_sets = list(nx.connected_components(R_equivalence_graph))
+    t_equivalent_sets = [EquivalentSet(super_tree, nodes) for nodes in nx.connected_components(t_equivalence_graph)]
+    R_equivalent_sets = [EquivalentSet(super_tree, nodes) for nodes in nx.connected_components(R_equivalence_graph)]
     return t_equivalent_sets, R_equivalent_sets
 
+class EquivalentSet():
+    def __init__(self, super_tree, nodes):
+        self.super_tree = super_tree
+        self.nodes = list(nodes)
+        self.always_observable = None
+
+    def __iter__(self):
+        return iter(self.nodes)
+
+    def is_always_observable(self):
+        # Minimal caching to not do slightly-expensive recomputation
+        if self.always_observable is None:
+            self.always_observable = self._equivalent_set_activity_implies_observability()
+        return self.always_observable
+
+    def _equivalent_set_activity_implies_observability(self):
+        ''' For a list of nodes `equivalent_set` from the supertree for
+        a grammar, return True if any node in the equivalent set being
+        active implies that one of the observable nodes in the equivalent set
+        is active; and False otherwise.
+
+        Strategy: construct an LP, where the activation of each node is a variable
+        constrained in [0, 1]. Add constraints between parent/child sets from the supertree
+        constraining the activations to be reasonable under the node types. Constrain
+        at least one non-observable node to be on, but all observable nodes to be off.
+        If there is a solution to this, then activity doesn't imply observability,
+        so return False. Otherwise, return True.
+
+        TODO: Is LP sufficient, or do we need binary variables?
+        '''
+
+        num_observable_nodes = len([node for node in self.nodes if node.observed])
+        if num_observable_nodes == 0:
+            # Can never be observable, as there are no observed nodes.
+            return False
+        if num_observable_nodes == len(self.nodes):
+            # Trivially observable
+            return True
+
+        prog = MathematicalProgram()
+        # Create activations per node
+        node_to_activation = {
+            node: prog.NewBinaryVariables(1)[0]
+            for node in self.nodes
+        }
+        # At least one observed node, but all other nodes off.
+        nonobserved_sum = 0.
+        for node, var in node_to_activation.items():
+            if not node.observed:
+                prog.AddBoundingBoxConstraint(0., 1., var)
+                nonobserved_sum += var
+            else:
+                # Observes off
+                prog.AddBoundingBoxConstraint(0., 0., var)
+        if not isinstance(nonobserved_sum, float):
+            prog.AddLinearConstraint(nonobserved_sum >= 1.)
+
+        # Parent-child type relationships
+        for parent_node, parent_var in node_to_activation.items():
+            children = self.super_tree.get_children(parent_node)
+            ## Get child rule list. Can't use get_children_and_rules
+            # here since we're operating on a supertree, so the standard
+            # scene tree logic for getting rules isn't correct.
+            if isinstance(parent_node, AndNode):
+                for child in children:
+                    if child in node_to_activation.keys():
+                        prog.AddLinearConstraint(node_to_activation[child] == parent_var)
+            elif isinstance(parent_node, OrNode):
+                child_var_sum = 0.
+                child_set_is_complete = True
+                for child in children:
+                    if child in node_to_activation.keys():
+                        child_var_sum += node_to_activation[child]
+                    else:
+                        child_set_is_complete = False
+                if child_set_is_complete and not isinstance(child_var_sum, float):
+                    prog.AddLinearConstraint(child_var_sum == parent_var)
+                else:
+                    # Don't know what other out-of-set children are doing, so
+                    # deactivate them.
+                    prog.AddLinearConstraint(child_var_sum <= parent_var)
+            elif isinstance(parent_node, IndependentSetNode):
+                for child in children:
+                    if child in node_to_activation.keys():
+                        prog.AddLinearConstraint(node_to_activation[child] <= parent_var)
+
+            elif isinstance(parent_node, GeometricSetNode):
+                for child in children:
+                    if child in node_to_activation.keys():
+                        prog.AddLinearConstraint(node_to_activation[child] <= parent_var)
+            elif isinstance(parent_node, TerminalNode):
+                assert len(children) == 0
+            else:
+                raise ValueError("Unexpected node type: ", type(parent_node))
+
+        # Try to solve
+        result = GurobiSolver().Solve(prog)
+        if result.is_success():
+            return False
+        else:
+            return True
 
 '''
 ###############################################################################
@@ -518,13 +650,11 @@ def generate_candidate_node_pose_sets(grammar, observed_nodes, max_recursion_dep
     another observed node.
     2) Starting from observed nodes, propose new intermediate nodes bottom-up by
     inverting obvious-to-invert nodes.
-    3) Form the supertree for the grammar, and extract equivalent sets. For each equivalent
-    set, propose poses for all involved nodes for all possible observations of that
-    equivalent set.
 
-    I've played with seeding top-down sampling from bottom-up proposed nodes, but
-    it quickly gets out of hand in terms of number of proposals for complex
-    grammars. This set of rules is hopefully sufficient for many useful
+    I've played with seeding top-down sampling from bottom-up proposed nodes and
+    equivalent-set-based proposals (that tactic is now automatic in the parser
+    machinery) but it quickly gets out of hand in terms of number of proposals for
+    complex grammars. This set of rules is hopefully sufficient for many useful
     examples.
     '''
 
@@ -544,19 +674,10 @@ def generate_candidate_node_pose_sets(grammar, observed_nodes, max_recursion_dep
     if verbose:
         print("%d bottom-up candidates." % len(bottom_up_candidate_intermediate_nodes))
 
-    # Use supertree to get equivalent sets, and use those to create proposals.
-    equivalent_set_candidate_intermediate_nodes = generate_intermediate_nodes_from_equivalent_sets(
-        grammar, observed_nodes, max_recursion_depth=max_recursion_depth
-    )
-    equivalent_set_candidate_intermediate_nodes = prune_node_set(equivalent_set_candidate_intermediate_nodes)
-    if verbose:
-        print("%d equivalent-set candidates." % (len(equivalent_set_candidate_intermediate_nodes)))
-
     # Prune again to get a complete set of unique proposed nodes.
     all_candidate_nodes = prune_node_set(
         top_down_candidate_intermediate_nodes +
-        bottom_up_candidate_intermediate_nodes + 
-        equivalent_set_candidate_intermediate_nodes
+        bottom_up_candidate_intermediate_nodes
     )
     print("Post final pruning: ", len(all_candidate_nodes))
     
@@ -657,10 +778,12 @@ def infer_mle_tree_with_mip_from_proposals(
         verbose=False, N_solutions=1, max_recursion_depth=10,
         min_ll_for_consideration=-100.):
     '''
-        Set up a MIP to recover MLE parse trees from proposed intermediate
-        node locations by finding a max-score tree that explains all
-        observed nodes with intermediate node poses chosen (without
-        replacement) from the proposed pose set.
+        Set up a MIP to recover MLE parse trees, using the proposed
+        intermediate node locations as options for how to place
+        intermediate nodes.
+
+        Uses the equivalent set abstraction to minimize the number of
+        node-to-node score evaluations considered.
 
         Build a supertree for the grammar. For observed nodes, add
 
@@ -699,65 +822,151 @@ def infer_mle_tree_with_mip_from_proposals(
     super_tree = grammar.make_super_tree(max_recursion_depth=max_recursion_depth, detach=True)
     super_tree_root = super_tree.get_root()
     
-    # Form equivalent sets
-    
+    # Form equivalent sets.
+    equivalent_sets = make_equivalent_sets(super_tree)
 
     prog = MathematicalProgram()
 
-    # For every node in the supertree, build the list of poses that that
-    # node could take. Observed nodes get special handling since
-    # they need to be in one-to-one correspondence with the actual observations.
-    for n in super_tree:
-        n._possible_tfs = []
-        n._tf_actives = []
-
-    # Populate correspondences for observed nodes.
-    for node_k, observed_node in enumerate(observed_nodes):
-        possible_sources = [n for n in super_tree if type(n) == type(observed_node)]
-        if len(possible_sources) == 0:
-            raise ValueError("Grammar invalid for observation: can't explain observed node ", observed_node)
-        source_actives = prog.NewBinaryVariables(len(possible_sources), observed_node.__class__.__name__ + str(node_k) + "_sources")
-
-        # Store these variables
-        observed_node._source_actives = source_actives
-        for k, n in enumerate(possible_sources):
-            n._possible_tfs.append(observed_node.tf)
-            n._tf_actives.append(source_actives[k])
-        # Each observed node needs exactly one explaining input.
-        prog.AddLinearEqualityConstraint(sum(source_actives) == 1)
-
-    # Populate the rest of the nodes and add appropriate correspondence constraints.
     for node in super_tree:
         # Bookkeeping variable of whether this node is active, which will be
         # constrained to be equal to the number of active incoming edges, or
         # 1 for the root node.
         node._active = prog.NewBinaryVariables(1, "%s_active" % node.name)[0]
+
+    # Populate correspondences for observed nodes.
+    for n in super_tree:
+        if n.observed:
+            n._possible_observations = []
+            n._correspondences = []
+            n._possible_tfs = []
+    for node_k, observed_node in enumerate(observed_nodes):
+        possible_sources = [n for n in super_tree if type(n) == type(observed_node)]
+        if len(possible_sources) == 0:
+            raise ValueError("Grammar invalid for observation: can't explain observed node ", observed_node)
+        o_to_T_correspondences = prog.NewBinaryVariables(len(possible_sources), observed_node.__class__.__name__ + str(node_k) + "_sources")
+
+        # Store these variables
+        observed_node._o_to_T_correspondences = o_to_T_correspondences
+        for k, n in enumerate(possible_sources):
+            n._possible_observations.append(observed_node)
+            n._correspondences.append(o_to_T_correspondences[k])
+            n._possible_tfs.append(observed_node.tf)
+        # Each observed node needs exactly one explaining input.
+        prog.AddLinearEqualityConstraint(sum(o_to_T_correspondences) == 1)
+
+    def get_possible_tfs_for_nonobserved_node(node):
+        # For each non-observed node, collect its proposed poses.
+        assert not node.observed
         if node is super_tree_root:
-            node._possible_tfs = [super_tree_root.tf,]
-            node._tf_actives = [1,]
+            return [grammar.root_node_tf]
+        type_name = type(node).__name__
+        if type_name not in proposed_poses_by_unobserved_type.keys():
+            logging.warn("%s had no proposals." % type_name)
+            return []
+        possible_tfs = proposed_poses_by_unobserved_type[type_name]
+        if len(possible_tfs) == 0:
+            logging.warn("%s had zero proposals." % type_name)
+        return possible_tfs
+
+    # For each equivalent set, annotate the equivalent set with its possible
+    # translation and rotation options, and activation variables indicating which
+    # of those is the current chosen translation/rotation for the set.
+    def collapse_close_entries(xs, *cs_srcs):
+        new_xs = []
+        cs_dsts = [[] for cs in cs_srcs]
+        for i in range(len(xs)):
+            found = False
+            for j in range(len(new_xs)):
+                if torch.allclose(xs[i], new_xs[j]):
+                    found = True
+                    for cs_dst, cs_src in zip(cs_dsts, cs_srcs):
+                        cs_dst[j] += cs_src[i]
+                    break
+            if not found:
+                new_xs.append(xs[i])
+                for cs_src, cs_dst in zip(cs_srcs, cs_dsts):
+                    cs_dst.append(cs_src[i])
+        return [new_xs,] + cs_dsts
+
+    for set_k, equivalent_set in enumerate(equivalent_sets):
+        # Give every node a pointer to its set.
+        for node in equivalent_set:
+            node._equivalent_set = equivalent_set
+
+        # For observed nodes, keep careful track of which
+        # correspondences are leading to which pose
+        # choice.
+        obs_tfs = []
+        obs_cs = []
+        for node in equivalent_set:
+            if node.observed:
+                obs_tfs += node._possible_tfs
+                obs_cs += node._correspondences
+                print(node, obs_tfs, obs_cs)
+        print("b4", obs_cs)
+        # Reduce this to a map of poses, and expressions indicating
+        # whether that pose is active.
+        obs_tfs, obs_cs, obs_counts = collapse_close_entries(obs_tfs, obs_cs, np.ones(len(obs_cs)))
+        print("after", obs_cs)
+        if not equivalent_set.is_always_observable():
+            # For the unobserved nodes, just collect the additional
+            # pose choices available.
+            unobs_tfs = []
+            for node in equivalent_set:
+                if not node.observed:
+                    unobs_tfs += get_possible_tfs_for_nonobserved_node(node)
+            unobs_tfs, = collapse_close_entries(unobs_tfs)
+            # Create binary activations for activation those additional correspondences.
+            unobs_cs = prog.NewBinaryVariables(len(unobs_tfs), "%d_unobs_corrs" % set_k)
+
+            # Combine into the complete selection of ts.
+            full_tfs, full_cs, full_counts = collapse_close_entries(
+                obs_tfs + unobs_tfs,
+                np.concatenate([obs_cs, unobs_cs]),
+                np.concatenate([obs_counts, np.ones(len(unobs_tfs))])
+            )
+        else:
+            full_tfs, full_cs, full_counts = obs_tfs, obs_cs, obs_counts
+
+        # Constrain that exactly one entry in full_cs is allowed to be nonzero
+        # by using an additional set of binaries constrained to be 1 when
+        # the corresponding entry in full_cs is nonzero, and zero otherwise.
+        equivalent_set.tf_correspondences = prog.NewBinaryVariables(len(full_tfs), "%d_t_corrs" % set_k)
+        equivalent_set.tf_possibilities = full_tfs
+        for tf_corr, cs_expression, count in zip(equivalent_set.tf_correspondences, full_cs, full_counts):
+            print(tf_corr >= cs_expression / count)
+            prog.AddLinearConstraint(tf_corr >= cs_expression / count)
+            prog.AddLinearConstraint(tf_corr <= cs_expression)
+        # Only one of these correspondences, which correspond to distinct
+        # poses, can be active simultaneously; and none are active if there
+        # are no active nodes in the equivalent set.
+        if len(equivalent_set.tf_correspondences) > 0:
+            prog.AddLinearConstraint(sum(equivalent_set.tf_correspondences) <= 1)
+            prog.AddLinearConstraint(sum(equivalent_set.tf_correspondences) <= sum([node._active for node in equivalent_set]))
+
+
+    # Now at a node level, decide what will be active.
+    for node in super_tree:
+        # Nodes can't be active if their equiv set has no assigned
+        # pose.
+        prog.AddLinearConstraint(node._active <= sum(node._equivalent_set.tf_correspondences))
+
+        if node is super_tree_root:
             prog.AddLinearEqualityConstraint(node._active == 1)
         elif node.observed:
             # Possible TFs are the full set of observed node tfs,
             # as populated in a previous loop. The observed node is
             # active iff it is corresponded to an observation.
-            if len(node._tf_actives) > 0:
-                prog.AddLinearConstraint(sum(node._tf_actives) == node._active)
+            if len(node._correspondences) > 0:
+                prog.AddLinearConstraint(sum(node._correspondences) == node._active)
             else:
                 prog.AddLinearConstraint(node._active == 0)
         else:
-            type_name = type(node).__name__
-            if type_name not in proposed_poses_by_unobserved_type.keys():
-                logging.warning("Didn't propose poses for node type %s." % (type_name))
-                continue
-            node._possible_tfs = proposed_poses_by_unobserved_type[type_name]
-            if len(node._possible_tfs) == 0:
-                logging.warning("Empty proposed poses for node type %s." % (type_name))
-                continue
-            node._tf_actives = prog.NewBinaryVariables(len(node._possible_tfs), type_name + "_tf_actives")
-            prog.AddLinearEqualityConstraint(sum(node._tf_actives) == node._active)
+            pass
 
-    # For each parent/child pair in the supertree, choose among all
-    # possible edges weighted by the edge cost.
+
+    # For each parent/child pair in the supertree that crosses an equivalent
+    # set boundary, choose among all possible edges weighted by the edge cost.
     for parent_node in super_tree:
         children = super_tree.get_children(parent_node)
         ## Get child rule list. Can't use get_children_and_rules
@@ -772,41 +981,49 @@ def infer_mle_tree_with_mip_from_proposals(
         else:
             raise ValueError("Unexpected node type: ", type(parent_node))
 
-        print("Processing ", parent_node.name)
+
+        #print("Processing ", parent_node.name)
         # Pick from every way of picking the pose of the parent + child,
         # weighted by the score of that edge.
         for child_node, rule in zip(children, rules):
-            # Build full set of possible parent/child tf pairs
-            # and their corresponding scores.
-            activation_pairs = []
-            scores = []
-            for parent_tf_active, parent_tf in zip(parent_node._tf_actives, parent_node._possible_tfs):
-                for child_tf_active, child_tf in zip(child_node._tf_actives, child_node._possible_tfs):
-                    # Use supertree nodes as proxies for rule evaluation.
-                    parent_node.tf = parent_tf
-                    child_node.tf = child_tf
-                    score = rule.score_child(parent_node, child_node)
-                    if score < min_ll_for_consideration:
-                        continue
-                    activation_pairs.append((parent_tf_active, child_tf_active))
-                    scores.append(score)
-            if len(activation_pairs) == 0:
-                # No way to generate this child set, so this edge in the supertree
-                # will never be active.
-                prog.AddLinearEqualityConstraint(child_node._active == 0)
-                continue
-            scores = np.array(scores)
-            # Decide which edge (if any) is active.
-            edge_actives = prog.NewBinaryVariables(len(activation_pairs), "%s-->%s_rule_choice" % (parent_node.name, child_node.name))
-            # Only one edge can be active; edges activate their corresponding rule scores;
-            # and the child is active iff an edge is on.
-            prog.AddLinearConstraint(sum(edge_actives) == child_node._active)
-            prog.AddLinearCost(-sum(edge_actives * scores))
-            # The edge can only be active if the parent and child tf activation is on,
-            # meaning the parent and child actually take that TF.
-            for edge_active, (parent_tf_active, child_tf_active) in zip(edge_actives, activation_pairs):
-                # If either is off, then edge_active is forced to 0.
-                prog.AddLinearConstraint(edge_active <= (parent_tf_active + child_tf_active)/2.)
+            prog.AddLinearConstraint(child_node._active <= parent_node._active)
+            if parent_node._equivalent_set != child_node._equivalent_set:
+                # Build full set of possible parent/child R pairs
+                # and their corresponding scores.
+                activation_pairs = []
+                scores = []
+                #print("%s->%s has %dx%d pairs" % (parent_node.name, child_node.name, len(parent_node._equivalent_set.tf_correspondences), len(child_node._equivalent_set.tf_correspondences)))
+                for parent_tf_active, parent_tf in zip(
+                        parent_node._equivalent_set.tf_correspondences,
+                        parent_node._equivalent_set.tf_possibilities):
+                    for child_tf_active, child_tf in zip(
+                            child_node._equivalent_set.tf_correspondences,
+                            child_node._equivalent_set.tf_possibilities):
+                        # Use supertree nodes as proxies for rule evaluation.
+                        parent_node.tf = parent_tf
+                        child_node.tf = child_tf
+                        score = rule.score_child(parent_node, child_node)
+                        if score < min_ll_for_consideration:
+                            continue
+                        activation_pairs.append((parent_tf_active, child_tf_active))
+                        scores.append(score)
+                if len(activation_pairs) == 0:
+                    # No way to generate this child set, so this edge in the supertree
+                    # will never be active.
+                    prog.AddLinearEqualityConstraint(child_node._active == 0)
+                    continue
+                scores = np.array(scores)
+                # Decide which edge (if any) is active.
+                edge_actives = prog.NewBinaryVariables(len(activation_pairs), "%s-->%s_rule_choice" % (parent_node.name, child_node.name))
+                # Only one edge can be active; edges activate their corresponding rule scores;
+                # and the child is active iff an edge is on.
+                prog.AddLinearConstraint(sum(edge_actives) == child_node._active)
+                prog.AddLinearCost(-sum(edge_actives * scores))
+                # The edge can only be active if the parent and child tf activation is on,
+                # meaning the parent and child actually take that TF.
+                for edge_active, (parent_tf_active, child_tf_active) in zip(edge_actives, activation_pairs):
+                    # If either is off, then edge_active is forced to 0.
+                    prog.AddLinearConstraint(edge_active <= (parent_tf_active + child_tf_active)/2.)
 
 
         # Apply constraints and costs over selecting this particular
@@ -833,11 +1050,11 @@ def infer_mle_tree_with_mip_from_proposals(
             # a big M term if the second child in the comparison isn't active.
             child_xs = []
             # Get biggest possible x for big M deactivation
-            max_child_x = max([max([tf[0, 3].detach().item() for tf in child._possible_tfs]) for child in children])
+            max_child_x = max([max([tf[0, 3].detach().item() for tf in child._equivalent_set.tf_possibilities]) for child in children])
             # Accumulate expressions of child x
             for child in children:
                 child_x = sum([
-                    tf[0, 3].detach().item() * active for (tf, active) in zip(child._possible_tfs, child._tf_actives)
+                    tf[0, 3].detach().item() * active for (tf, active) in zip(child._equivalent_set.tf_possibilities, child._equivalent_set.tf_correspondences)
                 ])
                 child_xs.append(child_x)
             for k in range(len(children) - 1):
@@ -932,7 +1149,7 @@ def infer_mle_tree_with_mip_from_proposals(
 
         # Sanity-check observed nodes are explained properly.
         for observed_node in observed_nodes:
-            if not np.isclose(np.sum(get_sol(observed_node._source_actives)), 1.):
+            if not np.isclose(np.sum(get_sol(observed_node._o_to_T_correspondences)), 1.):
                 logging.error("Observed node %s not explained by MLE sol." % str(observed_node))
 
         optimized_tree = SceneTree()
@@ -942,18 +1159,17 @@ def infer_mle_tree_with_mip_from_proposals(
         while len(potential_node_queue) > 0:
             node, parent = potential_node_queue.pop(0)
             if get_sol(node._active) > 0.5:
-                if node is super_tree_root:
-                    tf_actives = [1]
-                else:
-                    tf_actives = get_sol(node._tf_actives)
+                print("Adding ", node.name)
+                tf_actives = get_sol(node._equivalent_set.tf_correspondences)
+
                 assert sum(tf_actives) == 1, "Active node had no active TF."
-                tf = node._possible_tfs[np.argmax(tf_actives)]
+                tf = node._equivalent_set.tf_possibilities[np.argmax(tf_actives)]
                 new_node = deepcopy(node)
                 new_node.tf = tf
                 optimized_tree.add_node(new_node)
                 if parent is not None:
                     if verbose:
-                        print("Added %s--(%d)>%s" % (parent.name, new_node.rule_k, new_node.name))
+                        print("Added %s--(%d)>%s at %s" % (parent.name, new_node.rule_k, new_node.name, new_node.tf))
                     optimized_tree.add_edge(parent, new_node)
                 children = list(super_tree.successors(node))
                 for child in children:
@@ -988,93 +1204,6 @@ Add costs summing up activation of each child node.
 
 ###############################################################################
 '''
-
-def equivalent_set_activity_implies_observability(equivalent_nodes, super_tree):
-    ''' For a list of nodes `equivalent_set` from the supertree for
-    a grammar, return True if any node in the equivalent set being
-    active implies that one of the observable nodes in the equivalent set
-    is active; and False otherwise.
-
-    Strategy: construct an LP, where the activation of each node is a variable
-    constrained in [0, 1]. Add constraints between parent/child sets from the supertree
-    constraining the activations to be reasonable under the node types. Constrain
-    at least one non-observable node to be on, but all observable nodes to be off.
-    If there is a solution to this, then activity doesn't imply observability,
-    so return False. Otherwise, return True.
-
-    TODO: Is LP sufficient, or do we need binary variables?
-    '''
-
-    num_observable_nodes = len([node for node in equivalent_nodes if node.observed])
-    if num_observable_nodes == 0:
-        # Can never be observable, as there are no observed nodes.
-        return False
-    if num_observable_nodes == len(equivalent_nodes):
-        # Trivially observable
-        return True
-
-    prog = MathematicalProgram()
-    # Create activations per node
-    node_to_activation = {
-        node: prog.NewBinaryVariables(1)[0]
-        for node in equivalent_nodes
-    }
-    # At least one observed node, but all other nodes off.
-    nonobserved_sum = 0.
-    for node, var in node_to_activation.items():
-        if not node.observed:
-            prog.AddBoundingBoxConstraint(0., 1., var)
-            nonobserved_sum += var
-        else:
-            # Observes off
-            prog.AddBoundingBoxConstraint(0., 0., var)
-    if not isinstance(nonobserved_sum, float):
-        prog.AddLinearConstraint(nonobserved_sum >= 1.)
-
-    # Parent-child type relationships
-    for parent_node, parent_var in node_to_activation.items():
-        children = super_tree.get_children(parent_node)
-        ## Get child rule list. Can't use get_children_and_rules
-        # here since we're operating on a supertree, so the standard
-        # scene tree logic for getting rules isn't correct.
-        if isinstance(parent_node, AndNode):
-            for child in children:
-                if child in node_to_activation.keys():
-                    prog.AddLinearConstraint(node_to_activation[child] == parent_var)
-        elif isinstance(parent_node, OrNode):
-            child_var_sum = 0.
-            child_set_is_complete = True
-            for child in children:
-                if child in node_to_activation.keys():
-                    child_var_sum += node_to_activation[child]
-                else:
-                    child_set_is_complete = False
-            if child_set_is_complete and not isinstance(child_var_sum, float):
-                prog.AddLinearConstraint(child_var_sum == parent_var)
-            else:
-                # Don't know what other out-of-set children are doing, so
-                # deactivate them.
-                prog.AddLinearConstraint(child_var_sum <= parent_var)
-        elif isinstance(parent_node, IndependentSetNode):
-            for child in children:
-                if child in node_to_activation.keys():
-                    prog.AddLinearConstraint(node_to_activation[child] <= parent_var)
-
-        elif isinstance(parent_node, GeometricSetNode):
-            for child in children:
-                if child in node_to_activation.keys():
-                    prog.AddLinearConstraint(node_to_activation[child] <= parent_var)
-        elif isinstance(parent_node, TerminalNode):
-            assert len(children) == 0
-        else:
-            raise ValueError("Unexpected node type: ", type(parent_node))
-
-    # Try to solve
-    result = GurobiSolver().Solve(prog)
-    if result.is_success():
-        return False
-    else:
-        return True
 
 def add_mle_tree_parsing_to_prog(
         prog, grammar, observed_nodes, max_recursion_depth=10,
@@ -1148,7 +1277,7 @@ def add_mle_tree_parsing_to_prog(
 
     # For translations and rotations separately, figure out which connected sets of nodes in the
     # supertree have translations [or rotations] that are constrained to be exactly equal.
-    t_equivalent_sets, R_equivalent_sets = make_equivalent_sets(super_tree)
+    t_equivalent_sets, R_equivalent_sets = make_equivalent_sets_for_R_and_t(super_tree)
 
     # For each set, figure out if activation of any node in the set implies that
     # an observed node will be active. Record the result and a reference to the
