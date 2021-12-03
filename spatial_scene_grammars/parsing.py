@@ -902,12 +902,9 @@ def infer_mle_tree_with_mip_from_proposals(
             if node.observed:
                 obs_tfs += node._possible_tfs
                 obs_cs += node._correspondences
-                print(node, obs_tfs, obs_cs)
-        print("b4", obs_cs)
         # Reduce this to a map of poses, and expressions indicating
         # whether that pose is active.
         obs_tfs, obs_cs, obs_counts = collapse_close_entries(obs_tfs, obs_cs, np.ones(len(obs_cs)))
-        print("after", obs_cs)
         if not equivalent_set.is_always_observable():
             # For the unobserved nodes, just collect the additional
             # pose choices available.
@@ -934,7 +931,6 @@ def infer_mle_tree_with_mip_from_proposals(
         equivalent_set.tf_correspondences = prog.NewBinaryVariables(len(full_tfs), "%d_t_corrs" % set_k)
         equivalent_set.tf_possibilities = full_tfs
         for tf_corr, cs_expression, count in zip(equivalent_set.tf_correspondences, full_cs, full_counts):
-            print(tf_corr >= cs_expression / count)
             prog.AddLinearConstraint(tf_corr >= cs_expression / count)
             prog.AddLinearConstraint(tf_corr <= cs_expression)
         # Only one of these correspondences, which correspond to distinct
@@ -1116,7 +1112,6 @@ def infer_mle_tree_with_mip_from_proposals(
         else:
             raise ValueError("Unexpected node in cost assembly: ", type(parent_node))
         
-    print("Starting")
     solver = GurobiSolver()
     options = SolverOptions()
     logfile = "/tmp/gurobi_%s.log" % datetime.now().strftime("%Y%m%dT%H%M%S")
@@ -1159,7 +1154,6 @@ def infer_mle_tree_with_mip_from_proposals(
         while len(potential_node_queue) > 0:
             node, parent = potential_node_queue.pop(0)
             if get_sol(node._active) > 0.5:
-                print("Adding ", node.name)
                 tf_actives = get_sol(node._equivalent_set.tf_correspondences)
 
                 assert sum(tf_actives) == 1, "Active node had no active TF."
@@ -1168,8 +1162,8 @@ def infer_mle_tree_with_mip_from_proposals(
                 new_node.tf = tf
                 optimized_tree.add_node(new_node)
                 if parent is not None:
-                    if verbose:
-                        print("Added %s--(%d)>%s at %s" % (parent.name, new_node.rule_k, new_node.name, new_node.tf))
+                    if verbose > 1:
+                        print("Added %s--(%d)>%s" % (parent.name, new_node.rule_k, new_node.name))
                     optimized_tree.add_edge(parent, new_node)
                 children = list(super_tree.successors(node))
                 for child in children:
@@ -1283,13 +1277,13 @@ def add_mle_tree_parsing_to_prog(
     # an observed node will be active. Record the result and a reference to the
     # corresponding set of observed nodes to the rest of the set.
     for t_equivalent_set in t_equivalent_sets:
-        t_always_observed = equivalent_set_activity_implies_observability(t_equivalent_set, super_tree)
+        t_always_observed = t_equivalent_set.is_always_observable()
         t_observed_nodes = [node for node in t_equivalent_set if node.observed]
         for node in t_equivalent_set:
             node.t_always_observed = t_always_observed
             node.t_equivalent_to_observed_nodes = t_observed_nodes
     for R_equivalent_set in R_equivalent_sets:
-        R_always_observed = equivalent_set_activity_implies_observability(R_equivalent_set, super_tree)
+        R_always_observed = R_equivalent_set.is_always_observable()
         R_observed_nodes = [node for node in R_equivalent_set if node.observed]
         for node in R_equivalent_set:
             node.R_always_observed = R_always_observed
