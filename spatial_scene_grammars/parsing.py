@@ -142,7 +142,7 @@ def make_equivalent_sets(super_tree):
         ## Get child rule list. Can't use get_children_and_rules
         # here since we're operating on a supertree, so the standard
         # scene tree logic for getting rules isn't correct.
-        if isinstance(parent_node, GeometricSetNode):
+        if isinstance(parent_node, RepeatingSetNode):
             rules = [parent_node.rule for k in range(len(children))]
         elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
             rules = parent_node.rules
@@ -174,7 +174,7 @@ def make_equivalent_sets_for_R_and_t(super_tree):
         ## Get child rule list. Can't use get_children_and_rules
         # here since we're operating on a supertree, so the standard
         # scene tree logic for getting rules isn't correct.
-        if isinstance(parent_node, GeometricSetNode):
+        if isinstance(parent_node, RepeatingSetNode):
             rules = [parent_node.rule for k in range(len(children))]
         elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
             rules = parent_node.rules
@@ -281,7 +281,7 @@ class EquivalentSet():
                     if child in node_to_activation.keys():
                         prog.AddLinearConstraint(node_to_activation[child] <= parent_var)
 
-            elif isinstance(parent_node, GeometricSetNode):
+            elif isinstance(parent_node, RepeatingSetNode):
                 for child in children:
                     if child in node_to_activation.keys():
                         prog.AddLinearConstraint(node_to_activation[child] <= parent_var)
@@ -333,7 +333,7 @@ def get_score_of_orphan_set_under_parent(parent_node, existing_children, orphan_
     # if the types match.
     if isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
         all_rules = parent_node.rules
-    elif isinstance(parent_node, (GeometricSetNode,)):
+    elif isinstance(parent_node, (RepeatingSetNode,)):
         all_rules = [parent_node.rules[0] for k in range(parent_node.max_children)]
     else:
         raise NotImplementedError(type(parent_node))
@@ -968,7 +968,7 @@ def infer_mle_tree_with_mip_from_proposals(
         ## Get child rule list. Can't use get_children_and_rules
         # here since we're operating on a supertree, so the standard
         # scene tree logic for getting rules isn't correct.
-        if isinstance(parent_node, GeometricSetNode):
+        if isinstance(parent_node, RepeatingSetNode):
             rules = [parent_node.rule for k in range(len(children))]
         elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
             rules = parent_node.rules
@@ -1027,7 +1027,7 @@ def infer_mle_tree_with_mip_from_proposals(
         child_actives = [c._active for c in children]
 
         # Constraints
-        if isinstance(parent_node, GeometricSetNode):
+        if isinstance(parent_node, RepeatingSetNode):
             # Geometric node child ordering to reduce duplicate parse: a child can
             # only be active if the previous child is also active.
             for k in range(len(child_actives) - 1):
@@ -1094,7 +1094,7 @@ def infer_mle_tree_with_mip_from_proposals(
                 prog.AddLinearCost(-(
                     np.log(p) * child._active + np.log(1 - p) * (1 - child._active) - np.log(1 - p) * (1 - parent_node._active)
                 ))
-        elif isinstance(parent_node, GeometricSetNode):
+        elif isinstance(parent_node, RepeatingSetNode):
             # Copy probabilities out from the "fake" geometric dist.
             count_probs = parent_node.rule_probs.detach().numpy()
             for child_k, child in enumerate(children):
@@ -1403,7 +1403,7 @@ def add_mle_tree_parsing_to_prog(
         ## Get child rule list. Can't use get_children_and_rules
         # here since we're operating on a supertree, so the standard
         # scene tree logic for getting rules isn't correct.
-        if isinstance(parent_node, GeometricSetNode):
+        if isinstance(parent_node, RepeatingSetNode):
             rules = [parent_node.rule for k in range(len(children))]
         elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
             rules = parent_node.rules
@@ -1420,7 +1420,7 @@ def add_mle_tree_parsing_to_prog(
             prog.AddLinearConstraint(parent_node.active >= child_active)
 
         ## Parent/child activation relationships and symmetry breaking.
-        if isinstance(parent_node, GeometricSetNode):
+        if isinstance(parent_node, RepeatingSetNode):
             # Geometric node child ordering to reduce duplicate parse: a child can
             # only be active if the previous child is also active.
             for k in range(len(child_actives) - 1):
@@ -1466,7 +1466,7 @@ def add_mle_tree_parsing_to_prog(
         ## p(child set | parent), which depends on the child activation variables.
         children = super_tree.get_children(parent_node)
         ## Get child rule list.
-        if isinstance(parent_node, GeometricSetNode):
+        if isinstance(parent_node, RepeatingSetNode):
             rules = [parent_node.rule for k in range(len(children))]
         elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
             rules = parent_node.rules
@@ -1490,7 +1490,7 @@ def add_mle_tree_parsing_to_prog(
                 prog.AddLinearCost(-(
                     np.log(p) * child.active + np.log(1 - p) * (1 - child.active) - np.log(1 - p) * (1 - parent_node.active)
                 ))
-        elif isinstance(parent_node, GeometricSetNode):
+        elif isinstance(parent_node, RepeatingSetNode):
             # Copy probabilities out from the "fake" geometric dist.
             count_probs = parent_node.rule_probs.detach().numpy()
             for child_k, child in enumerate(children):
@@ -1661,7 +1661,7 @@ def get_optimized_tree_from_mip_results(inference_results, assert_on_failure=Fal
             continue
         children = super_tree.get_children(parent_node)
         ## Get child rule list.
-        if isinstance(parent_node, GeometricSetNode):
+        if isinstance(parent_node, RepeatingSetNode):
             rules = [parent_node.rule for k in range(len(children))]
         elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
             rules = parent_node.rules

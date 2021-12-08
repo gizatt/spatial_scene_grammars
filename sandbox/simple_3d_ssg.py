@@ -175,7 +175,7 @@ class OrNode(Node):
         return children
         
     
-class GeometricSetNode(Node):
+class RepeatingSetNode(Node):
     ''' Node type that produces all children. '''
     def __init__(self, child_infos, p, max_children, **kwargs):
         assert len(child_infos) == 1
@@ -282,7 +282,7 @@ def draw_tree(tree, vis, prefix="", draw_regions=False):
         
         if draw_regions:
             # Draw the child regions for each child
-            if isinstance(node, (AndNode, OrNode, GeometricSetNode)):
+            if isinstance(node, (AndNode, OrNode, RepeatingSetNode)):
                 for info_k, child_info in enumerate(node.child_infos):
                     region_name = "child_region_%03d" % info_k
                     lb = child_info.child_xyz_bounds.xyz_min

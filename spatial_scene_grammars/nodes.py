@@ -243,7 +243,7 @@ class OrNode(Node):
         return self._rule_dist.log_prob(torch.tensor(child.rule_k))
 
 
-class GeometricSetNode(Node):
+class RepeatingSetNode(Node):
     ''' Given a *single production rule*, repeatedly enacts it until
     a coin flip succeeds or the maximum number of children has been added.
     Hence, it can produce [1, ..., max_children] children.
@@ -267,8 +267,7 @@ class GeometricSetNode(Node):
         # TODO(gizatt): I'm *not* adding the extra term on the final
         # weight reflecting the total probability of a geometric dist
         # giving more than N children -- I don't have to for this to be
-        # a legitimate distribution. But "geometric" in the name is a little
-        # misleading, since this'll have slightly lower mean.
+        # a legitimate distribution.
         if isinstance(parameters, float):
             parameters = torch.tensor([parameters])
         p = parameters.reshape(1,)
@@ -287,7 +286,7 @@ class GeometricSetNode(Node):
 
     def sample_children(self):
         children = []
-        n = pyro.sample("GeometricSetNode_n", self.geom_surrogate_dist) + 1
+        n = pyro.sample("RepeatingSetNode_n", self.geom_surrogate_dist) + 1
         assert n >= 1 and n <= self.max_children
         for k in range(n):
             child = self.rule.sample_child(self)

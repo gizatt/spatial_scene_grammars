@@ -141,7 +141,7 @@ class BoxAndStackBox(AndNode):
         ]
         return ModelRules
 
-class AssortedBoxes(GeometricSetNode):
+class AssortedBoxes(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,

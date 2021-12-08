@@ -51,7 +51,7 @@ class Pair(AndNode):
             )
         ]
 
-class Pairs(GeometricSetNode):
+class Pairs(RepeatingSetNode):
     MAX_N_PAIRS = 3
     P = 0.3
     def __init__(self, tf):
@@ -76,7 +76,7 @@ class Pairs(GeometricSetNode):
             )
         )]
 
-class Singles(GeometricSetNode):
+class Singles(RepeatingSetNode):
     MAX_N_SINGLES = 3
     P = 0.3
     def __init__(self, tf):

@@ -163,7 +163,7 @@ class Bowl(OrNode):
         ]
         return ModelRules
 
-class BowlContents(GeometricSetNode):
+class BowlContents(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             p=torch.tensor(0.5),
@@ -237,7 +237,7 @@ class Object(OrNode):
         ]
         return ObjectRules
 
-class AssortedPlates(GeometricSetNode):
+class AssortedPlates(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
@@ -256,7 +256,7 @@ class AssortedPlates(GeometricSetNode):
             rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-1, -1, -1, 0.]))
         )
         return [rule]
-class AssortedCups(GeometricSetNode):
+class AssortedCups(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
@@ -275,7 +275,7 @@ class AssortedCups(GeometricSetNode):
             rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-1, -1, -1, 0.]))
         )
         return [rule]
-class AssortedBowls(GeometricSetNode):
+class AssortedBowls(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,

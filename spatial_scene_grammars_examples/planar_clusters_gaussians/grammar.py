@@ -97,7 +97,7 @@ class Paper(TerminalNode):
             observed=True
         )
 
-class PaperCluster(GeometricSetNode):
+class PaperCluster(RepeatingSetNode):
     # Make a stack of papers
     def __init__(self, tf):
         super().__init__(
@@ -135,7 +135,7 @@ class Pencil(TerminalNode):
             observed=True
         )
 
-class PencilCluster(GeometricSetNode):
+class PencilCluster(RepeatingSetNode):
     # Make a geometric cluster of roughly-aligned pencils
     def __init__(self, tf):
         super().__init__(
@@ -181,7 +181,7 @@ class ObjectCluster(OrNode):
         ]
         return ClusterRules
 
-class Desk(GeometricSetNode):
+class Desk(RepeatingSetNode):
     # Make geometric # of object clusters
     desk_size=[2., 2.]
     def __init__(self, tf):

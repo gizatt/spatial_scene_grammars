@@ -14,7 +14,7 @@ import torch.distributions.constraints as constraints
 
 from .torch_utils import ConstrainedParameter
 from .nodes import (Node, TerminalNode,
-    AndNode, OrNode, GeometricSetNode, IndependentSetNode
+    AndNode, OrNode, RepeatingSetNode, IndependentSetNode
 )
 from .rules import ProductionRule
 
@@ -81,7 +81,7 @@ class SceneTree(nx.DiGraph):
 
 
     def get_rule_for_child(self, parent, child):
-        if isinstance(parent, GeometricSetNode):
+        if isinstance(parent, RepeatingSetNode):
             return parent.rule
         elif isinstance(parent, (AndNode, OrNode, IndependentSetNode)):
             return parent.rules[child.rule_k]
@@ -94,7 +94,7 @@ class SceneTree(nx.DiGraph):
         to the parent type and child rule_k index) as matching lists. '''
         children = self.get_children(parent)
         # Get child rule list.
-        if isinstance(parent, GeometricSetNode):
+        if isinstance(parent, RepeatingSetNode):
             rules = [parent.rule for k in range(len(children))]
         elif isinstance(parent, AndNode):
             rules = parent.rules
@@ -150,7 +150,7 @@ class SceneTree(nx.DiGraph):
                     assert child.rule_k >= 0
                     if isinstance(node, (AndNode, OrNode, IndependentSetNode)):
                         rule = node.rules[child.rule_k]
-                    elif isinstance(node, GeometricSetNode):
+                    elif isinstance(node, RepeatingSetNode):
                         rule = node.rule
                     else:
                         raise ValueError("Unknown node type %s has children." % type(node))
@@ -374,7 +374,7 @@ class SpatialSceneGrammar(torch.nn.Module):
             parent = node_queue.pop(0)
             if isinstance(parent, (AndNode, OrNode, IndependentSetNode, TerminalNode)):
                 rules = parent.rules
-            elif isinstance(parent, GeometricSetNode):
+            elif isinstance(parent, RepeatingSetNode):
                 rules = [parent.rule for k in range(parent.max_children)]
             else:
                 raise ValueError(type(parent))

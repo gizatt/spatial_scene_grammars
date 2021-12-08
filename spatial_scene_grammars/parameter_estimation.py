@@ -118,7 +118,7 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             # impossible to see.
             avg_count = torch.clip(avg_count, min_weight, 1.-min_weight)
             grammar.params_by_node_type[node_type.__name__].set(avg_count)
-        elif issubclass(node_type, GeometricSetNode):
+        elif issubclass(node_type, RepeatingSetNode):
             # Record weighted-average count of children, whose inverse
             # is a maximum likelihood estimate of p.
             # https://en.wikipedia.org/wiki/Geometric_distribution#Statistical_inference
@@ -149,7 +149,7 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
 
         # Go collect all parent/child pairs for the rules.
         parent_child_pairs_for_rules = [[] for k in range(len(rules))]
-        if issubclass(node_type, GeometricSetNode):
+        if issubclass(node_type, RepeatingSetNode):
             # Special case: only one rule that all children
             # correspond to.
             assert len(rules) == 1
@@ -412,7 +412,7 @@ def get_supertree_rules_from_parent(parent_node, children):
     ## Get child rule list. Can't use get_children_and_rules
     # here since we're operating on a supertree, so the standard
     # scene tree logic for getting rules isn't correct.
-    if isinstance(parent_node, GeometricSetNode):
+    if isinstance(parent_node, RepeatingSetNode):
         rules = [parent_node.rule for k in range(len(children))]
     elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
         rules = parent_node.rules

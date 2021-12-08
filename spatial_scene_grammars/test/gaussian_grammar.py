@@ -53,7 +53,7 @@ class NodeD(IndependentSetNode):
             )
         ]
 
-class NodeC(GeometricSetNode):
+class NodeC(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             p=torch.tensor(0.2),

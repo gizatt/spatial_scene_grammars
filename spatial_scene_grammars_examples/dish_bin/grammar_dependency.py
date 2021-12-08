@@ -158,7 +158,7 @@ class TerminalBowl(OrNode):
         ]
         return ModelRules
 
-class ObjectsOnPlate(GeometricSetNode):
+class ObjectsOnPlate(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
@@ -220,7 +220,7 @@ class Plate(AndNode):
         ]
         return rules
 
-class ObjectsInBowl(GeometricSetNode):
+class ObjectsInBowl(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
@@ -303,7 +303,7 @@ class Object(OrNode):
         ]
         return ObjectRules
     
-class DishBin(GeometricSetNode):
+class DishBin(RepeatingSetNode):
     def __init__(self, tf):
         geom = PhysicsGeometryInfo(fixed=True)
         geom.register_model_file(torch.eye(4), "sink/bin.sdf")

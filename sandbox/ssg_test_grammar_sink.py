@@ -31,7 +31,7 @@ class Sink(AndNode):
             observed=True
         )
 
-class Plates(GeometricSetNode):
+class Plates(RepeatingSetNode):
     def __init__(self, tf):
         child_infos = [
             ChildInfo(
@@ -83,7 +83,7 @@ class Plate(OrNode):
             observed=True
         )
 
-class Mugs(GeometricSetNode):
+class Mugs(RepeatingSetNode):
     def __init__(self, tf):
         child_infos = [
             ChildInfo(
@@ -130,7 +130,7 @@ class Mug(OrNode):
             observed=True
         ) 
 
-class Utensils(GeometricSetNode):
+class Utensils(RepeatingSetNode):
     def __init__(self, tf):
         child_infos = [
             ChildInfo(
@@ -149,7 +149,7 @@ class Utensils(GeometricSetNode):
             observed=False
         )
 
-class UtensilsInMug(GeometricSetNode):
+class UtensilsInMug(RepeatingSetNode):
     def __init__(self, tf):
         child_infos = [
             ChildInfo(

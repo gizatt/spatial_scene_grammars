@@ -5,7 +5,7 @@ clusters in the unit box. Each cluster produces
 a geometric number of long boxes with minor rotations
 around their non-long axes. '''
 
-class OrientedClusterRoot(GeometricSetNode):
+class OrientedClusterRoot(RepeatingSetNode):
     def __init__(self, tf):
         child_infos = [
             ChildInfo(
@@ -23,7 +23,7 @@ class OrientedClusterRoot(GeometricSetNode):
             observed=False
         )
 
-class OrientedCluster(GeometricSetNode):
+class OrientedCluster(RepeatingSetNode):
     def __init__(self, tf):
         child_infos = [
             ChildInfo(

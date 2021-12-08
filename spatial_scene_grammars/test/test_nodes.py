@@ -71,12 +71,12 @@ def test_OrNode(set_seed):
     assert torch.allclose(node.parameters, node.rule_probs)
 
 
-## GeometricSetNode
-def test_GeometricSetNode(set_seed):
+## RepeatingSetNode
+def test_RepeatingSetNode(set_seed):
     node = NodeC(tf=torch.eye(4))
     trace = pyro.poutine.trace(node.sample_children).get_trace()
     children = trace.nodes["_RETURN"]["value"]
-    trace_node = trace.nodes["GeometricSetNode_n"]
+    trace_node = trace.nodes["RepeatingSetNode_n"]
     expected_prob = trace_node["fn"].log_prob(trace_node["value"])
     assert len(children) <= node.max_children and len(children) >= 1
     score = node.score_child_set(children)

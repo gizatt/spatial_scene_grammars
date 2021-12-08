@@ -86,7 +86,7 @@ class Plate(OrNode):
             ) for model_type in PlateModels
         ]
         return ModelRules
-class Plates(GeometricSetNode):
+class Plates(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             p=torch.tensor([0.5]),
@@ -131,7 +131,7 @@ class Cup(OrNode):
             ) for model_type in CupModels
         ]
         return ModelRules
-class Cups(GeometricSetNode):
+class Cups(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             p=torch.tensor([0.5]),
@@ -177,7 +177,7 @@ class Utensil(OrNode):
             ) for model_type in UtensilModels
         ]
         return ModelRules
-class Utensils(GeometricSetNode):
+class Utensils(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             p=torch.tensor([0.5]),
@@ -267,7 +267,7 @@ class Table(IndependentSetNode):
         ]
 
 
-class Restaurant(GeometricSetNode):
+class Restaurant(RepeatingSetNode):
     def __init__(self, tf):
         geom = PhysicsGeometryInfo(fixed=True)
         geom.register_model_file(torch.eye(4), "models/restaurant/room.sdf")

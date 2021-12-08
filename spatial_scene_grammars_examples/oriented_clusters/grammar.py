@@ -27,7 +27,7 @@ class LongBox(TerminalNode):
             observed=True
         )
 
-class OrientedCluster(GeometricSetNode):
+class OrientedCluster(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
@@ -50,7 +50,7 @@ class OrientedCluster(GeometricSetNode):
             )
         )]
 
-class OrientedClusterRoot(GeometricSetNode):
+class OrientedClusterRoot(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
