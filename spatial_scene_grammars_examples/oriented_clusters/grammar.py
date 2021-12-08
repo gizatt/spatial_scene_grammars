@@ -31,8 +31,7 @@ class OrientedCluster(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            p=0.3,
-            max_children=5,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.3, max_children=5),
             physics_geometry_info=None,
             observed=False
         )
@@ -54,8 +53,7 @@ class OrientedClusterRoot(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            p=0.3,
-            max_children=3,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.3, max_children=3),
             physics_geometry_info=None,
             observed=True
         )

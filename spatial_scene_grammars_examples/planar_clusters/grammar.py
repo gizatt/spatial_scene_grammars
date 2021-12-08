@@ -100,8 +100,7 @@ class PaperCluster(RepeatingSetNode):
     # Make a stack of papers
     def __init__(self, tf):
         super().__init__(
-            p=0.3,
-            max_children=3,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.3, max_children=3),
             tf=tf,
             physics_geometry_info=None,
             observed=False
@@ -140,8 +139,7 @@ class PencilCluster(RepeatingSetNode):
     # Make a geometric cluster of roughly-aligned pencils
     def __init__(self, tf):
         super().__init__(
-            p=0.5,
-            max_children=3,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.5, max_children=3),
             tf=tf,
             physics_geometry_info=None,
             observed=False
@@ -202,8 +200,7 @@ class Desk(RepeatingSetNode):
         )
         super().__init__(
             tf=tf,
-            p=0.2,
-            max_children=3,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.2, max_children=3),
             physics_geometry_info=geom,
             observed=True
         )

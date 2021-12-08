@@ -81,7 +81,7 @@ def test_RepeatingSetNode(set_seed):
     assert len(children) <= node.max_children and len(children) >= 1
     score = node.score_child_set(children)
     assert torch.isclose(score, expected_prob), "%s vs %s" % (expected_prob, score)
-    assert torch.allclose(node.parameters, node.p)
+    assert torch.allclose(node.parameters, node.rule_probs)
 
 ## IndependentSetNode
 def test_IndependentSetNode(set_seed):

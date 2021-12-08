@@ -166,8 +166,7 @@ class Bowl(OrNode):
 class BowlContents(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
-            p=torch.tensor(0.5),
-            max_children=3,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=torch.tensor(0.5), max_children=3),
             tf=tf,
             physics_geometry_info=None,
             observed=False
@@ -240,8 +239,7 @@ class AssortedPlates(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            p=0.2,
-            max_children=6,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.2, max_children=6),
             physics_geometry_info=None,
             observed=False
         )
@@ -259,8 +257,7 @@ class AssortedCups(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            p=0.2,
-            max_children=6,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.2, max_children=6),
             physics_geometry_info=None,
             observed=False
         )
@@ -278,8 +275,7 @@ class AssortedBowls(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            p=0.2,
-            max_children=6,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.2, max_children=6),
             physics_geometry_info=None,
             observed=False
         )
@@ -298,8 +294,7 @@ class AssortedPlateStacks(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            p=0.5,
-            max_children=2,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.5, max_children=2),
             physics_geometry_info=None,
             observed=False
         )
@@ -320,8 +315,7 @@ class AssortedFullBowls(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            p=0.5,
-            max_children=2,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.5, max_children=2),
             physics_geometry_info=None,
             observed=False
         )

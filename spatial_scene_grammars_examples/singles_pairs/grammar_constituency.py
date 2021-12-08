@@ -62,8 +62,7 @@ class Pairs(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            p=0.3,
-            max_children=self.MAX_N_PAIRS,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.3, max_children=self.MAX_N_PAIRS),
             physics_geometry_info=None,
             observed=False
         )
@@ -86,8 +85,7 @@ class Singles(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            p=0.3,
-            max_children=self.MAX_N_SINGLES,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.3, max_children=self.MAX_N_SINGLES),
             physics_geometry_info=None,
             observed=False
         )

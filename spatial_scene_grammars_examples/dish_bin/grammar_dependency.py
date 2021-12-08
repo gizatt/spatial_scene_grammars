@@ -162,8 +162,7 @@ class ObjectsOnPlate(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            p=0.5,
-            max_children=3,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.5, max_children=3),
             physics_geometry_info=None,
             observed=False
         )
@@ -224,8 +223,7 @@ class ObjectsInBowl(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            p=0.5,
-            max_children=3,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.5, max_children=3),
             physics_geometry_info=None,
             observed=False
         )
@@ -309,8 +307,7 @@ class DishBin(RepeatingSetNode):
         geom.register_model_file(torch.eye(4), "sink/bin.sdf")
         super().__init__(
             tf=tf,
-            p=0.4,
-            max_children=6,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.4, max_children=6),
             physics_geometry_info=geom,
             observed=True
         )

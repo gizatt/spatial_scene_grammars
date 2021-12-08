@@ -56,8 +56,7 @@ class NodeD(IndependentSetNode):
 class NodeC(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
-            p=torch.tensor(0.2),
-            max_children=5,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=torch.tensor(0.2), max_children=5),
             observed=False,
             physics_geometry_info=None,
             tf=tf
