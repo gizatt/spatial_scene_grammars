@@ -32,7 +32,6 @@ jobs:
 
       - name: "Install python dependencies"
         run: |
-          cd ${{ github.workspace }}
           pip install wheel
           pip install -r requirements.txt
           pip install torch-sparse torch-scatter torch-cluster torch-spline-conv -f https://pytorch-geometric.com/whl/torch-1.9.1%2Bcu102.html
@@ -40,14 +39,16 @@ jobs:
 
       - name: "Run tests"
         run: |
-          cd ${{ github.workspace }}
           source ./setup.sh
-          pytest --pyargs spatial_scene_grammars --cov=./ --continue-on-collection-errors
+          pytest --pyargs spatial_scene_grammars --cov=./ --cov-report=xml --continue-on-collection-errors
       
       - name: "Codecov upload"
         uses: codecov/codecov-action@v2
         with:
           fail_ci_if_error: false # optional (default = false)
           verbose: true # optional (default = false)
+          env_vars: OS,PYTHON,DRAKE_URL
+          files: ./coverage.xml
+          path_to_write_report: ./coverage/codecov_report.txt
 
       - run: echo "🍏 This job's status is ${{ job.status }}."
