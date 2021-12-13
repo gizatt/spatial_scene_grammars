@@ -1,28 +1,23 @@
 Spatial Scene Grammars
 -------------
 
-**FYI: WIP / research codebase -- currently pretty broken due to some low-level interface changes, but pushing back to functionality.**
-
-
-
-<img src="spatial_scene_grammars_examples/kitchen/demo_rooms.gif" 
-alt="Preview of some generated rooms" border="10" />
-<img src="spatial_scene_grammars_examples/kitchen/scene_with_google_models.png" 
-alt="Preview of some generated rooms" border="10" />
+**FYI: WIP / research codebase.**
 
 # Overview
 
-**Goal:** provide a language for writing parameterized procedural models of environments based on scene grammars that have first-class support for:
-- Forward sampling to generate lots of new scenes, where the output of the model might be an object set, or it might be an observed camera image.
-- Scene parsing: given an observed environment, find program traces of the procedural model that reproduce it.
-- Posterior inference of model parameters given datasets of observed environments (where observations might be object sets or even observed camera images).
+**Goal:** provide an API for writing parameterized procedural models of environments by writing nodes and rules to be used in a scene grammar. We provide first-class support for:
+- Forward sampling to generate lots of new scenes as collections of objects. These can then be rendered into images, forward simulated, etc.
+- Scene parsing: given an observed environment, find maximum-a-posteriori program traces of the procedural model that reproduce it.
+- Parameter estimation: Given a dataset of observed environments (where each observation is a collection of observed objects with observed poses, but without annotated relationships or structure), find optimal grammar parameters to best match that dataset.
+
+
+# Details
+
+For now, refer to [this paper](http://groups.csail.mit.edu/robotics-center/public_papers/Izatt21.pdf) for the most up-to-date description of the grammar and parsing strategy. Refer to the unit tests and examples for usage. I promise more complete docs are on their way...
+
 
 <!--
-See [`examples/kitchen`](spatial_scene_grammars_examples/kitchen/README.md) for a demo of programmatically specifying a grammar
-and using it to generate scenes.
--->
-
-Below are some old-ish notes on the precise spec of a spatial scene grammar; they may not be up to date any more.
+Below are some old-ish notes on the precise spec of a spatial scene grammar; they may not be up to date any more, and need revision. For now,
 
 ## Grammar Details: Nodes and Rules
 
@@ -185,3 +180,4 @@ nodes. This complexity might come to bite me when it comes time to write a rever
   - Spiral 1: HMC in constraint null space, something like [this](https://dritchie.github.io/pdf/hmc.pdf)?
   - Spiral 2: Alternate that with tree resampling / parsing?
 - Need tree parsing first pass to figure out pain points in interop between the tree structure and Pyro.
+-->
