@@ -51,6 +51,5 @@ jobs:
           verbose: true # optional (default = false)
           env_vars: OS,PYTHON,DRAKE_URL
           files: ./coverage.xml
-          path_to_write_report: ./coverage/codecov_report.txt
 
       - run: echo "🍏 This job's status is ${{ job.status }}."
