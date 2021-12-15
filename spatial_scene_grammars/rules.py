@@ -665,7 +665,7 @@ class SameRotationRule(RotationProductionRule):
     def sample_rotation(self, parent):
         return torch.matmul(parent.rotation, self.offset)
     def score_child(self, parent, child):
-        if torch.allclose(torch.matmul(parent.rotation, self.offset), child.rotation):
+        if torch.allclose(torch.matmul(parent.rotation, self.offset), child.rotation, atol=1E-4):
             return torch.tensor(0.)
         return torch.tensor(-np.inf)
     def get_site_values(self, parent, child):
