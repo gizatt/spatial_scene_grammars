@@ -40,7 +40,7 @@ class Pair(AndNode):
                     variance=torch.ones(3)*cls.PAIR_XYZ_VAR
                 ),
                 rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                    RotationMatrix(RollPitchYaw(0., 0., 1.)),
+                    RotationMatrix(RollPitchYaw(0., 0., 1.)), # This 1 is weird, but I'm keeping it until I finish figure gen
                     [100., 100., 100.]
                 )
             ),
@@ -51,7 +51,7 @@ class Pair(AndNode):
                     variance=torch.ones(3)*cls.PAIR_XYZ_VAR
                 ),
                 rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                    RotationMatrix(RollPitchYaw(0., 0., 1.)),
+                    RotationMatrix(RollPitchYaw(0., 0., 1.)), # Likewise
                     [100., 100., 100.]
                 )
             )
@@ -75,7 +75,7 @@ class Pairs(RepeatingSetNode):
                 variance=torch.tensor([1.0, 1.0, 1.0])
             ),
             rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                RotationMatrix(RollPitchYaw(1., 0., 0.)),
+                RotationMatrix(RollPitchYaw(1., 0., 0.)), # Likewise
                 [0.1, 0.1, 0.1]
             )
         )]
@@ -98,7 +98,7 @@ class Singles(RepeatingSetNode):
                 variance=torch.tensor([1.0, 1.0, 1.0])
             ),
             rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                RotationMatrix(RollPitchYaw(1., 0., 0.)),
+                RotationMatrix(RollPitchYaw(1., 0., 0.)), # Likewise
                 [0.1, 0.1, 0.1]
             )
         )]
