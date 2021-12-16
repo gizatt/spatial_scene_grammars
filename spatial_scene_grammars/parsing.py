@@ -970,7 +970,6 @@ def infer_mle_tree_with_mip_from_proposals(
             prog.AddLinearConstraint(sum(equivalent_set.tf_correspondences) <= 1)
             prog.AddLinearConstraint(sum(equivalent_set.tf_correspondences) <= sum([node._active for node in equivalent_set]))
 
-
     # Now at a node level, decide what will be active.
     for node in super_tree:
         # Nodes can't be active if their equiv set has no assigned
@@ -1058,6 +1057,7 @@ def infer_mle_tree_with_mip_from_proposals(
 
         # Constraints
         if isinstance(parent_node, RepeatingSetNode):
+            assert len(children) > 0, len(child_actives) > 0
             # Geometric node child ordering to reduce duplicate parse: a child can
             # only be active if the previous child is also active.
             for k in range(len(child_actives) - 1):
@@ -1067,8 +1067,8 @@ def infer_mle_tree_with_mip_from_proposals(
             # The geometric process we used (np.random.geometric) is only supported
             # on k=1, ..., so constrain that the # of active children must be
             # nonzero if this node is on.
-            if len(child_actives) > 0:
-                prog.AddLinearConstraint(sum(child_actives) >= parent_node._active)
+            prog.AddLinearConstraint(sum(child_actives) >= parent_node._active)
+
             # Assert some arbitrary ordering to child poses: that they
             # ascend in their x coordinate. We can calculate the x coordinate
             # of children as a linear expression of the tf correspondence variable
@@ -1076,22 +1076,27 @@ def infer_mle_tree_with_mip_from_proposals(
             # a big M term if the second child in the comparison isn't active.
             child_xs = []
             # Get biggest possible x for big M deactivation
-            max_child_x = max([max([tf[0, 3].detach().item() for tf in child._equivalent_set.tf_possibilities]) for child in children])
-            # Accumulate expressions of child x
-            for child in children:
-                child_x = sum([
-                    tf[0, 3].detach().item() * active for (tf, active) in zip(child._equivalent_set.tf_possibilities, child._equivalent_set.tf_correspondences)
-                ])
-                child_xs.append(child_x)
-            for k in range(len(children) - 1):
-                child_x = child_xs[k]
-                next_child_x = child_xs[k+1]
-                next_child = children[k+1]
-                c = child_x <= next_child_x + max_child_x * (1. - next_child._active)
-                if len(c.GetFreeVariables()) > 0:
-                    # In some cases this formula simplifies to True, which breaks
-                    # AddLinearConstraint.
-                    prog.AddLinearConstraint(c)
+            child_x_possiblities = [
+                max([tf[0, 3].detach().item() for tf in child._equivalent_set.tf_possibilities])
+                for child in children if len(child._equivalent_set.tf_possibilities) > 0
+            ]
+            if len(child_x_possiblities) > 0:
+                max_child_x = max(child_x_possiblities)
+                # Accumulate expressions of child x
+                for child in children:
+                    child_x = sum([
+                        tf[0, 3].detach().item() * active for (tf, active) in zip(child._equivalent_set.tf_possibilities, child._equivalent_set.tf_correspondences)
+                    ])
+                    child_xs.append(child_x)
+                for k in range(len(children) - 1):
+                    child_x = child_xs[k]
+                    next_child_x = child_xs[k+1]
+                    next_child = children[k+1]
+                    c = child_x <= next_child_x + max_child_x * (1. - next_child._active)
+                    if len(c.GetFreeVariables()) > 0:
+                        # In some cases this formula simplifies to True, which breaks
+                        # AddLinearConstraint.
+                        prog.AddLinearConstraint(c)
 
         elif isinstance(parent_node, AndNode):
             # All children should be on if the parent node is on.
