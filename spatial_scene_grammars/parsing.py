@@ -50,6 +50,7 @@ from pydrake.all import (
     ClpSolver,
     CommonSolverOption,
     Expression,
+    Formula,
     MathematicalProgram,
     MakeSolver,
     MixedIntegerBranchAndBound,
@@ -296,6 +297,34 @@ class EquivalentSet():
             return False
         else:
             return True
+
+def _contains(obj, type_of_interest):
+    if isinstance(obj, type_of_interest):
+        return True
+    try:
+        return any([_contains(subobj, type_of_interest) for subobj in iter(obj) if subobj is not obj])
+    except TypeError:
+        return False
+
+def _cleanup_object(obj):
+    to_remove = []
+    for key, value in vars(obj).items():
+        if _contains(value, (Variable, Expression, Formula)):
+            to_remove.append(key)
+        if isinstance(value, torch.Tensor):
+            setattr(obj, key, value.detach())
+    for key in to_remove:
+        delattr(obj, key)
+    
+def cleanup_tree_for_pickling(tree):
+    # Remove all variables, detach all tensors.
+    _cleanup_object(tree)
+    for node in tree.nodes:
+        _cleanup_object(node)
+        for rule in node.rules:
+            _cleanup_object(rule)
+    return tree
+
 
 '''
 ###############################################################################
@@ -679,7 +708,8 @@ def generate_candidate_node_pose_sets(grammar, observed_nodes, max_recursion_dep
         top_down_candidate_intermediate_nodes +
         bottom_up_candidate_intermediate_nodes
     )
-    print("Post final pruning: ", len(all_candidate_nodes))
+    if verbose:
+        print("Post final pruning: ", len(all_candidate_nodes))
     
     # Convert to a mapping from node type to node pose for non-observed nodes.
     proposed_poses_by_type = {}
@@ -776,7 +806,7 @@ def sample_likely_tree_with_greedy_parsing(
 def infer_mle_tree_with_mip_from_proposals(
         grammar, observed_nodes, proposed_poses_by_unobserved_type,
         verbose=False, N_solutions=1, max_recursion_depth=10,
-        min_ll_for_consideration=-100.):
+        min_ll_for_consideration=-1000.):
     '''
         Set up a MIP to recover MLE parse trees, using the proposed
         intermediate node locations as options for how to place
@@ -1133,6 +1163,8 @@ def infer_mle_tree_with_mip_from_proposals(
         print("Logfile: ")
         with open(logfile) as f:
             print(f.read())
+    if not result.is_success():
+        actual_N_solutions = 0
 
     # Build tree for each solution
     out_trees = []
@@ -1156,10 +1188,10 @@ def infer_mle_tree_with_mip_from_proposals(
             if get_sol(node._active) > 0.5:
                 tf_actives = get_sol(node._equivalent_set.tf_correspondences)
 
-                assert sum(tf_actives) == 1, "Active node had no active TF."
+                assert np.isclose(sum(tf_actives), 1.), "Active node didn't have one active TF: sum %f" % sum(tf_actives)
                 tf = node._equivalent_set.tf_possibilities[np.argmax(tf_actives)]
-                new_node = deepcopy(node)
-                new_node.tf = tf
+                new_node = type(node)(tf)
+                new_node.rule_k = node.rule_k
                 optimized_tree.add_node(new_node)
                 if parent is not None:
                     if verbose > 1:
@@ -1172,6 +1204,7 @@ def infer_mle_tree_with_mip_from_proposals(
         optim_score = torch.tensor(result.get_suboptimal_objective(sol_k))
         assert torch.isclose(optimized_tree.score(), -optim_score), "%f vs %f" % (optimized_tree.score(verbose=True), -optim_score)
         out_trees.append(optimized_tree)
+
     return out_trees
 
 

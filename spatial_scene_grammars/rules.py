@@ -1267,14 +1267,21 @@ class ParentFrameBinghamRotationRule(WorldFrameBinghamRotationRule):
         with piecewise McCormick envelopes using the binary variables used in the SO(3)
         constraints for the two rotations.
         '''
-        R = child.R_optim
         M = optim_params["M"]
         Z = np.diag(optim_params["Z"])
         log_normalizer = torch.log(self._bingham_dist._norm_const).detach().numpy()
         
         if isinstance(active, bool):
             # NLP context; just add the nonlinear cost and run.
-            add_bingham_cost(prog, R, active, M, Z, log_normalizer)
+            deltaR = parent.R_optim.T.dot(child.R_optim)
+            # (Have to create an intermediate var here; add_bingham_cost
+            # checks linearity against this decision variable of some
+            # internal constriants.)
+            R_for_bingham_cost = prog.NewContinuousVariables(3, 3, "R_tmp")
+            for i in range(3):
+                for j in range(3):
+                    prog.AddConstraint(R_for_bingham_cost[i, j] == deltaR[i, j])
+            add_bingham_cost(prog, R_for_bingham_cost, active, M, Z, log_normalizer)
         else:
             parent_R_observed = len(parent.R_equivalent_to_observed_nodes) > 0
             child_R_observed = len(child.R_equivalent_to_observed_nodes) > 0

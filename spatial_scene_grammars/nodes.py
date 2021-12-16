@@ -294,7 +294,7 @@ class RepeatingSetNode(Node):
     def get_parameter_prior(cls):
         # Default parameter prior is a uniform distribution
         # over [0, 1].
-        return dist.Uniform(torch.zeros(1), torch.ones(1))
+        return dist.Uniform(torch.zeros(1), torch.ones(1) + 1E-6)
 
     def sample_children(self):
         children = []

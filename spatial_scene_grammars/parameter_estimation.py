@@ -319,33 +319,6 @@ def get_posterior_tree_samples_from_observation(
     # the sampled set.
     return sampled_trees
 
-def _contains(obj, type_of_interest):
-    if isinstance(obj, type_of_interest):
-        return True
-    try:
-        return any([_contains(subobj, type_of_interest) for subobj in iter(obj) if subobj is not obj])
-    except TypeError:
-        return False
-
-def _cleanup_object(obj):
-    to_remove = []
-    for key, value in vars(obj).items():
-        if _contains(value, (Variable, Expression, Formula)):
-            to_remove.append(key)
-        if isinstance(value, torch.Tensor):
-            setattr(obj, key, value.detach())
-
-    for key in to_remove:
-        delattr(obj, key)
-    
-def _cleanup_tree_for_pickling(tree):
-    # Remove all variables, detach all tensors.
-    _cleanup_object(tree)
-    for node in tree.nodes:
-        _cleanup_object(node)
-        for rule in node.rules:
-            _cleanup_object(rule)
-    return tree
 
 def _get_samples_from_observation(arg_dict):
     try:
@@ -355,7 +328,7 @@ def _get_samples_from_observation(arg_dict):
     except Exception as e:
         logging.warning("Unexpected error: ", e)
         return None
-    return [_cleanup_tree_for_pickling(tree) for tree in posterior_samples]
+    return [cleanup_tree_for_pickling(tree) for tree in posterior_samples]
 
 def collect_posterior_sample_sets(grammar, observed_node_sets, num_workers=1, tqdm=None, vis=None,
                                   verbose=1, hmc_strategy="NUTS", num_samples=100, subsample_step=5, **kwargs):
@@ -627,7 +600,7 @@ def _get_map_trees_thread_wrapper(arg_dict):
         start_time = time.time()
         refined_trees = _get_map_trees(**arg_dict)
         elapsed = time.time() - start_time
-        return [_cleanup_tree_for_pickling(tree) for tree in refined_trees], elapsed
+        return [cleanup_tree_for_pickling(tree) for tree in refined_trees], elapsed
     except Exception as e:
         logging.error("Error in thread: %s" % e)
         return []
