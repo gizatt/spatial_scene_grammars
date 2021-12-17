@@ -1074,25 +1074,33 @@ def infer_mle_tree_with_mip_from_proposals(
             # of children as a linear expression of the tf correspondence variable
             # and corresponding x coordinates. This constraint is deactivated by
             # a big M term if the second child in the comparison isn't active.
-            child_xs = []
             # Get biggest possible x for big M deactivation
-            child_x_possiblities = [
-                max([tf[0, 3].detach().item() for tf in child._equivalent_set.tf_possibilities])
-                for child in children if len(child._equivalent_set.tf_possibilities) > 0
-            ]
+            child_x_possiblities = sum([
+                [tf[0, 3].detach().item() for tf in child._equivalent_set.tf_possibilities]
+                for child in children
+            ], [])
+
             if len(child_x_possiblities) > 0:
-                max_child_x = max(child_x_possiblities)
+                # Pick a dx s.t. 0 <= 0 + (val) * (1)
+                #                child_x <= 0 + (val) * 1
+                #                child_x <= next_child_x
+                # The first and second condition drives this: pick to be
+                # max of possible child locations (and also 0).
+                max_child_dx = max(child_x_possiblities + [0,])
+                
                 # Accumulate expressions of child x
+                child_xs = []
                 for child in children:
                     child_x = sum([
                         tf[0, 3].detach().item() * active for (tf, active) in zip(child._equivalent_set.tf_possibilities, child._equivalent_set.tf_correspondences)
                     ])
                     child_xs.append(child_x)
+
                 for k in range(len(children) - 1):
                     child_x = child_xs[k]
                     next_child_x = child_xs[k+1]
                     next_child = children[k+1]
-                    c = child_x <= next_child_x + max_child_x * (1. - next_child._active)
+                    c = child_x <= next_child_x + max_child_dx * (1. - next_child._active)
                     if len(c.GetFreeVariables()) > 0:
                         # In some cases this formula simplifies to True, which breaks
                         # AddLinearConstraint.
