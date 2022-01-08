@@ -1057,17 +1057,13 @@ def infer_mle_tree_with_mip_from_proposals(
 
         # Constraints
         if isinstance(parent_node, RepeatingSetNode):
-            assert len(children) > 0, len(child_actives) > 0
+            assert len(children) > 0, len(child_actives) > 0 # Would be silly to have a repeatinsetnode that can't produce anything?
             # Geometric node child ordering to reduce duplicate parse: a child can
             # only be active if the previous child is also active.
             for k in range(len(child_actives) - 1):
                 # child_{k+1} implies child_k
                 # i.e. child_k >= child_{k+1}
                 prog.AddLinearConstraint(child_actives[k] >= child_actives[k+1])
-            # The geometric process we used (np.random.geometric) is only supported
-            # on k=1, ..., so constrain that the # of active children must be
-            # nonzero if this node is on.
-            prog.AddLinearConstraint(sum(child_actives) >= parent_node._active)
 
             # Assert some arbitrary ordering to child poses: that they
             # ascend in their x coordinate. We can calculate the x coordinate
@@ -1138,20 +1134,22 @@ def infer_mle_tree_with_mip_from_proposals(
                     np.log(p) * child._active + np.log(1 - p) * (1 - child._active) - np.log(1 - p) * (1 - parent_node._active)
                 ))
         elif isinstance(parent_node, RepeatingSetNode):
-            # Copy probabilities out from the "fake" geometric dist.
+            # Copy probabilities out from the node's rule probs.
             count_probs = parent_node.rule_probs.detach().numpy()
+            #The first entry is the prob of no children
+            # being active at all, so if the first child is inactive,
+            # that first prob should be activated.
+            # TODO(gizatt) Ugly hack: Gurobi (or Drake?) throws out
+            #  this first constant term, ruining the correspondence between my
+            #  optimal cost and the actual parse tree score. To keep it around,
+            #  I multiply it by a variable I know to always be =1: the activation
+            #  of the tree root.
+            prog.AddLinearCost(-np.log(count_probs[0]) * super_tree_root._active)
             for child_k, child in enumerate(children):
                 # Any given child being active removes the prob of the last #
                 # of children being active, and adds the prob of this # of children
                 # being active.
-                if child_k == 0:
-                    prog.AddLinearCost(-np.log(count_probs[child_k]) * child._active)
-                else:
-                    prog.AddLinearCost(
-                        (np.log(count_probs[child_k-1]) -
-                         np.log(count_probs[child_k])) 
-                        * child._active
-                    )
+                prog.AddLinearCost(child._active * (np.log(count_probs[child_k]) - np.log(count_probs[child_k + 1])))
         else:
             raise ValueError("Unexpected node in cost assembly: ", type(parent_node))
         
@@ -1485,12 +1483,6 @@ def add_mle_tree_parsing_to_prog(
                     # AddLinearConstraint.
                     prog.AddLinearConstraint(c)
 
-            # The geometric process we used (np.random.geometric) is only supported
-            # on k=1, ..., so constrain that the # of active children must be
-            # nonzero if this node is on.
-            if len(child_actives) > 0:
-                prog.AddLinearConstraint(sum(child_actives) >= parent_node.active)
-
         elif isinstance(parent_node, AndNode):
             # All children should be on if the parent node is on.
             for k in range(len(child_actives)):
@@ -1537,20 +1529,22 @@ def add_mle_tree_parsing_to_prog(
                     np.log(p) * child.active + np.log(1 - p) * (1 - child.active) - np.log(1 - p) * (1 - parent_node.active)
                 ))
         elif isinstance(parent_node, RepeatingSetNode):
-            # Copy probabilities out from the "fake" geometric dist.
+            # Copy probabilities out from the node's rule probs.
             count_probs = parent_node.rule_probs.detach().numpy()
+            #The first entry is the prob of no children
+            # being active at all, so if the first child is inactive,
+            # that first prob should be activated.
+            # TODO(gizatt) Ugly hack: Gurobi (or Drake?) throws out
+            #  this first constant term, ruining the correspondence between my
+            #  optimal cost and the actual parse tree score. To keep it around,
+            #  I multiply it by a variable I know to always be =1: the activation
+            #  of the tree root.
+            prog.AddLinearCost(-np.log(count_probs[0]) * root_node.active)
             for child_k, child in enumerate(children):
                 # Any given child being active removes the prob of the last #
                 # of children being active, and adds the prob of this # of children
                 # being active.
-                if child_k == 0:
-                    prog.AddLinearCost(-np.log(count_probs[child_k]) * child.active)
-                else:
-                    prog.AddLinearCost(
-                        (np.log(count_probs[child_k-1]) -
-                         np.log(count_probs[child_k])) 
-                        * child.active
-                    )
+                prog.AddLinearCost(child.active * (np.log(count_probs[child_k]) - np.log(count_probs[child_k + 1])))
         else:
             raise ValueError("Unexpected node in cost assembly: ", type(parent_node))
 

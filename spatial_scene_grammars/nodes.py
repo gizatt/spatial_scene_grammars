@@ -250,8 +250,9 @@ class RepeatingSetNode(Node):
     @staticmethod
     def get_geometric_rule_probs(p, max_children):
         ''' Initialize weights from a geometric distribution,
-        up to a maximum number of children. '''
-
+        up to a maximum number of children. Note that this geometric
+        distribution has support on [1, ..., max_children] -- it can't
+        produce 0 children!'''
         # Compile a Categorical dist that's equivalent to sampling
         # from a geometric distribution clamped at some max #.
         # TODO(gizatt): I'm *not* adding the extra term on the final
@@ -261,18 +262,23 @@ class RepeatingSetNode(Node):
         if isinstance(p, float):
             p = torch.tensor([p])
         p = p.reshape(1,)
-        rule_probs = torch.empty(max_children)
+        rule_probs = torch.empty(max_children+1)
+        rule_probs[0] = 0.
         for k in range(max_children):
-            rule_probs[k] = (1. - p) ** (k - 1) * p
+            rule_probs[k+1] = (1. - p) ** (k - 1) * p
         return rule_probs / torch.sum(rule_probs)
 
     def __init__(self, rule_probs, **kwargs):
+        ''' rule_probs should have entries for
+        [ prob of 0 child, prob of 1 child, prob of 2..., prob of N ]
+        i.e. have N+1 entries for N maximum children.
+        '''
         super().__init__(**kwargs)
         assert len(self.rules) == 1
         self.rule = self.rules[0]
         assert isinstance(rule_probs, torch.Tensor)
         assert len(rule_probs.shape) == 1
-        self.max_children = len(rule_probs)
+        self.max_children = len(rule_probs) - 1
         self.parameters = rule_probs
 
     @property
@@ -283,10 +289,6 @@ class RepeatingSetNode(Node):
         assert isinstance(parameters, torch.Tensor)
         # Compile a Categorical dist that's equivalent to sampling
         # from a geometric distribution clamped at some max #.
-        # TODO(gizatt): I'm *not* adding the extra term on the final
-        # weight reflecting the total probability of a geometric dist
-        # giving more than N children -- I don't have to for this to be
-        # a legitimate distribution.
         self.rule_probs = parameters
         self.repeat_dist = dist.Categorical(self.rule_probs)
 
@@ -298,8 +300,8 @@ class RepeatingSetNode(Node):
 
     def sample_children(self):
         children = []
-        n = pyro.sample("RepeatingSetNode_n", self.repeat_dist) + 1
-        assert n >= 1 and n <= self.max_children
+        n = pyro.sample("RepeatingSetNode_n", self.repeat_dist)
+        assert n >= 0 and n <= self.max_children
         for k in range(n):
             child = self.rule.sample_child(self)
             child.rule_k = k
@@ -307,7 +309,7 @@ class RepeatingSetNode(Node):
         return children
 
     def score_child_set(self, children):
-        if len(children) == 0 or len(children) > self.max_children:
+        if len(children) > self.max_children:
             return torch.tensor(-np.inf)
         if set([child.rule_k for child in children]) != set(range(len(children))):
             # logging.error("Set mismatch: ", [child.rule_k for child in children])
@@ -315,7 +317,8 @@ class RepeatingSetNode(Node):
         for child in children:
             if type(child) != self.rule.child_type:
                 return torch.tensor(-np.inf)
-        return self.repeat_dist.log_prob(torch.tensor(len(children) - 1))
+        print("Scoring %d children..." % len(children), " against rule probs ", self.rule_probs)
+        return self.repeat_dist.log_prob(torch.tensor(len(children)))
 
 
 class IndependentSetNode(Node):

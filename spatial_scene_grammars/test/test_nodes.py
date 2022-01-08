@@ -78,7 +78,7 @@ def test_RepeatingSetNode(set_seed):
     children = trace.nodes["_RETURN"]["value"]
     trace_node = trace.nodes["RepeatingSetNode_n"]
     expected_prob = trace_node["fn"].log_prob(trace_node["value"])
-    assert len(children) <= node.max_children and len(children) >= 1
+    assert len(children) <= node.max_children and len(children) >= 1 # Our default params for this node have no chance of 0 children.
     score = node.score_child_set(children)
     assert torch.isclose(score, expected_prob), "%s vs %s" % (expected_prob, score)
     assert torch.allclose(node.parameters, node.rule_probs)
