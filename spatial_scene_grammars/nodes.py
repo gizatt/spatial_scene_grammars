@@ -6,6 +6,7 @@ import pyro.distributions as dist
 from pyro.contrib.autoname import scope
 import torch
 from torch.distributions import constraints
+from torch.distributions.utils import clamp_probs as torch_clamp_probs
 
 from .torch_utils import ConstrainedParameter
 from .rules import *
@@ -216,7 +217,7 @@ class OrNode(Node):
     def parameters(self, parameters):
         assert isinstance(parameters, torch.Tensor)
         assert len(parameters) == len(self.rules)
-        self.rule_probs = parameters
+        self.rule_probs = torch_clamp_probs(parameters)
         self._rule_dist = dist.Categorical(self.rule_probs)
 
     @classmethod
@@ -294,7 +295,7 @@ class RepeatingSetNode(Node):
         assert isinstance(parameters, torch.Tensor)
         # Compile a Categorical dist that's equivalent to sampling
         # from a geometric distribution clamped at some max #.
-        self.rule_probs = parameters
+        self.rule_probs = torch_clamp_probs(parameters)
         self.repeat_dist = dist.Categorical(self.rule_probs)
 
     @classmethod
@@ -322,7 +323,6 @@ class RepeatingSetNode(Node):
         for child in children:
             if type(child) != self.rule.child_type:
                 return torch.tensor(-np.inf)
-        print("Scoring %d children..." % len(children), " against rule probs ", self.rule_probs)
         return self.repeat_dist.log_prob(torch.tensor(len(children)))
 
 
@@ -341,7 +341,7 @@ class IndependentSetNode(Node):
     def parameters(self, parameters):
         assert isinstance(parameters, torch.Tensor)
         assert len(parameters) == len(self.rules)
-        self.rule_probs = parameters
+        self.rule_probs = torch_clamp_probs(parameters)
         self._rule_dist = dist.Bernoulli(self.rule_probs)
 
     @classmethod
