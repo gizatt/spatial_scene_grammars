@@ -162,7 +162,7 @@ class ObjectsOnPlate(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.5, max_children=3),
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.5, max_children=3, start_at_one=False),
             physics_geometry_info=None,
             observed=False
         )
@@ -176,23 +176,6 @@ class ObjectsOnPlate(RepeatingSetNode):
             rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-0.1, -0.1, -0.1, 0.]))
         )
         return [rule]
-class MaybeObjectsOnPlate(IndependentSetNode):
-    def __init__(self, tf):
-        super().__init__(
-            tf=tf,
-            rule_probs=torch.tensor([0.8]),
-            physics_geometry_info=None,
-            observed=False
-        )
-    @classmethod
-    def generate_rules(cls):
-        return [
-            ProductionRule(
-                child_type=ObjectsOnPlate,
-                xyz_rule=SamePositionRule(),
-                rotation_rule=SameRotationRule()
-            )
-        ]
 class Plate(AndNode):
     # Always make a plate; sometimes produces
     # additional stuff on top of it.
@@ -212,7 +195,7 @@ class Plate(AndNode):
                 rotation_rule=SameRotationRule()
             ),
             ProductionRule(
-                child_type=MaybeObjectsOnPlate,
+                child_type=ObjectsOnPlate,
                 xyz_rule=SamePositionRule(),
                 rotation_rule=SameRotationRule()
             )
@@ -223,7 +206,7 @@ class ObjectsInBowl(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.5, max_children=3),
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.5, max_children=3, start_at_one=False),
             physics_geometry_info=None,
             observed=False
         )
@@ -237,23 +220,6 @@ class ObjectsInBowl(RepeatingSetNode):
             rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-0.01, -0.01, -0.01, 0.]))
         )
         return [rule]
-class MaybeObjectsInBowl(IndependentSetNode):
-    def __init__(self, tf):
-        super().__init__(
-            tf=tf,
-            rule_probs=torch.tensor([0.8]),
-            physics_geometry_info=None,
-            observed=False
-        )
-    @classmethod
-    def generate_rules(cls):
-        return [
-            ProductionRule(
-                child_type=ObjectsInBowl,
-                xyz_rule=SamePositionRule(),
-                rotation_rule=SameRotationRule()
-            )
-        ]
 class Bowl(AndNode):
     # Always make a bowl; sometimes produces
     # additional stuff inside of it.
@@ -273,7 +239,7 @@ class Bowl(AndNode):
                 rotation_rule=SameRotationRule()
             ),
             ProductionRule(
-                child_type=MaybeObjectsInBowl,
+                child_type=ObjectsInBowl,
                 xyz_rule=SamePositionRule(),
                 rotation_rule=SameRotationRule()
             )

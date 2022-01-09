@@ -1138,13 +1138,9 @@ def infer_mle_tree_with_mip_from_proposals(
             count_probs = parent_node.rule_probs.detach().numpy()
             #The first entry is the prob of no children
             # being active at all, so if the first child is inactive,
-            # that first prob should be activated.
-            # TODO(gizatt) Ugly hack: Gurobi (or Drake?) throws out
-            #  this first constant term, ruining the correspondence between my
-            #  optimal cost and the actual parse tree score. To keep it around,
-            #  I multiply it by a variable I know to always be =1: the activation
-            #  of the tree root.
-            prog.AddLinearCost(-np.log(count_probs[0]) * super_tree_root._active)
+            # that first prob should be activated. Note that this term
+            # should only appear when the parent node is active.
+            prog.AddLinearCost(-np.log(count_probs[0]) * parent_node._active)
             for child_k, child in enumerate(children):
                 # Any given child being active removes the prob of the last #
                 # of children being active, and adds the prob of this # of children
@@ -1213,7 +1209,7 @@ def infer_mle_tree_with_mip_from_proposals(
                     potential_node_queue.append((child, new_node))
 
         optim_score = torch.tensor(result.get_suboptimal_objective(sol_k))
-        assert torch.isclose(optimized_tree.score(), -optim_score), "%f vs %f" % (optimized_tree.score(verbose=True), -optim_score)
+        assert torch.isclose(optimized_tree.score(), -optim_score), "Mismatched scores: %f vs %f" % (optimized_tree.score(verbose=True), -optim_score)
         out_trees.append(optimized_tree)
 
     return out_trees
@@ -1533,13 +1529,10 @@ def add_mle_tree_parsing_to_prog(
             count_probs = parent_node.rule_probs.detach().numpy()
             #The first entry is the prob of no children
             # being active at all, so if the first child is inactive,
-            # that first prob should be activated.
-            # TODO(gizatt) Ugly hack: Gurobi (or Drake?) throws out
-            #  this first constant term, ruining the correspondence between my
-            #  optimal cost and the actual parse tree score. To keep it around,
-            #  I multiply it by a variable I know to always be =1: the activation
-            #  of the tree root.
-            prog.AddLinearCost(-np.log(count_probs[0]) * root_node.active)
+            # that first prob should be activated. Note that this
+            # should only be present if the parent is active; if it's not,
+            # then its cost terms shouldn't appear at all.
+            prog.AddLinearCost(-np.log(count_probs[0]) * parent_node.active)
             for child_k, child in enumerate(children):
                 # Any given child being active removes the prob of the last #
                 # of children being active, and adds the prob of this # of children

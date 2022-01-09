@@ -248,11 +248,12 @@ class RepeatingSetNode(Node):
     following weights for the number of repetitions. '''
 
     @staticmethod
-    def get_geometric_rule_probs(p, max_children):
+    def get_geometric_rule_probs(p, max_children, start_at_one=True):
         ''' Initialize weights from a geometric distribution,
-        up to a maximum number of children. Note that this geometric
-        distribution has support on [1, ..., max_children] -- it can't
-        produce 0 children!'''
+        up to a maximum number of children.
+        
+        start_at_one: Whether or not to use a geometric dist that
+        has support on [0, ..., max_children] or [1., ..., max_children].'''
         # Compile a Categorical dist that's equivalent to sampling
         # from a geometric distribution clamped at some max #.
         # TODO(gizatt): I'm *not* adding the extra term on the final
@@ -263,9 +264,13 @@ class RepeatingSetNode(Node):
             p = torch.tensor([p])
         p = p.reshape(1,)
         rule_probs = torch.empty(max_children+1)
-        rule_probs[0] = 0.
-        for k in range(max_children):
-            rule_probs[k+1] = (1. - p) ** (k - 1) * p
+        if start_at_one is True:
+            rule_probs[0] = 0.
+            for k in range(max_children):
+                rule_probs[k+1] = (1. - p) ** (k - 1) * p
+        else:
+            for k in range(max_children+1):
+                rule_probs[k] = (1. - p) ** (k) * p
         return rule_probs / torch.sum(rule_probs)
 
     def __init__(self, rule_probs, **kwargs):
