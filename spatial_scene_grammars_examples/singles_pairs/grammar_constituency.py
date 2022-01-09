@@ -23,6 +23,11 @@ class Object(TerminalNode):
         )
 
 class Pair(AndNode):
+    # TODO(gizatt) This node adds some parsing ambiguity: the children
+    # are exchangeable, so both orderings are equivalent parses. Changing
+    # this to a RepeatingSetNode with rule_probs [0, 0, 1] resolves this issue,
+    # but I'm not making the change now as it makes for a more confusing-looking
+    # grammar...
     PAIR_XYZ_VAR = 0.01
     def __init__(self, tf):
         super().__init__(
