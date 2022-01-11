@@ -111,7 +111,7 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             for (_, children, _), weight in zip(observed_child_sets, observed_child_sets_weights):
                 for child in children:
                     # Maybe precision problems here? Need more bookkeeping
-                    # to do proper logspace a
+                    # to do proper logspace calculations.
                     count[child.rule_k] += weight
             avg_count = count / torch.sum(count)
             # Bound the avg count so we don't make nodes absolutely
@@ -119,18 +119,15 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             avg_count = torch.clip(avg_count, min_weight, 1.-min_weight)
             grammar.params_by_node_type[node_type.__name__].set(avg_count)
         elif issubclass(node_type, RepeatingSetNode):
-            # Record weighted-average count of children, whose inverse
-            # is a maximum likelihood estimate of p.
-            # https://en.wikipedia.org/wiki/Geometric_distribution#Statistical_inference
-
-            n_children = [len(children) for (_, children, _) in observed_child_sets]
-            # TODO: Pretty sure this isn't right because the underlying geometric
-            # set node has capped # of outputs. Maybe I should change its parameter
-            # space to be the # of outputs probabilities, and call it a "repeating item"
-            # node?
-            p = 1./torch.sum(torch.tensor(n_children, dtype=torch.double) * observed_child_sets_weights)
-            p = torch.clip(p, min_weight, 1.-min_weight)
-            grammar.params_by_node_type[node_type.__name__].set(p)
+            # Record frequency of each child count, adjusting
+            # for the child set occurance weight.
+            child_counts = torch.zeros(grammar.params_by_node_type[node_type.__name__]().shape[0])
+            for (_, children, _), weight in zip(observed_child_sets, observed_child_sets_weights):
+                # Maybe precision problems here? Need more bookkeeping
+                # to do proper logspace calculations.
+                child_counts[len(children)] += weight
+            avg_child_counts = child_counts / torch.sum(child_counts)    
+            grammar.params_by_node_type[node_type.__name__].set(avg_child_counts)
         elif issubclass(node_type, IndependentSetNode):
             # For each child, record weighted average of how often it's active.
             count = torch.zeros(len(node_type.generate_rules()))
@@ -719,6 +716,11 @@ class EMWrapper():
         self.do_nlp_refinement = do_nlp_refinement
         self.observed_node_sets = observed_node_sets
         self.max_scene_extent_in_any_dir = max_scene_extent_in_any_dir
+
+        # For storing fitting process. If empty, fitting has not been
+        # done yet.
+        self.grammar_iters = []
+        self.log_evidence_iters = []
 
     def do_iterated_em_fitting(self, em_iterations=5, throw_on_map_failure=False,
                                verbose=0, tqdm=None, max_recursion_depth=10, N_solutions=1,
