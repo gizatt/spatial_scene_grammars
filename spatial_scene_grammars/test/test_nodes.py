@@ -1,6 +1,7 @@
 import pytest
 
 import torch
+import pyro
 
 from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
@@ -16,7 +17,7 @@ torch.set_default_tensor_type(torch.DoubleTensor)
 
 @pytest.fixture(params=range(10))
 def set_seed(request):
-    torch.manual_seed(request.param)
+    pyro.set_rng_seed(request.param)
 
 ## Base Node type
 def test_Node():

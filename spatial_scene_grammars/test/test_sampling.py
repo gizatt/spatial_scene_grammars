@@ -1,6 +1,7 @@
 import pytest
 
 import torch
+import pyro
 import pyro.poutine
 from pydrake.all import SnoptSolver
 
@@ -18,7 +19,7 @@ torch.set_default_tensor_type(torch.DoubleTensor)
 
 @pytest.fixture(params=range(3))
 def set_seed(request):
-    torch.manual_seed(request.param)
+    pyro.set_rng_seed(request.param)
 
 # Proof-of-life of sampling routines
 @pytest.mark.skipif(not SnoptSolver().available(),

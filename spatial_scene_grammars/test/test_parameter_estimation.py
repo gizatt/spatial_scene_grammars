@@ -1,19 +1,22 @@
 import pytest
 
 import torch
+import pyro
 
 from spatial_scene_grammars.scene_grammar import *
 from spatial_scene_grammars.parameter_estimation import *
 
 from .grammar import *
 
-from pydrake.all import SnoptSolver
+from pydrake.all import (
+    SnoptSolver
+)
 
 torch.set_default_tensor_type(torch.DoubleTensor)
 
 @pytest.fixture(params=range(1))
 def set_seed(request):
-    torch.manual_seed(request.param)
+    pyro.set_rng_seed(request.param)
 
 ## Get some quick rough coverage of SVI algo by
 # running a few steps of parameter fitting on the grammar.

@@ -1,6 +1,7 @@
 import pytest
 
 import torch
+import pyro
 
 from spatial_scene_grammars.scene_grammar import *
 from spatial_scene_grammars.parsing import *
@@ -13,7 +14,7 @@ torch.set_default_tensor_type(torch.DoubleTensor)
 
 @pytest.fixture(params=range(3))
 def set_seed(request):
-    torch.manual_seed(request.param)
+    pyro.set_rng_seed(request.param)
 
 def assert_feasible(optimized_tree):
     # Assert optimized tree structure is feasible.

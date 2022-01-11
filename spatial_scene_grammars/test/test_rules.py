@@ -1,6 +1,7 @@
 import pytest
 
 import torch
+import pyro
 import pyro.poutine
 
 from spatial_scene_grammars.nodes import *
@@ -20,8 +21,7 @@ torch.set_default_tensor_type(torch.DoubleTensor)
 
 @pytest.fixture(params=range(10))
 def set_seed(request):
-    torch.manual_seed(request.param)
-    np.random.seed(request.param)
+    pyro.set_rng_seed(request.param)
     return RandomGenerator(request.param)
 
 def make_dummy_node():

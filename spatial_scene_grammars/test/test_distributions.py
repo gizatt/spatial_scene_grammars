@@ -2,6 +2,7 @@ import pytest
 
 import numpy as np
 import torch
+import pyro
 
 from spatial_scene_grammars.distributions import *
 
@@ -9,8 +10,7 @@ torch.set_default_tensor_type(torch.DoubleTensor)
 
 @pytest.fixture(params=range(10))
 def set_seed(request):
-    torch.manual_seed(request.param)
-    np.random.seed(request.param)
+    pyro.set_rng_seed(request.param)
 
 def test_UniformWithEqualityHandling(set_seed):
     lb = torch.tensor([0., 0., 0.])

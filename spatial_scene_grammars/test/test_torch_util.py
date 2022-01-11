@@ -1,19 +1,29 @@
 import pytest
 
 import torch
+import pyro
 
 from spatial_scene_grammars.torch_utils import *
+from spatial_scene_grammars.drake_interop import drake_tf_to_torch_tf
 from torch.distributions import constraints
 
 from pytorch3d.transforms.rotation_conversions import (
     euler_angles_to_matrix
 )
 
+from pydrake.all import (
+    UniformlyRandomRotationMatrix,
+    RandomGenerator,
+    RigidTransform,
+    RollPitchYaw
+)
+
 torch.set_default_tensor_type(torch.DoubleTensor)
 
 @pytest.fixture(params=range(10))
 def set_seed(request):
-    torch.manual_seed(request.param)
+    pyro.set_rng_seed(request.param)
+    return RandomGenerator(request.param)
 
 def test_inv_softplus(set_seed):
     x_test = torch.abs(torch.normal(0., 1., size=(100,))) + 0.01
@@ -100,6 +110,71 @@ def test_interpolate_rotation():
     R = interp_rotation(R1, R4, interp_factor=0.5)
     expected = euler_angles_to_matrix(torch.tensor([-np.pi/4., 0., 0.]), convention="ZYX")
     assert torch.allclose(R, expected), (R, expected)
+
+
+def test_se3_dist(set_seed):
+    # Should be zero distance
+    population_1 = drake_tf_to_torch_tf(RigidTransform(p=np.zeros(3))).unsqueeze(0)
+    population_2 = drake_tf_to_torch_tf(RigidTransform(p=np.zeros(3))).unsqueeze(0)
+    dists = se3_dist(population_1, population_2, beta=1., eps=0)
+    assert dists.shape == (1, 1) and torch.isclose(dists[0, 0], torch.tensor(0.))
+
+    # Should be 1 distance
+    population_1 = drake_tf_to_torch_tf(RigidTransform(p=np.zeros(3))).unsqueeze(0)
+    population_2 = drake_tf_to_torch_tf(RigidTransform(p=np.array([0, 1, 0]))).unsqueeze(0)
+    dists = se3_dist(population_1, population_2, beta=1., eps=0)
+    assert dists.shape == (1, 1) and torch.isclose(dists[0, 0], torch.tensor(1.))
+
+    # Should be pi distance
+    population_1 = drake_tf_to_torch_tf(RigidTransform(p=np.zeros(3))).unsqueeze(0)
+    population_2 = drake_tf_to_torch_tf(RigidTransform(p=np.zeros(3), rpy=RollPitchYaw(np.pi, 0., 0.))).unsqueeze(0)
+    dists = se3_dist(population_1, population_2, beta=1., eps=0)
+    assert dists.shape == (1, 1) and torch.isclose(dists[0, 0], torch.tensor(np.pi))
+
+    # Make sure it works at scale
+    M = 200
+    N = 100
+    population_1 = []
+    for k in range(M):
+        t = np.random.uniform(-1, 1, size=3)
+        R = UniformlyRandomRotationMatrix(set_seed)
+        tf = drake_tf_to_torch_tf(RigidTransform(p=t, R=R))
+        population_1.append(tf)
+    population_2 = []
+    for k in range(N):
+        t = np.random.uniform(-1, 1, size=3)
+        R = UniformlyRandomRotationMatrix(set_seed)
+        tf = drake_tf_to_torch_tf(RigidTransform(p=t, R=R))
+        population_2.append(tf)
+
+    population_1 = torch.stack(population_1)
+    population_2 = torch.stack(population_2)
+    dists = se3_dist(population_1, population_2, beta=1., eps=0)
+    assert dists.shape == (M, N) and torch.all(torch.isfinite(dists)) and torch.all(dists >= 0)
+
+def test_mmd_se3(set_seed):
+    # Basic proof-of-life for at-scale samples
+    M = 200
+    N = 100
+    population_1 = []
+    for k in range(M):
+        t = np.random.uniform(-1, 1, size=3)
+        R = UniformlyRandomRotationMatrix(set_seed)
+        tf = drake_tf_to_torch_tf(RigidTransform(p=t, R=R))
+        population_1.append(tf)
+    population_2 = []
+    for k in range(N):
+        t = np.random.uniform(-1, 1, size=3)
+        R = UniformlyRandomRotationMatrix(set_seed)
+        tf = drake_tf_to_torch_tf(RigidTransform(p=t, R=R))
+        population_2.append(tf)
+
+    population_1 = torch.stack(population_1)
+    population_2 = torch.stack(population_2)
+    mmd = calculate_mmd(population_1, population_2, alphas=[0.1, 1.0, 10.0], use_se3_metric=True, beta=1.0)
+    # Note: this MMD estimate can be negative. See page 729 of https://www.jmlr.org/papers/volume13/gretton12a/gretton12a.pdf.
+    assert torch.isfinite(mmd)
+
 
 if __name__ == "__main__":
     pytest.main()
