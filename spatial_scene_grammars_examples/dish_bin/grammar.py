@@ -28,6 +28,7 @@ additional indeterminant object at an offset distribution, or nothing.
 
 eps = 1E-2
 
+## Primitive types
 class ObjectModel(TerminalNode):
     sdf = None
     def __init__(self, tf):
@@ -72,7 +73,7 @@ def reify_models_from_folder_to_object_types(folder):
 PlateModels = reify_models_from_folder_to_object_types(
     "sink/plates_cups_and_bowls/plates"
 )
-class Plate(OrNode):
+class TerminalPlate(OrNode):
     # One of any available plate model.
     def __init__(self, tf):
         super().__init__(
@@ -92,35 +93,10 @@ class Plate(OrNode):
         ]
         return ModelRules
 
-class PlateStack(AndNode):
-    def __init__(self, tf):
-        super().__init__(
-            tf=tf,
-            physics_geometry_info=None,
-            observed=False
-        )
-
-    @classmethod
-    def generate_rules(cls):
-        rules = [
-            ProductionRule(
-                child_type=Plate,
-                xyz_rule=ParentFrameGaussianOffsetRule(
-                    mean=torch.tensor([0.0, 0.0, 0.00]),
-                    variance=torch.tensor([0.0001, 0.0001, 0.01]),
-                    fix_parameters=False),
-                # Assume world-frame vertically-oriented plate stacks
-                rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                    RotationMatrix(), [1000., 1000., 0.1], fix_parameters=False
-                )
-            ) for k in range(2)
-        ]
-        return rules
-
 CupModels = reify_models_from_folder_to_object_types(
     "sink/plates_cups_and_bowls/cups"
 )
-class Cup(OrNode):
+class TerminalCup(OrNode):
     # One of any available plate model.
     def __init__(self, tf):
         super().__init__(
@@ -139,12 +115,31 @@ class Cup(OrNode):
             ) for model_type in CupModels
         ]
         return ModelRules
+class TerminalObject(OrNode):
+    def __init__(self, tf):
+        super().__init__(
+            rule_probs=torch.tensor([1., 1., 1.]),
+            tf=tf,
+            physics_geometry_info=None,
+            observed=False
+        )
+
+    @classmethod
+    def generate_rules(cls):
+        ObjectTypes = [TerminalPlate, TerminalBowl, TerminalCup]
+        ObjectRules = [
+            ProductionRule(
+                child_type=object_type,
+                xyz_rule=SamePositionRule(),
+                rotation_rule=SameRotationRule()
+            ) for object_type in ObjectTypes
+        ]
+        return ObjectRules
 
 BowlModels = reify_models_from_folder_to_object_types(
     "sink/plates_cups_and_bowls/bowls"
 )
-class Bowl(OrNode):
-    # One of any available plate model.
+class TerminalBowl(OrNode):
     def __init__(self, tf):
         super().__init__(
             rule_probs=torch.ones(len(BowlModels)),
@@ -163,33 +158,27 @@ class Bowl(OrNode):
         ]
         return ModelRules
 
-class BowlContents(RepeatingSetNode):
+class ObjectsOnPlate(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
-            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=torch.tensor(0.5), max_children=3),
             tf=tf,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.5, max_children=3, start_at_one=False),
             physics_geometry_info=None,
             observed=False
         )
-
     @classmethod
     def generate_rules(cls):
-        rules = [
-            ProductionRule(
-                child_type=Object,
-                xyz_rule=ParentFrameGaussianOffsetRule(
-                    mean=torch.tensor([0.0, 0.0, 0.02]),
-                    variance=torch.tensor([0.001, 0.001, 0.001]),
-                    fix_parameters=False),
-                rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                    RotationMatrix(), [1., 1., 1.],
-                    fix_parameters=False
-                )
-            )
-        ]
-        return rules
-
-class FullBowl(AndNode):
+        rule = ProductionRule(
+            child_type=TerminalObject,
+            xyz_rule=ParentFrameGaussianOffsetRule(
+                mean=torch.tensor([0.0, 0.0, 0.01]),
+                variance=torch.tensor([0.0025, 0.0025, 0.0025])),
+            rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-0.1, -0.1, -0.1, 0.]))
+        )
+        return [rule]
+class Plate(AndNode):
+    # Always make a plate; sometimes produces
+    # additional stuff on top of it.
     def __init__(self, tf):
         super().__init__(
             tf=tf,
@@ -201,18 +190,61 @@ class FullBowl(AndNode):
     def generate_rules(cls):
         rules = [
             ProductionRule(
-                child_type=Bowl,
+                child_type=TerminalPlate,
                 xyz_rule=SamePositionRule(),
                 rotation_rule=SameRotationRule()
             ),
             ProductionRule(
-                child_type=BowlContents,
+                child_type=ObjectsOnPlate,
                 xyz_rule=SamePositionRule(),
                 rotation_rule=SameRotationRule()
             )
         ]
         return rules
 
+class ObjectsInBowl(RepeatingSetNode):
+    def __init__(self, tf):
+        super().__init__(
+            tf=tf,
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.5, max_children=3, start_at_one=False),
+            physics_geometry_info=None,
+            observed=False
+        )
+    @classmethod
+    def generate_rules(cls):
+        rule = ProductionRule(
+            child_type=TerminalObject,
+            xyz_rule=ParentFrameGaussianOffsetRule(
+                mean=torch.tensor([0.0, 0.0, 0.05]),
+                variance=torch.tensor([0.005, 0.005, 0.005])),
+            rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-0.01, -0.01, -0.01, 0.]))
+        )
+        return [rule]
+class Bowl(AndNode):
+    # Always make a bowl; sometimes produces
+    # additional stuff inside of it.
+    def __init__(self, tf):
+        super().__init__(
+            tf=tf,
+            physics_geometry_info=None,
+            observed=False
+        )
+
+    @classmethod
+    def generate_rules(cls):
+        rules = [
+            ProductionRule(
+                child_type=TerminalBowl,
+                xyz_rule=SamePositionRule(),
+                rotation_rule=SameRotationRule()
+            ),
+            ProductionRule(
+                child_type=ObjectsInBowl,
+                xyz_rule=SamePositionRule(),
+                rotation_rule=SameRotationRule()
+            )
+        ]
+        return rules
 
 class Object(OrNode):
     def __init__(self, tf):
@@ -225,7 +257,7 @@ class Object(OrNode):
 
     @classmethod
     def generate_rules(cls):
-        ObjectTypes = [Plate, Bowl, Cup]
+        ObjectTypes = [Plate, Bowl, TerminalCup]
         ObjectRules = [
             ProductionRule(
                 child_type=object_type,
@@ -234,112 +266,14 @@ class Object(OrNode):
             ) for object_type in ObjectTypes
         ]
         return ObjectRules
-
-class AssortedPlates(RepeatingSetNode):
-    def __init__(self, tf):
-        super().__init__(
-            tf=tf,
-            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.2, max_children=6),
-            physics_geometry_info=None,
-            observed=False
-        )
-    @classmethod
-    def generate_rules(cls):
-        rule = ProductionRule(
-            child_type=Plate,
-            xyz_rule=WorldFrameGaussianOffsetRule(
-                mean=torch.tensor([0.0, 0.0, 0.025]),
-                variance=torch.tensor([0.05, 0.05, 0.05])),
-            rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-1, -1, -1, 0.]))
-        )
-        return [rule]
-class AssortedCups(RepeatingSetNode):
-    def __init__(self, tf):
-        super().__init__(
-            tf=tf,
-            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.2, max_children=6),
-            physics_geometry_info=None,
-            observed=False
-        )
-    @classmethod
-    def generate_rules(cls):
-        rule = ProductionRule(
-            child_type=Cup,
-            xyz_rule=WorldFrameGaussianOffsetRule(
-                mean=torch.tensor([0.0, 0.0, 0.025]),
-                variance=torch.tensor([0.05, 0.05, 0.05])),
-            rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-1, -1, -1, 0.]))
-        )
-        return [rule]
-class AssortedBowls(RepeatingSetNode):
-    def __init__(self, tf):
-        super().__init__(
-            tf=tf,
-            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.2, max_children=6),
-            physics_geometry_info=None,
-            observed=False
-        )
-    @classmethod
-    def generate_rules(cls):
-        rule = ProductionRule(
-            child_type=Bowl,
-            xyz_rule=WorldFrameGaussianOffsetRule(
-                mean=torch.tensor([0.0, 0.0, 0.025]),
-                variance=torch.tensor([0.05, 0.05, 0.05])),
-            rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-1, -1, -1, 0.]))
-        )
-        return [rule]
     
-class AssortedPlateStacks(RepeatingSetNode):
-    def __init__(self, tf):
-        super().__init__(
-            tf=tf,
-            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.5, max_children=2),
-            physics_geometry_info=None,
-            observed=False
-        )
-    @classmethod
-    def generate_rules(cls):
-        rule = ProductionRule(
-            child_type=PlateStack,
-            xyz_rule=WorldFrameGaussianOffsetRule(
-                mean=torch.tensor([0.0, 0.0, 0.01]),
-                variance=torch.tensor([0.05, 0.05, 0.001])),
-            rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                RotationMatrix(), [1000., 1000., 0.1]
-            )
-        )
-        return [rule]
-
-class AssortedFullBowls(RepeatingSetNode):
-    def __init__(self, tf):
-        super().__init__(
-            tf=tf,
-            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.5, max_children=2),
-            physics_geometry_info=None,
-            observed=False
-        )
-    @classmethod
-    def generate_rules(cls):
-        rule = ProductionRule(
-            child_type=FullBowl,
-            xyz_rule=WorldFrameGaussianOffsetRule(
-                mean=torch.tensor([0.0, 0.0, 0.01]),
-                variance=torch.tensor([0.05, 0.05, 0.01])),
-            # Assume world-frame vertically-oriented plate stacks
-            rotation_rule=WorldFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                RotationMatrix(), [1000., 1000., 0.1]
-            )
-        )
-        return [rule]
-    
-class DishBin(IndependentSetNode):
+class DishBin(RepeatingSetNode):
     def __init__(self, tf):
         geom = PhysicsGeometryInfo(fixed=True)
         geom.register_model_file(torch.eye(4), "sink/bin.sdf")
         super().__init__(
             tf=tf,
-            rule_probs=torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5]),
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.4, max_children=6),
             physics_geometry_info=geom,
             observed=True
         )
@@ -347,28 +281,10 @@ class DishBin(IndependentSetNode):
     def generate_rules(cls):
         return [
             ProductionRule(
-                child_type=AssortedPlates,
-                xyz_rule=SamePositionRule(),
-                rotation_rule=SameRotationRule()
-            ),
-            ProductionRule(
-                child_type=AssortedCups,
-                xyz_rule=SamePositionRule(),
-                rotation_rule=SameRotationRule()
-            ),
-            ProductionRule(
-                child_type=AssortedBowls,
-                xyz_rule=SamePositionRule(),
-                rotation_rule=SameRotationRule()
-            ),
-            ProductionRule(
-                child_type=AssortedPlateStacks,
-                xyz_rule=SamePositionRule(),
-                rotation_rule=SameRotationRule()
-            ),
-            ProductionRule(
-                child_type=AssortedFullBowls,
-                xyz_rule=SamePositionRule(),
-                rotation_rule=SameRotationRule()
+                child_type=Object,
+                xyz_rule=WorldFrameGaussianOffsetRule(
+                    mean=torch.tensor([0.0, 0.0, 0.1]),
+                    variance=torch.tensor([0.01, 0.02, 0.005])),
+                rotation_rule=WorldFrameBinghamRotationRule(torch.eye(4), torch.tensor([-1, -1, -1, 0.]))
             )
         ]
