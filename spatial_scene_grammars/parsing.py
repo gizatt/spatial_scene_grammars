@@ -241,7 +241,7 @@ class EquivalentSet():
             node: prog.NewBinaryVariables(1)[0]
             for node in self.nodes
         }
-        # At least one observed node, but all other nodes off.
+        # At least one nonobserved node, but all observed nodes off.
         nonobserved_sum = 0.
         for node, var in node_to_activation.items():
             if not node.observed:
@@ -262,8 +262,15 @@ class EquivalentSet():
             if isinstance(parent_node, AndNode):
                 for child in children:
                     if child in node_to_activation.keys():
+                        # Children of an AND node in the set must be on
+                        # if the parent is on.
                         prog.AddLinearConstraint(node_to_activation[child] == parent_var)
             elif isinstance(parent_node, OrNode):
+                # Exactly one child of an OR node in the set should be on
+                # if the parent is on. If there are children in other
+                # equivalent sets, then we need to allow that
+                # the out-of-set child might be activated (so the other
+                # children could all be deactived).
                 child_var_sum = 0.
                 child_set_is_complete = True
                 for child in children:
@@ -280,11 +287,15 @@ class EquivalentSet():
             elif isinstance(parent_node, IndependentSetNode):
                 for child in children:
                     if child in node_to_activation.keys():
+                        # Children of this parent may or may not be active
+                        # if the parent is active.
                         prog.AddLinearConstraint(node_to_activation[child] <= parent_var)
 
             elif isinstance(parent_node, RepeatingSetNode):
                 for child in children:
                     if child in node_to_activation.keys():
+                        # Children of this parent may or may not be active
+                        # if the parent is active.
                         prog.AddLinearConstraint(node_to_activation[child] <= parent_var)
             elif isinstance(parent_node, TerminalNode):
                 assert len(children) == 0
@@ -1109,7 +1120,7 @@ def infer_mle_tree_with_mip_from_proposals(
             # TODO(gizatt) Could do symmetry breaking here for children of
             # like type (e.g. singles-pairs constituency grammar).
         elif isinstance(parent_node, OrNode):
-            # Exactly one child can be on if the parent is on.
+            # Exactly one child should be on if the parent is on.
             prog.AddLinearConstraint(sum(child_actives) == parent_node._active)
         elif isinstance(parent_node, (TerminalNode, IndependentSetNode)):
             # No additional constraint on which set of children should be active.
@@ -1123,7 +1134,7 @@ def infer_mle_tree_with_mip_from_proposals(
         elif isinstance(parent_node, OrNode):
             for p, child in zip(parent_node.rule_probs, children):
                 prog.AddLinearCost(-np.log(p) * child._active)
-        elif isinstance(parent_node, (OrNode, IndependentSetNode)):
+        elif isinstance(parent_node, (IndependentSetNode)):
             # Binary variables * log of probabilities.
             # Node inactive, active var off -> 0
             # Node active, active var on -> On score
@@ -1207,7 +1218,7 @@ def infer_mle_tree_with_mip_from_proposals(
                 children = list(super_tree.successors(node))
                 for child in children:
                     potential_node_queue.append((child, new_node))
-
+        grammar.update_tree_grammar_parameters(optimized_tree, detach=True)
         optim_score = torch.tensor(result.get_suboptimal_objective(sol_k))
         assert torch.isclose(optimized_tree.score(), -optim_score), "Mismatched scores: %f vs %f" % (optimized_tree.score(verbose=True), -optim_score)
         out_trees.append(optimized_tree)

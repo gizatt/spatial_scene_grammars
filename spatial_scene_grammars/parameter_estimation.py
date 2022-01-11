@@ -563,12 +563,33 @@ class VariationalPosteriorSuperTree(torch.nn.Module):
         return log_p_continuous, log_p_discrete
 
 
-def _get_map_trees(grammar, observed_nodes, verbose, max_scene_extent_in_any_dir, N_solutions, throw_on_failure):
-    mip_results = infer_mle_tree_with_mip(
-        grammar, observed_nodes, verbose=verbose>1, max_scene_extent_in_any_dir=max_scene_extent_in_any_dir,
-        N_solutions=N_solutions
-    )
-    mip_optimized_trees = get_optimized_trees_from_mip_results(mip_results)
+def _get_map_trees(grammar, observed_nodes, verbose, max_scene_extent_in_any_dir, N_solutions, throw_on_failure, parsing_strategy, do_nlp_refinement):
+
+    if parsing_strategy == "micp":
+        mip_results = infer_mle_tree_with_mip(
+            grammar, observed_nodes, verbose=verbose>1, max_scene_extent_in_any_dir=max_scene_extent_in_any_dir,
+            N_solutions=N_solutions
+        )
+        mip_optimized_trees = get_optimized_trees_from_mip_results(mip_results)
+    elif parsing_strategy == "ip" or parsing_strategy == "ip_noproposals":
+        if parsing_strategy == "ip":
+            proposed_poses_by_type = generate_candidate_node_pose_sets(
+                grammar, observed_nodes, max_recursion_depth=10, verbose=verbose>1
+            )
+        else:
+            proposed_poses_by_type = {}
+        mip_optimized_trees = infer_mle_tree_with_mip_from_proposals(
+            grammar, observed_nodes, proposed_poses_by_type, verbose=verbose>1,
+            N_solutions=N_solutions
+        )
+    else:
+        logging.error("Bad parsing strategy %s" % parsing_strategy)
+        return []
+
+    # Skip refinement if not requested.
+    if do_nlp_refinement is False:
+        return mip_optimized_trees
+
     refined_trees = []
     for mip_optimized_tree in mip_optimized_trees:
         if mip_optimized_tree is None:
@@ -607,10 +628,14 @@ def _get_map_trees_thread_wrapper(arg_dict):
     
 def get_map_trees_for_observed_node_sets(grammar, observed_node_sets,
         throw_on_failure=False, verbose=0, tqdm=None, N_solutions=1,
-        num_workers=1, max_scene_extent_in_any_dir=10., report_timing=False):
+        num_workers=1, max_scene_extent_in_any_dir=10., report_timing=False,
+        parsing_strategy="ip", do_nlp_refinement=True):
     ''' Get MAP parse list for each tree in dataset using our current grammar params.
         If parsing fails for a tree, will return None for that tree and throw
         if requsted. '''
+
+    assert parsing_strategy in ["ip", "ip_noproposals", "micp"]
+
     refined_tree_sets = []
 
     def make_arg_dict(k):
@@ -620,7 +645,9 @@ def get_map_trees_for_observed_node_sets(grammar, observed_node_sets,
             "verbose": verbose,
             "max_scene_extent_in_any_dir": max_scene_extent_in_any_dir,
             "N_solutions": N_solutions,
-            "throw_on_failure": throw_on_failure
+            "throw_on_failure": throw_on_failure,
+            "parsing_strategy": parsing_strategy,
+            "do_nlp_refinement": do_nlp_refinement
         }
     
     if num_workers == 1:
@@ -667,7 +694,9 @@ class EMWrapper():
     '''
         Given a grammar with params \theta, repeatedly:
             1) For each observed environment, produce the `N_solutions` best parses
-            (i.e. trees sampled from the posterior) using the MIPMAP parser.
+            (i.e. trees sampled from the posterior) using the chosen parsing strategy
+            (strategy="ip", "ip_noproposals" (optimal when the grammar has no unobserved
+            equivalent sets), or "micp"). 
             Compute a weight for each posterior tree based on its tree
             joint probability (discrete + continuous), normalized across the N_solutions
             for that observed environment.
@@ -682,8 +711,12 @@ class EMWrapper():
                 by that rule. Fit the parameters of the rule to the parent/child observations,
                 weighting by the tree weight of the tree that the parent/child pair came from.
     '''
-    def __init__(self, grammar, observed_node_sets, max_scene_extent_in_any_dir=10.):
+    def __init__(self, grammar, observed_node_sets, max_scene_extent_in_any_dir=10.,
+                 parsing_strategy="ip", do_nlp_refinement=True):
         self.grammar = grammar
+        assert parsing_strategy in ["ip", "ip_noproposals", "micp"]
+        self.parsing_strategy = parsing_strategy
+        self.do_nlp_refinement = do_nlp_refinement
         self.observed_node_sets = observed_node_sets
         self.max_scene_extent_in_any_dir = max_scene_extent_in_any_dir
 
@@ -699,7 +732,8 @@ class EMWrapper():
         for iter_k in iterator:
             refined_tree_sets = get_map_trees_for_observed_node_sets(
                 self.grammar, self.observed_node_sets, N_solutions=N_solutions, tqdm=tqdm,
-                num_workers=num_workers, max_scene_extent_in_any_dir=self.max_scene_extent_in_any_dir
+                num_workers=num_workers, max_scene_extent_in_any_dir=self.max_scene_extent_in_any_dir,
+                parsing_strategy=self.parsing_strategy, do_nlp_refinement=self.do_nlp_refinement
             )
             # Compute tree score for each tree, and sum them to get a (very approximate)
             # estimate of the log-evidence.
@@ -816,8 +850,11 @@ class SVIWrapper():
     vectoring Rule.score_child and Node.score_child_set; if I can do that, I can vectorize this cleanly
     and hopefully get a huge speedup.
     '''
-    def __init__(self, grammar, observed_node_sets):
+    def __init__(self, grammar, observed_node_sets, parsing_strategy="ip", do_nlp_refinement=True):
         self.grammar = grammar
+        assert parsing_strategy in ["ip", "ip_noproposals", "micp"]
+        self.parsing_strategy = parsing_strategy
+        self.do_nlp_refinement = do_nlp_refinement
         self.observed_node_sets = observed_node_sets
 
     def do_iterated_vi_fitting(self, major_iterations=1, minor_iterations=50, subsample=None, base_lr=0.1,
@@ -876,7 +913,8 @@ class SVIWrapper():
                 major_iterator.set_description("Major %03d: calculating MAP trees" % (major_iteration))
             refined_tree_sets = get_map_trees_for_observed_node_sets(
                 self.grammar, self.observed_node_sets, throw_on_failure=throw_on_map_failure,
-                verbose=verbose, tqdm=tqdm, N_solutions=N_solutions
+                verbose=verbose, tqdm=tqdm, N_solutions=N_solutions, parsing_strategy=self.parsing_strategy,
+                do_nlp_refinement=self.do_nlp_refinement
             )
             # Initialize variational posterior at the MAP tree.
             for variational_posterior_set, trees in zip(variational_posterior_sets, refined_tree_sets):

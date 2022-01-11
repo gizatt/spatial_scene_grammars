@@ -16,7 +16,7 @@ Gaussian mixture model. This is a little funky, since it mixes
 the parameters (mode means + variances) with variables (the
 sampled points), but it should work for inferring GMM parameters.
 
-root -> one of the mixtures -> observed
+root --(rule implementing one of the mixtures)-> observed
 '''
 
 class Point(TerminalNode):
@@ -27,13 +27,13 @@ class Point(TerminalNode):
             observed=True
         )
 
-
-class GaussianMode(AndNode):
+class Root(OrNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
             physics_geometry_info=None,
-            observed=False
+            observed=False,
+            rule_probs=torch.ones(3)
         )
     @classmethod
     def generate_rules(cls):
@@ -44,33 +44,5 @@ class GaussianMode(AndNode):
                     mean=torch.zeros(3),
                     variance=torch.tensor([1.0, 1.0, 1.0])),
                 rotation_rule=SameRotationRule()
-            )
-        ]
-
-Modes = tuple([
-    type("GaussianMode_%d" % k, (GaussianMode,), {})
-    for k in range(3)
-])
-# Register class name in globals so we can
-# pickle these types.
-# https://stackoverflow.com/questions/11658511/pickling-dynamically-generated-classes
-for mode in Modes:
-    globals()[mode.__name__] = mode
-
-class Root(OrNode):
-    def __init__(self, tf):
-        super().__init__(
-            tf=tf,
-            physics_geometry_info=None,
-            observed=False,
-            rule_probs=torch.ones(len(Modes))
-        )
-    @classmethod
-    def generate_rules(cls):
-        return [
-            ProductionRule(
-                child_type=mode,
-                xyz_rule=SamePositionRule(),
-                rotation_rule=SameRotationRule()
-            ) for mode in Modes
+            ) for k in range(3)
         ]

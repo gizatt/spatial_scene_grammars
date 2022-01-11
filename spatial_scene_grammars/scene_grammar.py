@@ -342,12 +342,12 @@ class SpatialSceneGrammar(torch.nn.Module):
         tree.trace = pyro.poutine.trace(do_sampling).get_trace()
         return tree
 
-    def update_tree_grammar_parameters(self, tree):
+    def update_tree_grammar_parameters(self, tree, detach=False):
         # Given a tree, iterates through its nodes and sets the node
         # parameters to the grammar's parameters for that node type.
         # If a tree has been detached, this will re-attach it.
         for node in tree.nodes:
-            self._set_node_parameters(node, detach=False)
+            self._set_node_parameters(node, detach=detach)
 
     def make_super_tree_from_root_node_type(self, root_node_type, root_node_tf, max_recursion_depth=15, detach=False,
                                             terminate_at_observed=False):
