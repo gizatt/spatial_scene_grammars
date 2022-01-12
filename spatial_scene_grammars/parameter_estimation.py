@@ -665,19 +665,29 @@ def get_map_trees_for_observed_node_sets(grammar, observed_node_sets,
 
     else:
         # Multi-processing case.
-        pool = mp.Pool(min(num_workers, mp.cpu_count()))
 
         args = [ make_arg_dict(k) for k in range(len(observed_node_sets)) ]
 
-        imap = pool.imap(func=_get_map_trees_thread_wrapper, iterable=args)
-        if tqdm is not None:
-            imap = tqdm(imap, total=len(args))
         refined_tree_sets = []
         times = []
-        for refined_trees, elapsed in imap:
-            refined_tree_sets.append(refined_trees)
-            times.append(elapsed)
-        pool.close()
+        
+        def chunks(l, n):
+            n = max(1, n)
+            return (l[i:i+n] for i in range(0, len(l), n))
+
+        chunk_size = 20
+        for chunk_k, args_subset in enumerate(chunks(args, chunk_size)):
+
+            pool = mp.Pool(min(num_workers, mp.cpu_count()))
+            imap = pool.imap(func=_get_map_trees_thread_wrapper, iterable=args_subset)
+
+            if tqdm is not None:
+                imap = tqdm(imap, total=len(args_subset), desc="Chunk %d/%d" % (chunk_k + 1, len(args) // chunk_size + 1))
+            for refined_trees, elapsed in imap:
+                refined_tree_sets.append(refined_trees)
+                times.append(elapsed)
+            pool.close()
+
         if report_timing:
             print("Elapsed %fs +/ %f (min %f, median %f, max %f)" % (np.mean(times), np.std(times), np.median(times), min(times), max(times)))
 
