@@ -171,10 +171,14 @@ def test_mmd_se3(set_seed):
 
     population_1 = torch.stack(population_1)
     population_2 = torch.stack(population_2)
+    population_1.requires_grad = True
     mmd = calculate_mmd(population_1, population_2, alphas=[0.1, 1.0, 10.0], use_se3_metric=True, beta=1.0)
     # Note: this MMD estimate can be negative. See page 729 of https://www.jmlr.org/papers/volume13/gretton12a/gretton12a.pdf.
     assert torch.isfinite(mmd)
 
+    # Check grad goes through
+    mmd.backward()
+    assert population_1.grad is not None
 
 if __name__ == "__main__":
     pytest.main()

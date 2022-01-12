@@ -56,6 +56,7 @@ from .drake_interop import *
 from .sampling import *
 from .parsing import *
 from .visualization import *
+from .torch_utils import calculate_mmd
 
 
 def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterior_sample_sets, weight_by_sample_prob=False, min_weight=1e-4):
@@ -835,241 +836,177 @@ class EMWrapper():
             plt.legend()
         plt.tight_layout()
 
-
-class SVIWrapper():
+    
+class SampleBasedFittingWrapper():
     '''
-    Initialize a variational posterior $q_\phi(z_k)$ for each observation $k$,
-    where $z_k$ describes a distribution over the latent poses for each node
-    in the supertree corresponding to observation $k$.
-    Also initialize model parameters $\theta$ for any parameters in the grammar.
+        Given a grammar and a population of observed samples compatible with
+        the observed types from that grammar, repeatedly sample populations
+        from the grammar, calculate a differentiable distribution distance
+        between that sample population and the target population, and
+        optimize the grammar parameters to improve that distance.
 
-    Repeatedly:
-    1. Find the MAP tree structure $t_k$ for all observations with the
-        MIP using the current $\theta$.
-    2. For the nodes that show up in $t_k$, set the posterior parameters
-        $\phi$ to be tightly peaked around the MAP-optimal setting.
-    3. Run a few gradient step updates on the ELBO evaluated using discrete tree
-        structure $t_k$ and continuous poses sampled from the variational posterior.
-
-    TODO: This *was* an SVI implementation, but the constraints are so stiff that
-    the posteriors tended to be very tight. So I've swapped it out to Delta-distribution
-    posteriors, i.e. this is just simultaneous MLE estimation of params + latent variables.
-
-    This seems to conceptually work pretty well; however, it is really numerically unstable, especially
-    when it's seeded with a MAP solution out of the MIP process. So it tends to do better when run
-    with very small learning rates (~0.01) and lots of minor iterations (~200-500?). But that is *very*
-    slow right now, because it evaluates the score for each tree sequentially. Vectorizing this would require
-    vectoring Rule.score_child and Node.score_child_set; if I can do that, I can vectorize this cleanly
-    and hopefully get a huge speedup.
+        We provide a differentiable MMD-based population distance metric to
+        help with this. We use Pyro's tracing functionality to reparameterize
+        which sample sites we can, and for all others, use REINFORCE to optimize
+        this objective.
     '''
-    def __init__(self, grammar, observed_node_sets, parsing_strategy="ip", do_nlp_refinement=True):
+    def __init__(self, grammar, observed_node_sets, distance_metric="mean_mmd_poses"):
         self.grammar = grammar
-        assert parsing_strategy in ["ip", "ip_noproposals", "micp"]
-        self.parsing_strategy = parsing_strategy
-        self.do_nlp_refinement = do_nlp_refinement
         self.observed_node_sets = observed_node_sets
+        self.distance_metric = distance_metric
+        if distance_metric == "mean_mmd_poses":
+            self._prep_for_mean_mmd_poses()
+        else:
+            raise ValueError(distance_metric)
 
-    def do_iterated_vi_fitting(self, major_iterations=1, minor_iterations=50, subsample=None, base_lr=0.1,
-                               throw_on_map_failure=False, verbose=0, tqdm=None, max_recursion_depth=10,
-                               clip=None, N_solutions=1):
-        '''
-        
-            throw_on_map_failure: If there's a failure in the MAP tree optimization routine,
-                should we throw a RuntimeError? If not, that observation will be ignored
-                in the iterations where the optimization failed.
-        '''
-        
-        # Logging: each major iteration produces a ModuleList of variational_posterior 
-        # modules, along with a list of grammar state_dicts and variational_posterior_list state_dicts
-        # from the minor iterations.
-        self.elbo_history = []
-        self.grammar_major_iters = []
-        self.posterior_major_iters = []
-        
-        # Initialize a list of VariationalPosteriorSuperTrees for each observation -- one for each distinct
-        # integer solution we expect.
-        super_tree = self.grammar.make_super_tree(max_recursion_depth=max_recursion_depth, detach=True)
+        # For storing fitting process. If empty, fitting has not been
+        # done yet.
+        self.grammar_iters = []
+        self.loss_iters = []
 
-        variational_posterior_sets = []
-        for k in range(len(self.observed_node_sets)):
-            variational_posterior_set = []
-            # Make one variational posterior, and then shallow-copy it so that they
-            # all reference the same underlying supertree params. (I'm thinking of these
-            # as being different "views" into the params, with the view changed by calling
-            # update_map_tree.)
-            orig_posterior = VariationalPosteriorSuperTree(super_tree, self.grammar)
-            variational_posterior_set = [orig_posterior.make_shallow_copy() for k in range(N_solutions)]
-            variational_posterior_sets.append(torch.nn.ModuleList(variational_posterior_set))
-        variational_posterior_sets = torch.nn.ModuleList(variational_posterior_sets)
-        
-        # Set up common optimizer for the whole process.
-        param_groups = [
-         {"params": variational_posterior_sets.parameters(), "lr": base_lr},
-         {"params": self.grammar.parameters(), "lr": base_lr}
-        ]
-        params = [*variational_posterior_sets.parameters(), *self.grammar.parameters()]
-        optimizer = torch.optim.Adam(param_groups, lr=base_lr)#, betas = (0.95, 0.999))
-        lr_schedule = PiecewisePolynomial.FirstOrderHold(
+    def do_sample_based_fitting(
+            self, num_iterations=100, num_samples=100, verbose=0, tqdm=None,
+            lr=0.01, clip=10.):
+        self.grammar_iters = [deepcopy(self.grammar.state_dict())]
+        self.loss_iters = []
+
+        # Set up parameter optimizer by attaching to grammar parameters.
+        named_params = {key: value for key, value in self.grammar.named_parameters()}
+        params = list(named_params.values())
+        optimizer = torch.optim.Adam(params, lr=lr)
+        lr_warmup_schedule = PiecewisePolynomial.FirstOrderHold(
             breaks=[0., 10.],
             samples=[[0., 1.]]
         )
         def get_lr(epoch):
-            return lr_schedule.value(epoch)[0, 0] * 0.999**epoch
+            return lr_warmup_schedule.value(epoch)[0, 0] * 1.00**epoch
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, get_lr)
 
-        major_iterator = range(major_iterations)
-        if tqdm:
-            major_iterator = tqdm(major_iterator, desc="Major iteration", total=major_iterations)
-        for major_iteration in major_iterator:
-            if tqdm:
-                major_iterator.set_description("Major %03d: calculating MAP trees" % (major_iteration))
-            refined_tree_sets = get_map_trees_for_observed_node_sets(
-                self.grammar, self.observed_node_sets, throw_on_failure=throw_on_map_failure,
-                verbose=verbose, tqdm=tqdm, N_solutions=N_solutions, parsing_strategy=self.parsing_strategy,
-                do_nlp_refinement=self.do_nlp_refinement
+        if tqdm is None:
+            iterator = range(num_iterations)
+        else:
+            iterator = tqdm(range(num_iterations), desc="Epoch", total=num_iterations)
+        moving_average_loss = None
+        for iter_k in iterator:
+            # Sample a population of trees.
+            sampled_trees = []
+            sampled_node_sets = []
+            for sample_k in range(num_samples):
+                tree = self.grammar.sample_tree(detach=False)
+                sampled_trees.append(tree)
+                sampled_node_sets.append(tree.get_observed_nodes())
+
+            # Pass that population through to get a loss function.
+            if self.distance_metric == "mean_mmd_poses":
+                mmds_by_type = self._calc_average_mmd_for_observed_poses(sampled_node_sets)
+                self.mmds_by_type_history.append({key: value.detach() for key, value in mmds_by_type.items()})
+                loss = torch.mean(torch.cat([x.view(1) for x in mmds_by_type.values()]))
+            else:
+                raise ValueError(self.distance_metric)
+
+            # Perform partially-reparameterized REINFORCE update. The parameters
+            # are the parameters of each node and rule type. We know the node type
+            # parameters will not be reparameterized, since they all feed into discrete
+            # probabilities. For each rule type, we query whether it reparameterizes
+            # or not. This build two sets of parameters:
+            #  Non-reparameterized: These won't get accurate gradient info from a naive
+            #   backward pass, so we estimate their gradient with REINFORCE.
+            #  Reparameterized: A naive backward call on the loss will get accurate
+            #   gradients for these parameters thanks to the reparameterized sampling
+            #   within the corresponding rules.
+            # We build this into a surrogate objective:
+            #  log p(non-reparam nodes and rules of T) * [detached loss] + loss
+            # Taking the gradient of this propagates gradients combines these
+            #   properties.
+            self.loss_iters.append(loss.item())
+
+            nonreparam_ll = torch.zeros(1)
+            for tree in sampled_trees:
+                tree.trace.compute_score_parts()
+                for name, site in tree.trace.nodes.items():
+                    if site["type"] == "sample":
+                        # This will be zero if it's reparameterizable:
+                        nonreparam_ll = nonreparam_ll + site["score_parts"].score_function
+            mean_nonreparam_ll = nonreparam_ll / len(sampled_trees)
+
+            # TODO: Variance reduction baseline?
+            if moving_average_loss is None:
+                proxy_loss = mean_nonreparam_ll * loss.detach() + loss
+                moving_average_loss = loss.detach()
+            else:
+                proxy_loss = mean_nonreparam_ll * (loss.detach() - moving_average_loss) + loss
+                moving_average_loss = moving_average_loss * 0.9 + loss.detach() * 0.1
+            proxy_loss.backward(retain_graph=False)
+
+            grad_norms = torch.tensor(
+                [torch.norm(param.grad) for param in params if param.grad is not None]
             )
-            # Initialize variational posterior at the MAP tree.
-            for variational_posterior_set, trees in zip(variational_posterior_sets, refined_tree_sets):
-                for k, variational_posterior in enumerate(variational_posterior_set):
-                    if k < len(trees):
-                        variational_posterior.update_map_tree(trees[k], update_posterior=True)
-                    else:
-                        logging.warn("# of trees less than expected: ", len(trees))
-                        variational_posterior.map_tree = None # No solution corresponds to this posterior, so don't update it.
 
-            if tqdm:
-                major_iterator.set_description("Major %03d: doing SVI iters" % (major_iteration))
-
-            grammar_history = []
-            variational_posterior_history = []
+            if iter_k % 10 == 0:
+                print({"%s: %s, %s" % (name, param.detach().numpy(), param.grad) for (name, param) in named_params.items()})
+            print("%d: Loss %f, Proxy Loss %f, Gradient Norm (%f +/- %f)" % (
+                iter_k, loss.item(), proxy_loss.item(),
+                torch.mean(grad_norms), torch.std(grad_norms))
+            )
             
-            minor_iterator = range(minor_iterations)
-            if tqdm:
-                minor_iterator = tqdm(minor_iterator, desc="Minor iteration", total=minor_iterations)
-            for minor_iteration in minor_iterator:
-                optimizer.zero_grad()
-                
-                grammar_history.append(deepcopy(self.grammar.state_dict()))
-                variational_posterior_history.append(deepcopy(variational_posterior_sets.state_dict()))
-                
-                # Evaluate ELBO and do gradient updates.
-                if subsample:
-                    posterior_set_inds = np.random.choice(range(len(variational_posterior_sets)), size=subsample, replace=False)
-                    posterior_sets = [variational_posterior_sets[k] for k in posterior_set_inds]
-                else:
-                    posterior_sets = variational_posterior_sets
+            if clip is not None:
+                torch.nn.utils.clip_grad_norm_(params, clip)
+            optimizer.step()
+            scheduler.step()
 
-                total_log_prob = torch.zeros(1)
-                for posterior_set in posterior_sets:
-                    all_continuous = []
-                    all_discrete = []
-                    for posterior in posterior_set:
-                        if posterior.map_tree is not None:
-                            log_p_continuous, log_p_discrete = posterior.evaluate_log_density(
-                                self.grammar, verbose=verbose
-                            )
-                            all_continuous.append(log_p_continuous)
-                            all_discrete.append(log_p_discrete)
-                    if len(all_continuous) == 0:
-                        continue
-                    # p = sum_{discrete}[p(discrete) * p(continuous | discrete)] / sum_{discrete}[p(discrete)]
-                    all_continuous = torch.stack(all_continuous).flatten()
-                    all_discrete = torch.stack(all_discrete).flatten()
-                    assert all_continuous.shape == all_discrete.shape
-                    mode_probs = all_discrete + all_continuous
-                    normalizer = torch.logsumexp(all_discrete, dim=0)
-                    total_log_prob = total_log_prob + torch.logsumexp(mode_probs, dim=0) - normalizer
-                mean_log_prob = total_log_prob / len(posterior_sets)
-                self.elbo_history.append(mean_log_prob.detach())
-                if tqdm:
-                    minor_iterator.set_description("Minor %05d: ELBO %f" % (minor_iteration, mean_log_prob.item()))
-                else:
-                    logging.info("%03d/%05d: ELBO %f" % (major_iteration, minor_iteration, mean_log_prob.item()))
-                
-                if minor_iteration < minor_iterations - 1:
-                    (-mean_log_prob).backward(retain_graph=False)
-                    if clip is not None:
-                        torch.nn.utils.clip_grad_norm_(params, clip)
+            self.grammar_iters.append(deepcopy(self.grammar.state_dict()))
+        return self.grammar
 
-                    optimizer.step()
-                    scheduler.step()
-                
-            self.grammar_major_iters.append(grammar_history)
-            self.posterior_major_iters.append((variational_posterior_sets, variational_posterior_history))
-       
-    def plot_elbo_history(self):
-        assert hasattr(self, "elbo_history") and len(self.elbo_history) > 0
-        plt.figure()
-        loss_history = -torch.stack(self.elbo_history).detach()
-        offset = torch.min(loss_history)
-        loss_history += -offset + 1.
-        plt.plot(loss_history)
-        plt.yscale('log')
-        plt.title("(Vertically shifted) ELBO history, reached min %f" % offset)
-        plt.xlabel("Iter")
-        plt.ylabel("ELBO")
+    '''
+        MMD: option "mean_mmd_poses"
+        As noted in the MetaSim2 paper, this generates one score for the entire sampled
+        dataset, so it can't easily be used to decide things like the relative weight
+        of different samples. I've also seen that it struggles mightily to converge
+        on the 3-mode GMM, even for the means, which I would hope would converge well.
+    '''
+    def _prep_for_mean_mmd_poses(self):
+        # Precalculate pose set dictionaries for observed nodes
+        self.observed_population_by_type = {}
+        self.mmds_by_type_history = []
+        for observed_nodes in self.observed_node_sets:
+            for observed_node in observed_nodes:
+                key = type(observed_node).__name__
+                if key not in self.observed_population_by_type.keys():
+                    self.observed_population_by_type[key] = []
+                self.observed_population_by_type[key].append(observed_node.tf)
+        for key, value in self.observed_population_by_type.items():
+            self.observed_population_by_type[key] = torch.stack(value)
+    def _calc_average_mmd_for_observed_poses(self, sampled_node_sets):
+        ''' Returns a dictionary of {node_type_name: mmd}. If an observed type is never
+        sampled, or a sampled type is never observed, then an arbitrary penalty distance of
+        +10 will be returned in its place. '''
+        # Collect pose sets by type
+        sampled_population_by_type = {key: [] for key in self.observed_population_by_type.keys()}
+        for sampled_nodes in sampled_node_sets:
+            for sampled_node in sampled_nodes:
+                key = type(sampled_node).__name__
+                if key not in sampled_population_by_type:
+                    logging.warning("Sampled object not in observations: %s" % key)
+                    sampled_population_by_type[key] = []
+                sampled_population_by_type[key].append(sampled_node.tf)
+        for key, value in sampled_population_by_type.items():
+            sampled_population_by_type[key] = torch.stack(value)
 
-    def plot_grammar_parameter_history(self, node_type):
-         # Plot param history for a node type in the grammar.
-        assert hasattr(self, "grammar_major_iters") and len(self.grammar_major_iters) > 0
-        assert node_type in self.grammar.all_types
-        
-        all_state_dicts = [x for l in self.grammar_major_iters for x in l]
-        node_param_history = []
-        rule_param_history = None
-        for state_dict in all_state_dicts:
-            self.grammar.load_state_dict(state_dict)
-            possible_params = self.grammar.params_by_node_type[node_type.__name__]
-            if possible_params:
-                node_param_history.append(possible_params().detach())
-            rule_params = self.grammar.rule_params_by_node_type[node_type.__name__]
-            if rule_param_history is None:
-                rule_param_history = [[{}, {}] for k in range(len(rule_params))]
-            
-            for k, (xyz_rule_params, rot_rule_params) in enumerate(rule_params):
-                for key, value in xyz_rule_params.items():
-                    hist_dict = rule_param_history[k][0]
-                    if key not in hist_dict:
-                        hist_dict[key] = [value().detach()]
-                    else:
-                        hist_dict[key].append(value().detach())
-                for key, value in rot_rule_params.items():
-                    hist_dict = rule_param_history[k][1]
-                    if key not in hist_dict:
-                        hist_dict[key] = [value().detach()]
-                    else:
-                        hist_dict[key].append(value().detach())
+        # Compute the actual MMDs
+        mmds_by_type = {}
+        mmd_alphas = [0.01, 0.05, 0.1, 0.5, 1.]
+        no_match_mmd = 10.
+        for key in self.observed_population_by_type.keys():
+            observed_pop = self.observed_population_by_type[key]
+            if key not in sampled_population_by_type.keys():
+                mmds_by_type[key] = no_match_mmd
+                logging.warning("Applying no-match MMD for unsampled type %s" % key)
+                continue
 
-        if len(node_param_history) > 0:
-            node_param_history = torch.stack(node_param_history)
-        for entry in rule_param_history:
-            for k in range(2): # xyz / rot rule
-                for key, value in entry[k].items():
-                    entry[k][key] = torch.stack(value)
-
-        if len(node_param_history) > 0:
-            plt.figure()
-            plt.plot(node_param_history)
-            plt.title("%s params" % node_type.__name__)
-            print("Final params: ", node_param_history[-1, :])
-        
-        # Rules
-        plt.figure()
-        N_rules = len(rule_param_history)
-        for k, entry in enumerate(rule_param_history):
-            plt.suptitle("%s rule %d params" % (node_type.__name__, k))
-            # XYZ
-            plt.subplot(2, N_rules, k+1)
-            plt.title("XYZ Rule")
-            for key, value in entry[0].items():
-                plt.plot(value, label=key)
-                print("%d:xyz:%s final: %s" % (k, key, value[-1, :]))
-            plt.legend()
-            plt.subplot(2, N_rules, k + N_rules + 1)
-            plt.title("Rot rule")
-            for key, value in entry[1].items():
-                plt.plot(value, label=key)
-                print("%d:rot:%s final: %s" % (k, key, value[-1, :]))
-            plt.legend()
-        plt.tight_layout()
-
+            sampled_pop = sampled_population_by_type[key]
+            if observed_pop.shape[0] > 0 and sampled_pop.shape[0] > 0:
+                mmds_by_type[key] = calculate_mmd(observed_pop, sampled_pop, alphas=mmd_alphas, use_se3_metric=True)
+            else:
+                logging.warning("%d observed, %d sampled, can't compare." % (observed_pop.shape[0], sampled_pop.shape[0]))
+                mmds_by_type[key] = no_match_mmd
+        return mmds_by_type
