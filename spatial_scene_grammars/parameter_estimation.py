@@ -858,6 +858,7 @@ class SampleBasedFittingWrapper():
             self._prep_for_mean_mmd_poses()
         elif distance_metric == "kde_poses":
             self.observed_kde_kernels_by_type = self._prep_kde_of_poses(self.observed_node_sets)
+            self.moving_average_of_divergences = None
         else:
             raise ValueError(distance_metric)
 
@@ -984,7 +985,9 @@ class SampleBasedFittingWrapper():
         
         # Perform partially-reparameterized REINFORCE update on KL divergence.
         proxy_loss = torch.zeros(1)
-        for tree, ll_against_obs_kde, ll_against_sampled_kde in zip(sampled_trees, obs_lls_by_scene, sampled_lls_by_scene):
+        divergences = []
+        for k, (tree, ll_against_obs_kde, ll_against_sampled_kde) in enumerate(
+                zip(sampled_trees, obs_lls_by_scene, sampled_lls_by_scene)):
             tree.trace.compute_score_parts()
             
             nonreparam_ll = torch.zeros(1)
@@ -1003,8 +1006,20 @@ class SampleBasedFittingWrapper():
                     reparam_ll = reparam_ll + f
 
             divergence = ll_against_sampled_kde - ll_against_obs_kde
+            divergences.append(divergence.detach())
             # TODO(gizatt) Variance reduction
-            proxy_loss = proxy_loss + (divergence.detach() * nonreparam_ll * 0 + divergence)
+            for node in tree:
+                node.tf = node.tf.detach()
+            #proxy_loss = proxy_loss + (divergence.detach() * nonreparam_ll * 0 + divergence)
+            if self.moving_average_of_divergences is None:
+                proxy_loss = proxy_loss + (divergence.detach() * tree.score())
+            else:
+                proxy_loss = proxy_loss + ((divergence.detach() - self.moving_average_of_divergences[k]) * tree.score())
+        if self.moving_average_of_divergences is None:
+            self.moving_average_of_divergences = torch.stack(divergences)
+        else:
+            self.moving_average_of_divergences = self.moving_average_of_divergences*0.8 + torch.stack(divergences)*0.2
+
         proxy_loss = proxy_loss / len(sampled_trees)
         return proxy_loss, torch.tensor(ll_against_obs_kde).mean().detach()
 
