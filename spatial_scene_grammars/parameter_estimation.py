@@ -850,12 +850,14 @@ class SampleBasedFittingWrapper():
         which sample sites we can, and for all others, use REINFORCE to optimize
         this objective.
     '''
-    def __init__(self, grammar, observed_node_sets, distance_metric="mean_mmd_poses"):
+    def __init__(self, grammar, observed_node_sets, distance_metric="kde_poses"):
         self.grammar = grammar
         self.observed_node_sets = observed_node_sets
         self.distance_metric = distance_metric
         if distance_metric == "mean_mmd_poses":
             self._prep_for_mean_mmd_poses()
+        elif distance_metric == "kde_poses":
+            self.observed_kde_kernels_by_type = self._prep_kde_of_poses(self.observed_node_sets)
         else:
             raise ValueError(distance_metric)
 
@@ -890,62 +892,30 @@ class SampleBasedFittingWrapper():
         for iter_k in iterator:
             # Sample a population of trees.
             sampled_trees = []
-            sampled_node_sets = []
             for sample_k in range(num_samples):
                 tree = self.grammar.sample_tree(detach=False)
                 sampled_trees.append(tree)
-                sampled_node_sets.append(tree.get_observed_nodes())
 
             # Pass that population through to get a loss function.
             if self.distance_metric == "mean_mmd_poses":
-                mmds_by_type = self._calc_average_mmd_for_observed_poses(sampled_node_sets)
-                self.mmds_by_type_history.append({key: value.detach() for key, value in mmds_by_type.items()})
-                loss = torch.mean(torch.cat([x.view(1) for x in mmds_by_type.values()]))
+                proxy_loss, log_loss = self._calc_loss_mean_mmd_poses(sampled_trees)
+            elif self.distance_metric == "kde_poses":
+                proxy_loss, log_loss = self._calc_loss_kde_poses(sampled_trees)
             else:
                 raise ValueError(self.distance_metric)
 
-            # Perform partially-reparameterized REINFORCE update. The parameters
-            # are the parameters of each node and rule type. We know the node type
-            # parameters will not be reparameterized, since they all feed into discrete
-            # probabilities. For each rule type, we query whether it reparameterizes
-            # or not. This build two sets of parameters:
-            #  Non-reparameterized: These won't get accurate gradient info from a naive
-            #   backward pass, so we estimate their gradient with REINFORCE.
-            #  Reparameterized: A naive backward call on the loss will get accurate
-            #   gradients for these parameters thanks to the reparameterized sampling
-            #   within the corresponding rules.
-            # We build this into a surrogate objective:
-            #  log p(non-reparam nodes and rules of T) * [detached loss] + loss
-            # Taking the gradient of this propagates gradients combines these
-            #   properties.
-            self.loss_iters.append(loss.item())
-
-            nonreparam_ll = torch.zeros(1)
-            for tree in sampled_trees:
-                tree.trace.compute_score_parts()
-                for name, site in tree.trace.nodes.items():
-                    if site["type"] == "sample":
-                        # This will be zero if it's reparameterizable:
-                        nonreparam_ll = nonreparam_ll + site["score_parts"].score_function
-            mean_nonreparam_ll = nonreparam_ll / len(sampled_trees)
-
-            # TODO: Variance reduction baseline?
-            if moving_average_loss is None:
-                proxy_loss = mean_nonreparam_ll * loss.detach() + loss
-                moving_average_loss = loss.detach()
-            else:
-                proxy_loss = mean_nonreparam_ll * (loss.detach() - moving_average_loss) + loss
-                moving_average_loss = moving_average_loss * 0.9 + loss.detach() * 0.1
             proxy_loss.backward(retain_graph=False)
 
             grad_norms = torch.tensor(
                 [torch.norm(param.grad) for param in params if param.grad is not None]
             )
 
+            
+            self.loss_iters.append(log_loss)
             if iter_k % 10 == 0:
                 print({"%s: %s, %s" % (name, param.detach().numpy(), param.grad) for (name, param) in named_params.items()})
             print("%d: Loss %f, Proxy Loss %f, Gradient Norm (%f +/- %f)" % (
-                iter_k, loss.item(), proxy_loss.item(),
+                iter_k, log_loss.item(), proxy_loss.item(),
                 torch.mean(grad_norms), torch.std(grad_norms))
             )
             
@@ -956,6 +926,87 @@ class SampleBasedFittingWrapper():
 
             self.grammar_iters.append(deepcopy(self.grammar.state_dict()))
         return self.grammar
+
+    '''
+        KDE: option "kde_poses"
+        Related to tactic of MetaSim2 paper (https://arxiv.org/pdf/2008.09092.pdf),
+        but minus the latent space calculation.
+        We pre-compute a KDE for the set of observed poses p(x) = KDE_obs. Given
+        a population of samples and compute
+        the loss as KL(q(x) - p(x)), where q(x) is the model our samples come from.
+        This translates to
+            min_theta x ~ q_theta(x) [log q_theta(x) - log p(x)]
+        which tries to cover p(x) as concisely as possible with q(x).
+    '''
+    def _prep_kde_of_poses(self, node_sets, bw=1):
+        observed_population_by_type = {}
+        for observed_nodes in node_sets:
+            for observed_node in observed_nodes:
+                key = type(observed_node).__name__
+                if key not in observed_population_by_type.keys():
+                    observed_population_by_type[key] = []
+                observed_population_by_type[key].append(observed_node.tf)
+        for key, value in observed_population_by_type.items():
+            observed_population_by_type[key] = torch.stack(value)
+
+        # Set up KDE kernels
+        # TODO(gizatt) Better handling of rotation!
+        return {
+            key: dist.Normal(loc=value, scale=bw)
+            for key, value in observed_population_by_type.items()
+        }
+    def _calc_kde_densities_per_sample(self, sampled_node_sets, kernel_dict):
+        lls_by_scene = []
+        for sampled_nodes in sampled_node_sets:
+            total_ll = torch.tensor(0)
+            for node in sampled_nodes:
+                key = type(node).__name__
+                if key not in kernel_dict.keys():
+                    logging.warning("Sampled object not in kernel dict, applying large ll penalty instead: %s" % key)
+                    total_ll = total_ll - 100
+                    continue
+                kernels = kernel_dict[key]
+                # TODO(gizatt) Is this normalization correct?
+                ll = torch.logsumexp(
+                    kernels.log_prob(node.tf.unsqueeze(0).expand(kernels.batch_shape)),
+                    dim=(0, 1, 2)
+                ) -  torch.log(torch.tensor(kernels.batch_shape[0]))
+                total_ll = total_ll + ll
+            lls_by_scene.append(total_ll)
+        return lls_by_scene
+    def _calc_loss_kde_poses(self, sampled_trees):
+        sampled_node_sets = [tree.get_observed_nodes() for tree in sampled_trees]
+        obs_lls_by_scene = self._calc_kde_densities_per_sample(sampled_node_sets, self.observed_kde_kernels_by_type)
+        
+        # Prep symmetric KDE for the samples
+        sampled_kde_kernels_by_type = self._prep_kde_of_poses(sampled_node_sets)
+        sampled_lls_by_scene = self._calc_kde_densities_per_sample(sampled_node_sets, sampled_kde_kernels_by_type)
+        
+        # Perform partially-reparameterized REINFORCE update on KL divergence.
+        proxy_loss = torch.zeros(1)
+        for tree, ll_against_obs_kde, ll_against_sampled_kde in zip(sampled_trees, obs_lls_by_scene, sampled_lls_by_scene):
+            tree.trace.compute_score_parts()
+            
+            nonreparam_ll = torch.zeros(1)
+            reparam_ll = torch.zeros(1)
+            for name, site in tree.trace.nodes.items():
+                if site["type"] == "sample":
+                    # This will be zero if it's reparameterizable:
+                    f = site["score_parts"].score_function
+                    if isinstance(f, torch.Tensor):
+                        f = f.sum()
+                    nonreparam_ll = nonreparam_ll + f
+                    
+                    f = site["score_parts"].entropy_term
+                    if isinstance(f, torch.Tensor):
+                        f = f.sum()
+                    reparam_ll = reparam_ll + f
+
+            divergence = ll_against_sampled_kde - ll_against_obs_kde
+            # TODO(gizatt) Variance reduction
+            proxy_loss = proxy_loss + (divergence.detach() * nonreparam_ll * 0 + divergence)
+        proxy_loss = proxy_loss / len(sampled_trees)
+        return proxy_loss, torch.tensor(ll_against_obs_kde).mean().detach()
 
     '''
         MMD: option "mean_mmd_poses"
@@ -976,6 +1027,8 @@ class SampleBasedFittingWrapper():
                 self.observed_population_by_type[key].append(observed_node.tf)
         for key, value in self.observed_population_by_type.items():
             self.observed_population_by_type[key] = torch.stack(value)
+        # Set up variance reduction baseline
+        self.moving_average_of_loss = None
     def _calc_average_mmd_for_observed_poses(self, sampled_node_sets):
         ''' Returns a dictionary of {node_type_name: mmd}. If an observed type is never
         sampled, or a sampled type is never observed, then an arbitrary penalty distance of
@@ -1010,3 +1063,26 @@ class SampleBasedFittingWrapper():
                 logging.warning("%d observed, %d sampled, can't compare." % (observed_pop.shape[0], sampled_pop.shape[0]))
                 mmds_by_type[key] = no_match_mmd
         return mmds_by_type
+    def _calc_loss_mean_mmd_poses(self, sampled_trees):
+        sampled_node_sets = [tree.get_observed_nodes() for tree in sampled_trees]
+        mmds_by_type = self._calc_average_mmd_for_observed_poses(sampled_node_sets)
+        self.mmds_by_type_history.append({key: value.detach() for key, value in mmds_by_type.items()})
+        loss = torch.mean(torch.cat([x.view(1) for x in mmds_by_type.values()]))
+        # Perform partially-reparameterized REINFORCE update.
+        nonreparam_ll = torch.zeros(1)
+        for tree in sampled_trees:
+            tree.trace.compute_score_parts()
+            for name, site in tree.trace.nodes.items():
+                if site["type"] == "sample":
+                    # This will be zero if it's reparameterizable:
+                    nonreparam_ll = nonreparam_ll + site["score_parts"].score_function
+        mean_nonreparam_ll = nonreparam_ll / len(sampled_trees)
+
+        # TODO: Variance reduction baseline?
+        if self.moving_average_of_loss is None:
+            proxy_loss = mean_nonreparam_ll * loss.detach() + loss
+            self.moving_average_of_loss = loss.detach()
+        else:
+            proxy_loss = mean_nonreparam_ll * (loss.detach() - self.moving_average_of_loss) + loss
+            self.moving_average_of_loss = self.moving_average_of_loss * 0.9 + loss.detach() * 0.1
+        return proxy_loss, loss
