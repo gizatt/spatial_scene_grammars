@@ -86,10 +86,11 @@ def draw_scene_tree_structure_meshcat(scene_tree, prefix="scene_tree", zmq_url=N
         if color_by_score is not None:
             assert len(color_by_score) == 2, "Color by score should be a tuple of (min, max)"
             score = node.score_child_set(children)
+            print("Node score: ", score)
             score = (score - color_by_score[0]) / (color_by_score[1] - color_by_score[0])
             score = 1. - np.clip(score.item(), 0., 1.)
             color = rgb_2_hex(cmap(score))
-            color = 0x555555
+            #color = 0x555555
         else: 
             # Draw this node
             node_type_string = node.__class__.__name__
@@ -120,7 +121,7 @@ def draw_scene_tree_structure_meshcat(scene_tree, prefix="scene_tree", zmq_url=N
 
             if color_by_score is not None:
                 score = rule.score_child(node, child)
-                print(score)
+                print("Rule score: ", score)
                 score = (score - color_by_score[0]) / (color_by_score[1] - color_by_score[0])
                 score = 1. - np.clip(score.item(), 0., 1.)
                 color = rgb_2_hex(cmap(score))
