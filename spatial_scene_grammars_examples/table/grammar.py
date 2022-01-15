@@ -22,6 +22,7 @@ Place settings - > cup, plate, chopsticks, chair?
 '''
 
 class PersonalPlate(TerminalNode):
+    KEEPOUT_RADIUS = 0.14
     def __init__(self, tf):
         geom = PhysicsGeometryInfo(fixed=False)
         geom.register_model_file(
@@ -35,6 +36,7 @@ class PersonalPlate(TerminalNode):
         )
 
 class Teacup(TerminalNode):
+    KEEPOUT_RADIUS = 0.07
     def __init__(self, tf):
         geom = PhysicsGeometryInfo(fixed=False)
         geom.register_model_file(
@@ -48,6 +50,7 @@ class Teacup(TerminalNode):
         )
 
 class Teapot(TerminalNode):
+    KEEPOUT_RADIUS = 0.1
     def __init__(self, tf):
         geom = PhysicsGeometryInfo(fixed=False)
         geom.register_model_file(
@@ -61,6 +64,7 @@ class Teapot(TerminalNode):
         )
 
 class ServingDish(TerminalNode):
+    KEEPOUT_RADIUS = 0.2
     def __init__(self, tf):
         geom = PhysicsGeometryInfo(fixed=False)
         geom.register_model_file(
@@ -81,6 +85,7 @@ class Null(TerminalNode):
             observed=False
         )
 class SteamerBottom(OrNode):
+    KEEPOUT_RADIUS=0.12
     def __init__(self, tf):
         geom = PhysicsGeometryInfo(fixed=False)
         geom.register_model_file(
@@ -123,6 +128,7 @@ class SteamerBottom(OrNode):
         return rules
 
 class SteamerTop(TerminalNode):
+    KEEPOUT_RADIUS=0.12
     def __init__(self, tf):
         geom = PhysicsGeometryInfo(fixed=False)
         geom.register_model_file(
@@ -135,6 +141,9 @@ class SteamerTop(TerminalNode):
             observed=True
         )
 
+TabletopObjectTypes = (
+    PersonalPlate, Teacup, Teapot, ServingDish, SteamerBottom, SteamerTop
+)
 
 class PlaceSetting(IndependentSetNode):
     def __init__(self, tf):
@@ -157,8 +166,8 @@ class PlaceSetting(IndependentSetNode):
             ProductionRule(
                 child_type=Teacup,
                 xyz_rule=ParentFrameGaussianOffsetRule(
-                    mean=torch.tensor([-0.1, 0.0, 0.00]),
-                    variance=torch.tensor([0.005, 0.01, 0.0001])),
+                    mean=torch.tensor([0.25, 0.0, 0.00]),
+                    variance=torch.tensor([0.001, 0.005, 0.0001])),
                 rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
                     RotationMatrix(), np.array([1000, 1000, 1])
                 )
@@ -167,11 +176,11 @@ class PlaceSetting(IndependentSetNode):
         return rules
 
 class PlaceSettings(IndependentSetNode):
-    DISTANCE_FROM_CENTER = 0.6
+    DISTANCE_FROM_CENTER = 0.5
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            rule_probs=torch.tensor([0.5, 0.5, 0.5, 0.5]),
+            rule_probs=torch.tensor([1., 1., 1., 1]),
             physics_geometry_info=None,
             observed=False
         )
@@ -181,22 +190,18 @@ class PlaceSettings(IndependentSetNode):
             ProductionRule(
                 child_type=PlaceSetting,
                 xyz_rule=ParentFrameGaussianOffsetRule(
-                    mean=torch.tensor([cls.DISTANCE_FROM_CENTER, 0., 0.]),
+                    mean=torch.tensor([-cls.DISTANCE_FROM_CENTER, 0., 0.]),
                     variance=torch.tensor([0.01, 0.01, 0.0001])
                 ),
-                rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                    RotationMatrix(), np.array([10000, 10000, 1])
-                )
+                rotation_rule=SameRotationRule(offset=torch.tensor(RotationMatrix(RollPitchYaw(0., 0., 0.)).matrix()))
             ),
             ProductionRule(
                 child_type=PlaceSetting,
                 xyz_rule=ParentFrameGaussianOffsetRule(
-                    mean=torch.tensor([-cls.DISTANCE_FROM_CENTER, 0., 0.]),
+                    mean=torch.tensor([cls.DISTANCE_FROM_CENTER, 0., 0.]),
                     variance=torch.tensor([0.01, 0.01, 0.0001])
                 ),
-                rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                    RotationMatrix(RollPitchYaw(0., 0., np.pi)), np.array([10000, 10000, 1])
-                )
+                rotation_rule=SameRotationRule(offset=torch.tensor(RotationMatrix(RollPitchYaw(0., 0., np.pi)).matrix()))
             ),
             ProductionRule(
                 child_type=PlaceSetting,
@@ -204,9 +209,7 @@ class PlaceSettings(IndependentSetNode):
                     mean=torch.tensor([0., cls.DISTANCE_FROM_CENTER, 0.]),
                     variance=torch.tensor([0.01, 0.01, 0.0001])
                 ),
-                rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                    RotationMatrix(RollPitchYaw(0., 0., -np.pi/2.)), np.array([10000, 10000, 1])
-                )
+                rotation_rule=SameRotationRule(offset=torch.tensor(RotationMatrix(RollPitchYaw(0., 0., -np.pi/2.)).matrix()))
             ),
             ProductionRule(
                 child_type=PlaceSetting,
@@ -214,9 +217,7 @@ class PlaceSettings(IndependentSetNode):
                     mean=torch.tensor([0., -cls.DISTANCE_FROM_CENTER, 0.]),
                     variance=torch.tensor([0.01, 0.01, 0.0001])
                 ),
-                rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
-                    RotationMatrix(RollPitchYaw(0., 0., np.pi/2.)), np.array([10000, 10000, 1])
-                )
+                rotation_rule=SameRotationRule(offset=torch.tensor(RotationMatrix(RollPitchYaw(0., 0., np.pi/2.)).matrix()))
             )
         ]
 
@@ -317,11 +318,12 @@ class SharedStuff(IndependentSetNode):
 
 
 class Table(AndNode):
+    WIDTH = 1.25
     # Place settings + misc common dishware
     def __init__(self, tf):
         geom = PhysicsGeometryInfo(fixed=True)
         geom_tf = torch.eye(4)
-        geom_tf[2, 3] = -0.8
+        geom_tf[2, 3] = -0.85
         geom.register_model_file(geom_tf, "models/misc/cafe_table/model.sdf")
         super().__init__(
             tf=tf,

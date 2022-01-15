@@ -153,7 +153,7 @@ class DecayingForceToDesiredConfigSystem(LeafSystem):
     def DoCalcAbstractOutput(self, context, y_data):
         t = context.get_time()
         # Annealing schedule
-        force_multiplier = 10.0*np.exp(-0.5*t)*np.abs(np.cos(t*np.pi/2.))
+        force_multiplier = 1.0*np.exp(-0.5*t)*np.abs(np.cos(t*np.pi/2.))
         
         x_in = self.EvalVectorInput(context, 0).get_value()
         self.mbp.SetPositionsAndVelocities(self.mbp_current_context, x_in)
@@ -633,15 +633,15 @@ def project_tree_to_feasibility_via_sim(tree, constraints=[], zmq_url=None, pref
         return tree
     
     # Make 'safe' initial configuration that randomly arranges objects vertically
-    k = 0
-    all_pos = []
-    for node in tree:
-        for body_id in node_to_free_body_ids_map[node]:
-            body = mbp.get_body(body_id)
-            tf = mbp.GetFreeBodyPose(mbp_context, body)
-            tf = RigidTransform(p=tf.translation() + np.array([0., 0., 1. + k*0.5]), R=tf.rotation())
-            mbp.SetFreeBodyPose(mbp_context, body, tf)
-            k += 1
+    #k = 0
+    #all_pos = []
+    #for node in tree:
+    #    for body_id in node_to_free_body_ids_map[node]:
+    #        body = mbp.get_body(body_id)
+    #        tf = mbp.GetFreeBodyPose(mbp_context, body)
+    #        tf = RigidTransform(p=tf.translation() + np.array([0., 0., 1. + k*0.5]), R=tf.rotation())
+    #        mbp.SetFreeBodyPose(mbp_context, body, tf)
+    #        k += 1
 
     sim = Simulator(diagram, diagram_context)
     sim.set_target_realtime_rate(1000)
