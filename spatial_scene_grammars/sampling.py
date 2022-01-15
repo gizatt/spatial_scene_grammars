@@ -369,7 +369,7 @@ def do_fixed_structure_hmc_with_constraint_penalties(
                     pyro.sample("%s_rotation_observed" % node.name, rot_observed_dist, obs=node.rotation)
 
         for k, constraint in enumerate(constraints):
-            clamped_error_distribution = dist.Normal(0., 0.01)
+            clamped_error_distribution = dist.Normal(0., 0.001)
             violation, _, _ = constraint.eval_violation(scene_tree)
             positive_violations = torch.clamp(violation, 0., np.inf)
             pyro.sample("%s_%d_err" % (type(constraint).__name__, k), clamped_error_distribution, obs=positive_violations)

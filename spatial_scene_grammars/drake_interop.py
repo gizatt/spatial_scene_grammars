@@ -452,6 +452,7 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
                 # Contain this primitive geometry in a model instance.
                 model_id = mbp.AddModelInstance(
                     node.name + "::model_%d" % len(node_model_ids))
+                node_model_ids.append(model_id)
                 # Add a body for this node, and register any of the
                 # visual and collision geometry available.
                 # TODO(gizatt) This tree body index is built in to disambiguate names.
@@ -489,6 +490,7 @@ def compile_scene_tree_to_mbp_and_sg(scene_tree, timestep=0.001):
                     model_id = parser.AddModelFromFile(
                         resolve_catkin_package_path(parser.package_map(), model_path),
                         node.name + "::" "model_%d" % len(node_model_ids))
+                    node_model_ids.append(model_id)
                     if root_body_name is None:
                         root_body_ind_possibilities = mbp.GetBodyIndices(model_id)
                         assert len(root_body_ind_possibilities) == 1, \
@@ -553,7 +555,7 @@ def project_tree_to_feasibility(tree, constraints=[], jitter_q=None, do_forward_
     prog.AddQuadraticErrorCost(np.eye(nq), q0, q_dec)
     # Nonpenetration constraint.
     
-    ik.AddMinimumDistanceConstraint(0.01)
+    ik.AddMinimumDistanceConstraint(0.001)
     # Other requested constraints.
     
     for constraint in constraints:

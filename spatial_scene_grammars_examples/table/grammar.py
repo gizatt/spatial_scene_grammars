@@ -35,6 +35,49 @@ class PersonalPlate(TerminalNode):
             observed=True
         )
 
+# These are ommitted from the grammar right now as they
+# cause SNOPT+simulation to struggle quite a bit due to
+# their small geometry
+class FirstChopstick(IndependentSetNode):
+    def __init__(self, tf):
+        geom = PhysicsGeometryInfo(fixed=False)
+        geom.register_model_file(
+            drake_tf_to_torch_tf(RigidTransform(p=[0.0, 0., 0.0])),
+            "models/misc/chopstick/model.sdf"
+        )
+        super().__init__(
+            tf=tf,
+            physics_geometry_info=geom,
+            rule_probs=torch.tensor([0.99]),
+            observed=True
+        )
+    @classmethod
+    def generate_rules(cls):
+        rules = [
+            ProductionRule(
+                child_type=SecondChopstick,
+                xyz_rule=ParentFrameGaussianOffsetRule(
+                    mean=torch.tensor([0., 0.0, 0.0]),
+                    variance=torch.tensor([0.0001, 0.0001, 0.0001])),
+                rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
+                    RotationMatrix(), np.array([1000, 1000, 1000])
+                )
+            )
+        ]
+        return rules
+class SecondChopstick(TerminalNode):
+    def __init__(self, tf):
+        geom = PhysicsGeometryInfo(fixed=False)
+        geom.register_model_file(
+            drake_tf_to_torch_tf(RigidTransform(p=[0.0, 0., 0.0])),
+            "models/misc/chopstick/model.sdf"
+        )
+        super().__init__(
+            tf=tf,
+            physics_geometry_info=geom,
+            observed=True
+        )
+
 class Teacup(TerminalNode):
     KEEPOUT_RADIUS = 0.07
     def __init__(self, tf):
@@ -142,14 +185,15 @@ class SteamerTop(TerminalNode):
         )
 
 TabletopObjectTypes = (
-    PersonalPlate, Teacup, Teapot, ServingDish, SteamerBottom, SteamerTop
+    PersonalPlate, Teacup, Teapot, ServingDish, SteamerBottom, SteamerTop,
+    FirstChopstick, SecondChopstick
 )
 
 class PlaceSetting(IndependentSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            rule_probs=torch.ones(2)*0.9,
+            rule_probs=torch.tensor([0.9, 0.9]),
             physics_geometry_info=None,
             observed=False
         )
@@ -171,7 +215,16 @@ class PlaceSetting(IndependentSetNode):
                 rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
                     RotationMatrix(), np.array([1000, 1000, 1])
                 )
-            )
+            ),
+            #ProductionRule(
+            #    child_type=FirstChopstick,
+            #    xyz_rule=ParentFrameGaussianOffsetRule(
+            #        mean=torch.tensor([0.0, 0.0, 0.02]),
+            #        variance=torch.tensor([0.005, 0.005, 0.0001])),
+            #    rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
+            #        RotationMatrix(RollPitchYaw(0., np.pi/2., 0.)), np.array([1000, 1000, 1])
+            #    )
+            #)
         ]
         return rules
 
@@ -180,7 +233,7 @@ class PlaceSettings(IndependentSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            rule_probs=torch.tensor([1., 1., 1., 1]),
+            rule_probs=torch.tensor([0.8, 0.8, 0.8, 0.8]),
             physics_geometry_info=None,
             observed=False
         )
@@ -292,7 +345,7 @@ class SharedStuff(IndependentSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            rule_probs=torch.tensor([0.95, 0.5, 0.9]),
+            rule_probs=torch.tensor([0.9, 0.6, 0.9]),
             physics_geometry_info=None,
             observed=False
         )
@@ -323,7 +376,7 @@ class Table(AndNode):
     def __init__(self, tf):
         geom = PhysicsGeometryInfo(fixed=True)
         geom_tf = torch.eye(4)
-        geom_tf[2, 3] = -0.85
+        geom_tf[2, 3] = -0.8
         geom.register_model_file(geom_tf, "models/misc/cafe_table/model.sdf")
         super().__init__(
             tf=tf,
@@ -335,12 +388,12 @@ class Table(AndNode):
         return [
             ProductionRule(
                 child_type=PlaceSettings,
-                xyz_rule=SamePositionRule(),
+                xyz_rule=SamePositionRule(offset=torch.tensor([0.0, 0.0, 0.025])),
                 rotation_rule=SameRotationRule()
             ),
             ProductionRule(
                 child_type=SharedStuff,
-                xyz_rule=SamePositionRule(),
+                xyz_rule=SamePositionRule(offset=torch.tensor([0.0, 0.0, 0.025])),
                 rotation_rule=SameRotationRule()
             ),
         ]
