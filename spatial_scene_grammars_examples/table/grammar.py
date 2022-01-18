@@ -202,7 +202,9 @@ class PlaceSetting(IndependentSetNode):
         rules = [
             ProductionRule(
                 child_type=PersonalPlate,
-                xyz_rule=SamePositionRule(),
+                xyz_rule=ParentFrameGaussianOffsetRule(
+                    mean=torch.tensor([0.0, 0.0, 0.00]),
+                    variance=torch.tensor([0.001, 0.001, 0.0001])),
                 rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
                     RotationMatrix(), np.array([1000, 1000, 1])
                 )
@@ -242,33 +244,29 @@ class PlaceSettings(IndependentSetNode):
         return [
             ProductionRule(
                 child_type=PlaceSetting,
-                xyz_rule=ParentFrameGaussianOffsetRule(
-                    mean=torch.tensor([-cls.DISTANCE_FROM_CENTER, 0., 0.]),
-                    variance=torch.tensor([0.01, 0.01, 0.0001])
+                xyz_rule=SamePositionRule(
+                    offset=torch.tensor([-cls.DISTANCE_FROM_CENTER, 0., 0.])
                 ),
                 rotation_rule=SameRotationRule(offset=torch.tensor(RotationMatrix(RollPitchYaw(0., 0., 0.)).matrix()))
             ),
             ProductionRule(
                 child_type=PlaceSetting,
-                xyz_rule=ParentFrameGaussianOffsetRule(
-                    mean=torch.tensor([cls.DISTANCE_FROM_CENTER, 0., 0.]),
-                    variance=torch.tensor([0.01, 0.01, 0.0001])
+                xyz_rule=SamePositionRule(
+                    offset=torch.tensor([cls.DISTANCE_FROM_CENTER, 0., 0.]),
                 ),
                 rotation_rule=SameRotationRule(offset=torch.tensor(RotationMatrix(RollPitchYaw(0., 0., np.pi)).matrix()))
             ),
             ProductionRule(
                 child_type=PlaceSetting,
-                xyz_rule=ParentFrameGaussianOffsetRule(
-                    mean=torch.tensor([0., cls.DISTANCE_FROM_CENTER, 0.]),
-                    variance=torch.tensor([0.01, 0.01, 0.0001])
+                xyz_rule=SamePositionRule(
+                    offset=torch.tensor([0., cls.DISTANCE_FROM_CENTER, 0.])
                 ),
                 rotation_rule=SameRotationRule(offset=torch.tensor(RotationMatrix(RollPitchYaw(0., 0., -np.pi/2.)).matrix()))
             ),
             ProductionRule(
                 child_type=PlaceSetting,
-                xyz_rule=ParentFrameGaussianOffsetRule(
-                    mean=torch.tensor([0., -cls.DISTANCE_FROM_CENTER, 0.]),
-                    variance=torch.tensor([0.01, 0.01, 0.0001])
+                xyz_rule=SamePositionRule(
+                    offset=torch.tensor([0., -cls.DISTANCE_FROM_CENTER, 0.])
                 ),
                 rotation_rule=SameRotationRule(offset=torch.tensor(RotationMatrix(RollPitchYaw(0., 0., np.pi/2.)).matrix()))
             )

@@ -226,7 +226,7 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
                 # of axis/angle rotation, irrespective of weights.
                 offsets = []
                 for parent, child, _ in parent_child_pairs:
-                    angle, _ = recover_relative_angle_axis(parent, child, rot_rule.axis)
+                    angle, _, _ = recover_relative_angle_axis(parent, child, rot_rule.axis)
                     offsets.append(angle)
                 offsets = torch.stack(offsets)
                 lb = torch.min(offsets)

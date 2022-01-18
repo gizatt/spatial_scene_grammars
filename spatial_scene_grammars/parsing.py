@@ -76,6 +76,7 @@ from .nodes import *
 from .rules import *
 from .scene_grammar import *
 from .drake_interop import *
+from .torch_utils import invert_torch_tf
 
 '''
 ###############################################################################
@@ -130,80 +131,73 @@ def prepare_grammar_for_parsing(prog, grammar, optimize_parameters=False, inequa
             )
     return grammar
 
-
-def make_equivalent_sets(super_tree):
-    '''
-    Figure out which connected sets of nodes in the supertree have poses
-    that are  constrained to be exactly equal.
-    '''
-    equivalence_graph = nx.Graph()
-    equivalence_graph.add_nodes_from(super_tree.nodes)
-    for parent_node in super_tree.nodes:
-        children = super_tree.get_children(parent_node)
-        ## Get child rule list. Can't use get_children_and_rules
-        # here since we're operating on a supertree, so the standard
-        # scene tree logic for getting rules isn't correct.
-        if isinstance(parent_node, RepeatingSetNode):
-            rules = [parent_node.rule for k in range(len(children))]
-        elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
-            rules = parent_node.rules
-        elif isinstance(parent_node, TerminalNode):
-            rules = []
-        else:
-            raise ValueError("Unexpected node type: ", type(parent_node))
-        for child_node, rule in zip(children, rules):
-            # TODO(gizatt) We may have other rule types that, depending on
-            # parameters, imply equality constraints. They could be included
-            # here generally if we query the rule whether it is fully constraining
-            # at the current parameter setting.
-            if isinstance(rule.xyz_rule, SamePositionRule) and isinstance(rule.rotation_rule, SameRotationRule):
-                equivalence_graph.add_edge(parent_node, child_node)
-    equivalent_sets = [EquivalentSet(super_tree, nodes) for nodes in nx.connected_components(equivalence_graph)]
-    return equivalent_sets
-
-def make_equivalent_sets_for_R_and_t(super_tree):
-    '''
-    Figure out which connected sets of nodes in the supertree have translations
-    [or rotations] that are constrained to be exactly equal.
-    '''
-    t_equivalence_graph = nx.Graph()
-    R_equivalence_graph = nx.Graph()
-    t_equivalence_graph.add_nodes_from(super_tree.nodes)
-    R_equivalence_graph.add_nodes_from(super_tree.nodes)
-    for parent_node in super_tree.nodes:
-        children = super_tree.get_children(parent_node)
-        ## Get child rule list. Can't use get_children_and_rules
-        # here since we're operating on a supertree, so the standard
-        # scene tree logic for getting rules isn't correct.
-        if isinstance(parent_node, RepeatingSetNode):
-            rules = [parent_node.rule for k in range(len(children))]
-        elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
-            rules = parent_node.rules
-        elif isinstance(parent_node, TerminalNode):
-            rules = []
-        else:
-            raise ValueError("Unexpected node type: ", type(parent_node))
-        for child_node, rule in zip(children, rules):
-            # TODO(gizatt) We may have other rule types that, depending on
-            # parameters, imply equality constraints. They could be included
-            # here generally if we query the rule whether it is fully constraining
-            # at the current parameter setting.
-            if isinstance(rule.xyz_rule, SamePositionRule):
-                t_equivalence_graph.add_edge(parent_node, child_node)
-            if isinstance(rule.rotation_rule, SameRotationRule):
-                R_equivalence_graph.add_edge(parent_node, child_node)
-    t_equivalent_sets = [EquivalentSet(super_tree, nodes) for nodes in nx.connected_components(t_equivalence_graph)]
-    R_equivalent_sets = [EquivalentSet(super_tree, nodes) for nodes in nx.connected_components(R_equivalence_graph)]
-    return t_equivalent_sets, R_equivalent_sets
-
 class EquivalentSet():
-    def __init__(self, super_tree, nodes):
+    def __init__(self, super_tree, equivalence_graph, nodes):
+        '''
+            super_tree: Full supertree from the originating grammar.
+            equivalence_graph: A graph with edges indicating that a pair of nodes
+                are in the same equivalent set. Edges should be annotated
+                with the parent, child, and 4x4 matrix pose offset in the fixed-offset
+                relation.
+        '''
         self.super_tree = super_tree
         self.nodes = list(nodes)
         self.always_observable = None
 
+        # Take arbitrary node as root.
+        self.root_node = list(equivalence_graph.nodes)[0]
+        # Calculate offset from root node to each node in the spanning tree via
+        # a graph traversal.
+        edge_queue = [(self.root_node, n) for n in equivalence_graph.neighbors(self.root_node)]
+        # node_to_offset_from_root stores TF of node A in root node frame. (i.e. TF^{Root -> A})
+        self.node_to_offset_from_root = {self.root_node: torch.eye(4)}
+        while len(edge_queue) > 0:
+            outgoing, incoming = edge_queue.pop(0)
+            assert incoming not in self.node_to_offset_from_root.keys()
+
+            edge_data = equivalence_graph.get_edge_data(outgoing, incoming)
+            offset = edge_data["offset"]
+            if edge_data["parent"] is outgoing and edge_data["child"] is incoming:
+                pass
+            elif edge_data["parent"] is incoming and edge_data["child"] is outgoing:
+                offset = invert_torch_tf(offset)
+            else:
+                raise ValueError("Edge data doesn't match.")
+            # offset_drake_tf now contains the transform from outgoing to incoming,
+            # no matter which way we traversed the graph edge.
+
+            self.node_to_offset_from_root[incoming] = torch.matmul(
+                self.node_to_offset_from_root[outgoing],
+                offset
+            )
+            edge_queue += [(incoming, n) for n in equivalence_graph.neighbors(incoming)
+                            if n not in self.node_to_offset_from_root.keys()]
+        for node in self.nodes:
+            assert node in self.node_to_offset_from_root.keys(), "Spanning tree not connected?"
+
     def __iter__(self):
         return iter(self.nodes)
+
+    def get_canonical_pose_from_node_pose(self, node, tf):
+        # Returns the pose of the root node in the equivalent set
+        # given the pose of the node and its identity.
+        assert node in self.nodes, "Queried with node not in equivalent set."
+        # World -> A * inv (TF_Root -> A
+        return torch.matmul(tf, invert_torch_tf(self.node_to_offset_from_root[node]))
+    def get_node_pose_from_canonical_pose(self, node, tf):
+        # Returns the pose of the given node in the equivalent set
+        # given the canonical node and its identity.
+        assert node in self.nodes, "Queried with node not in equivalent set."
+        # World->Root * (TF_Root->A)
+        return torch.matmul(tf, self.node_to_offset_from_root[node])
+
+    def get_relative_node_pose(self, node_A, node_B):
+        # Returns transform from A to B.
+        assert node_A in self.nodes, "Queried with node not in equivalent set."
+        assert node_B in self.nodes, "Queried with node not in equivalent set."
+        root_to_A = self.node_to_offset_from_root[node_A]
+        root_to_B = self.node_to_offset_from_root[node_B]
+        return torch.matmul(invert_torch_tf(root_to_A), root_to_B)
 
     def is_always_observable(self):
         # Minimal caching to not do slightly-expensive recomputation
@@ -308,6 +302,83 @@ class EquivalentSet():
             return False
         else:
             return True
+
+    @staticmethod
+    def make_equivalent_sets(super_tree):
+        '''
+        Figure out which connected sets of nodes in the supertree have poses
+        that are  constrained to be exactly equal.
+        '''
+        equivalence_graph = nx.Graph()
+        equivalence_graph.add_nodes_from(super_tree.nodes)
+        for parent_node in super_tree.nodes:
+            children = super_tree.get_children(parent_node)
+            ## Get child rule list. Can't use get_children_and_rules
+            # here since we're operating on a supertree, so the standard
+            # scene tree logic for getting rules isn't correct.
+            if isinstance(parent_node, RepeatingSetNode):
+                rules = [parent_node.rule for k in range(len(children))]
+            elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
+                rules = parent_node.rules
+            elif isinstance(parent_node, TerminalNode):
+                rules = []
+            else:
+                raise ValueError("Unexpected node type: ", type(parent_node))
+            for child_node, rule in zip(children, rules):
+                # TODO(gizatt) We may have other rule types that, depending on
+                # parameters, imply equality constraints. They could be included
+                # here generally if we query the rule whether it is fully constraining
+                # at the current parameter setting.
+                if isinstance(rule.xyz_rule, SamePositionRule) and isinstance(rule.rotation_rule, SameRotationRule):
+                    offset = torch.eye(4, 4)
+                    offset[:3, :3] = rule.rotation_rule.offset
+                    offset[:3, 3] = rule.xyz_rule.offset
+                    equivalence_graph.add_edge(parent_node, child_node, parent=parent_node, child=child_node, offset=offset)
+        equivalent_sets = [EquivalentSet(super_tree, equivalence_graph.subgraph(nodes), nodes) for nodes in nx.connected_components(equivalence_graph)]
+        return equivalent_sets
+
+    @staticmethod
+    def make_equivalent_sets_for_R_and_t(super_tree):
+        '''
+        Figure out which connected sets of nodes in the supertree have translations
+        [or rotations] that are constrained to be exactly equal.
+        '''
+        t_equivalence_graph = nx.Graph()
+        R_equivalence_graph = nx.Graph()
+        t_equivalence_graph.add_nodes_from(super_tree.nodes)
+        R_equivalence_graph.add_nodes_from(super_tree.nodes)
+        for parent_node in super_tree.nodes:
+            children = super_tree.get_children(parent_node)
+            ## Get child rule list. Can't use get_children_and_rules
+            # here since we're operating on a supertree, so the standard
+            # scene tree logic for getting rules isn't correct.
+            if isinstance(parent_node, RepeatingSetNode):
+                rules = [parent_node.rule for k in range(len(children))]
+            elif isinstance(parent_node, (AndNode, OrNode, IndependentSetNode)):
+                rules = parent_node.rules
+            elif isinstance(parent_node, TerminalNode):
+                rules = []
+            else:
+                raise ValueError("Unexpected node type: ", type(parent_node))
+            for child_node, rule in zip(children, rules):
+                # TODO(gizatt) We may have other rule types that, depending on
+                # parameters, imply equality constraints. They could be included
+                # here generally if we query the rule whether it is fully constraining
+                # at the current parameter setting.
+                if isinstance(rule.xyz_rule, SamePositionRule):
+                    if not torch.allclose(rule.xyz_rule.offset, torch.zeros(3)):
+                        raise NotImplementedError("Nonzero xyz offset in separated equivalent sets isn't sanity-checked yet.")
+                    offset = torch.eye(4, 4)
+                    t_equivalence_graph.add_edge(parent_node, child_node, parent=parent_node, child=child_node, offset=offset)
+                if isinstance(rule.rotation_rule, SameRotationRule):
+                    if not torch.allclose(rule.rotation_rule.offset, torch.eye(3, 3)):
+                        raise NotImplementedError("Nonzero rotation offset in separated equivalent sets isn't sanity-checked yet.")
+                    offset = torch.eye(4, 4)
+                    R_equivalence_graph.add_edge(parent_node, child_node, parent=parent_node, child=child_node, offset=offset)
+
+        t_equivalent_sets = [EquivalentSet(super_tree, t_equivalence_graph.subgraph(nodes), nodes) for nodes in nx.connected_components(t_equivalence_graph)]
+        R_equivalent_sets = [EquivalentSet(super_tree, R_equivalence_graph.subgraph(nodes), nodes) for nodes in nx.connected_components(R_equivalence_graph)]
+        return t_equivalent_sets, R_equivalent_sets
 
 def _contains(obj, type_of_interest):
     if isinstance(obj, type_of_interest):
@@ -502,7 +573,6 @@ def attempt_tree_repair_in_place(tree_guess, root_node, candidate_intermediate_n
                 # Adding this edge will add the parent node into the
                 # tree if it's not already there.
                 tree_guess.add_edge(new_connection.parent_node, orphan_node)
-                print("Connecting %s to %s" % (new_connection.parent_node, orphan_node))
 
         ## Get ready for another loop.
         num_iterations += 1
@@ -624,7 +694,7 @@ def generate_intermediate_nodes_from_equivalent_sets(grammar, observed_nodes, ma
 
     # For translations and rotations separately, figure out which connected sets of nodes in the
     # supertree have translations [or rotations] that are constrained to be exactly equal.
-    t_equivalent_sets, R_equivalent_sets = make_equivalent_sets(super_tree)
+    t_equivalent_sets, R_equivalent_sets = EquivalentSet.make_equivalent_sets(super_tree)
 
     # All nodes will be annotated with _t_possibilities and _R_possibilities based
     # on equivalent set-to-observation correspondences.
@@ -864,7 +934,7 @@ def infer_mle_tree_with_mip_from_proposals(
     super_tree_root = super_tree.get_root()
     
     # Form equivalent sets.
-    equivalent_sets = make_equivalent_sets(super_tree)
+    equivalent_sets = EquivalentSet.make_equivalent_sets(super_tree)
 
     prog = MathematicalProgram()
 
@@ -913,6 +983,15 @@ def infer_mle_tree_with_mip_from_proposals(
     # translation and rotation options, and activation variables indicating which
     # of those is the current chosen translation/rotation for the set.
     def collapse_close_entries(xs, *cs_srcs):
+        # xs: A list of torch tensors.
+        # additional args: Lists of items matching the length of xs.
+        # Returns a list of the unique tensors in xs, and for each
+        # one, the sum of list members from the additional list arguments
+        # corresponding to each unique tensor.
+        # E.g.: collapse_close_entries([1, 1, 2], ['a', 'b', 'c']):
+        #        --> [1, 2], ['ab', 'c']
+        for cs in cs_srcs:
+            assert len(cs) == len(xs)
         new_xs = []
         cs_dsts = [[] for cs in cs_srcs]
         for i in range(len(xs)):
@@ -934,43 +1013,52 @@ def infer_mle_tree_with_mip_from_proposals(
         for node in equivalent_set:
             node._equivalent_set = equivalent_set
 
-        # For observed nodes, keep careful track of which
-        # correspondences are leading to which pose
-        # choice.
+
+        # For observed nodes, keep careful track of which correspondences are leading
+        # to which pose choice in the form of correspondence variables and the
+        # node identities.
         obs_tfs = []
         obs_cs = []
+        obs_nodes = []
         for node in equivalent_set:
             if node.observed:
-                obs_tfs += node._possible_tfs
+                obs_tfs += [equivalent_set.get_canonical_pose_from_node_pose(node, tf) for tf in node._possible_tfs]
                 obs_cs += node._correspondences
+                obs_nodes += [[node]] * len(node._possible_tfs)
         # Reduce this to a map of poses, and expressions indicating
         # whether that pose is active.
-        obs_tfs, obs_cs, obs_counts = collapse_close_entries(obs_tfs, obs_cs, np.ones(len(obs_cs)))
+        obs_tfs, obs_cs, obs_counts, obs_nodes = collapse_close_entries(obs_tfs, obs_cs, np.ones(len(obs_cs)), obs_nodes)
         if not equivalent_set.is_always_observable():
-            # For the unobserved nodes, just collect the additional
-            # pose choices available.
+            # Also collect proposed locations for unobserved nodes.
             unobs_tfs = []
+            unobs_nodes = []
             for node in equivalent_set:
                 if not node.observed:
-                    unobs_tfs += get_possible_tfs_for_nonobserved_node(node)
-            unobs_tfs, = collapse_close_entries(unobs_tfs)
+                    new_tfs = [equivalent_set.get_canonical_pose_from_node_pose(node, tf) for tf in get_possible_tfs_for_nonobserved_node(node)]
+                    unobs_tfs += new_tfs
+                    unobs_nodes += [[node]] * len(new_tfs)
+            unobs_tfs, unobs_nodes = collapse_close_entries(unobs_tfs, unobs_nodes)
             # Create binary activations for activation those additional correspondences.
             unobs_cs = prog.NewBinaryVariables(len(unobs_tfs), "%d_unobs_corrs" % set_k)
 
             # Combine into the complete selection of ts.
-            full_tfs, full_cs, full_counts = collapse_close_entries(
+            # obs_nodes and unobs_nodes are now lists of lists of nodes corresponding
+            # to possible obs and unobs tfs.
+            full_tfs, full_cs, full_counts, full_nodes = collapse_close_entries(
                 obs_tfs + unobs_tfs,
                 np.concatenate([obs_cs, unobs_cs]),
-                np.concatenate([obs_counts, np.ones(len(unobs_tfs))])
+                np.concatenate([obs_counts, np.ones(len(unobs_tfs))]),
+                obs_nodes + unobs_nodes
             )
         else:
-            full_tfs, full_cs, full_counts = obs_tfs, obs_cs, obs_counts
+            full_tfs, full_cs, full_counts, full_nodes = obs_tfs, obs_cs, obs_counts, obs_nodes
 
         # Constrain that exactly one entry in full_cs is allowed to be nonzero
         # by using an additional set of binaries constrained to be 1 when
         # the corresponding entry in full_cs is nonzero, and zero otherwise.
         equivalent_set.tf_correspondences = prog.NewBinaryVariables(len(full_tfs), "%d_t_corrs" % set_k)
         equivalent_set.tf_possibilities = full_tfs
+        equivalent_set.tf_home_nodes = full_nodes
         for tf_corr, cs_expression, count in zip(equivalent_set.tf_correspondences, full_cs, full_counts):
             prog.AddLinearConstraint(tf_corr >= cs_expression / count)
             prog.AddLinearConstraint(tf_corr <= cs_expression)
@@ -1029,15 +1117,15 @@ def infer_mle_tree_with_mip_from_proposals(
                 activation_pairs = []
                 scores = []
                 #print("%s->%s has %dx%d pairs" % (parent_node.name, child_node.name, len(parent_node._equivalent_set.tf_correspondences), len(child_node._equivalent_set.tf_correspondences)))
-                for parent_tf_active, parent_tf in zip(
+                for parent_tf_active, parent_canonical_tf in zip(
                         parent_node._equivalent_set.tf_correspondences,
                         parent_node._equivalent_set.tf_possibilities):
-                    for child_tf_active, child_tf in zip(
+                    for child_tf_active, child_canonical_tf in zip(
                             child_node._equivalent_set.tf_correspondences,
                             child_node._equivalent_set.tf_possibilities):
                         # Use supertree nodes as proxies for rule evaluation.
-                        parent_node.tf = parent_tf
-                        child_node.tf = child_tf
+                        parent_node.tf = parent_node._equivalent_set.get_node_pose_from_canonical_pose(parent_node, parent_canonical_tf)
+                        child_node.tf = child_node._equivalent_set.get_node_pose_from_canonical_pose(child_node, child_canonical_tf)
                         score = rule.score_child(parent_node, child_node)
                         if score < min_ll_for_consideration:
                             continue
@@ -1077,7 +1165,8 @@ def infer_mle_tree_with_mip_from_proposals(
                 prog.AddLinearConstraint(child_actives[k] >= child_actives[k+1])
 
             # Assert some arbitrary ordering to child poses: that they
-            # ascend in their x coordinate. We can calculate the x coordinate
+            # ascend in the x coordinate of their equivalent set's
+            # canonical poses. We can calculate the x coordinate
             # of children as a linear expression of the tf correspondence variable
             # and corresponding x coordinates. This constraint is deactivated by
             # a big M term if the second child in the comparison isn't active.
@@ -1207,7 +1296,10 @@ def infer_mle_tree_with_mip_from_proposals(
                 tf_actives = get_sol(node._equivalent_set.tf_correspondences)
 
                 assert np.isclose(sum(tf_actives), 1.), "Active node didn't have one active TF: sum %f" % sum(tf_actives)
-                tf = node._equivalent_set.tf_possibilities[np.argmax(tf_actives)]
+                canonical_tf = node._equivalent_set.tf_possibilities[np.argmax(tf_actives)]
+                tf = node._equivalent_set.get_node_pose_from_canonical_pose(node, canonical_tf)
+                if verbose > 1:
+                    print("Node %s getting tf %s" % (node, tf))
                 new_node = type(node)(tf)
                 new_node.rule_k = node.rule_k
                 optimized_tree.add_node(new_node)
@@ -1322,7 +1414,7 @@ def add_mle_tree_parsing_to_prog(
 
     # For translations and rotations separately, figure out which connected sets of nodes in the
     # supertree have translations [or rotations] that are constrained to be exactly equal.
-    t_equivalent_sets, R_equivalent_sets = make_equivalent_sets_for_R_and_t(super_tree)
+    t_equivalent_sets, R_equivalent_sets = EquivalentSet.make_equivalent_sets_for_R_and_t(super_tree)
 
     # For each set, figure out if activation of any node in the set implies that
     # an observed node will be active. Record the result and a reference to the
