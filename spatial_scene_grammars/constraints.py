@@ -61,3 +61,21 @@ class ContinuousVariableConstraint(Constraint):
 
 class TopologyConstraint(Constraint):
     pass
+
+class ObjectCountConstraint(TopologyConstraint):
+    def __init__(self, object_type, min_count, max_count):
+        self.object_type = object_type
+        super().__init__(lower_bound=torch.tensor(min_count), upper_bound=torch.tensor(max_count))
+    def eval(self, scene_tree):
+        num = len(list(scene_tree.find_nodes_by_type(self.object_type)))
+        return torch.tensor(num)
+
+class ChildCountConstraint(TopologyConstraint):
+    def __init__(self, parent_type, min_count, max_count):
+        self.parent_type = parent_type
+        super().__init__(lower_bound=torch.tensor(min_count), upper_bound=torch.tensor(max_count))
+    def eval(self, scene_tree):
+        child_counts = []
+        for parent_node in scene_tree.find_nodes_by_type(self.parent_type):
+            child_counts.append(len(scene_tree.successors(parent_node)))
+        return torch.tensor(child_counts)

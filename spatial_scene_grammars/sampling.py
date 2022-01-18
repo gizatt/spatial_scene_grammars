@@ -14,7 +14,7 @@ from pydrake.all import (
 )
 from .random_walk_kernel import RandomWalkKernel
 from .rules import *
-from .constraints import ContinuousVariableConstraint
+from .constraints import ContinuousVariableConstraint, TopologyConstraint, ContinuousVariableConstraint
 from .parsing import optimize_scene_tree_with_nlp
 from .torch_utils import interp_translation, interp_rotation
 from .drake_interop import (
@@ -25,6 +25,45 @@ from .drake_interop import (
 from pytorch3d.transforms.rotation_conversions import (
     euler_angles_to_matrix, axis_angle_to_matrix
 )
+
+def split_constraints(constraints):
+    topology_constraints = []
+    continuous_constraints = []
+    for c in constraints:
+        if isinstance(c, TopologyConstraint):
+            topology_constraints.append(c)
+        elif isinstance(c, ContinuousVariableConstraint):
+            continuous_constraints.append(c)
+        else:
+            raise ValueError("Bad constraint: not a topology or continuous variable constraint.")
+    return topology_constraints, continuous_constraints
+
+def eval_total_constraint_set_violation(scene_tree, constraints):
+    # Returns the total violation across all constraints, summed
+    # into one number.
+    total_violation = 0.
+    for constraint in constraints:
+        max_violation, lower_violation, upper_violation = constraint.eval_violation(scene_tree)
+        total_violation += torch.sum(torch.clamp(lower_violation, 0., np.inf))
+        total_violation += torch.sum(torch.clamp(upper_violation, 0., np.inf))
+    return total_violation
+
+def rejection_sample_under_constraints(
+        grammar, constraints, max_num_attempts):
+    # Try to rejection sample a reasonable configuration.
+    # (Keep track of the "current best" in case we never accept a
+    # configuration so we have a least-violating-tree to return.)
+    best_tree = None
+    best_violation = torch.tensor(np.inf)
+    for k in range(max_num_attempts):
+        tree = grammar.sample_tree()
+        total_violation = eval_total_constraint_set_violation(tree, constraints)
+        if total_violation <= torch.tensor(0.0):
+            return tree, True
+        if torch.isinf(best_violation) or total_violation <= best_violation:
+            best_violation = total_violation
+            best_tree = tree
+    return best_tree, False
 
 class NonpenetrationConstraint(ContinuousVariableConstraint):
     def __init__(self, allowed_penetration_margin=0.0):
@@ -104,7 +143,7 @@ class NonpenetrationConstraint(ContinuousVariableConstraint):
             depth = torch.sum((p_WCb_torch - p_WCa_torch) * nhat_BA_W_torch)
 
             # Sanity-check that we did things right.
-            assert np.abs(point_pair.depth - depth.item()) < 1E-6
+            assert np.abs(point_pair.depth - depth.item()) < 1E-6, "%s vs %s" % (point_pair.depth, depth.item())
             total_score += depth*10.0 # TODO Why the scaling? It's tied to my factor definition
                                       # for evaluation constraints with HMC -- currently errors
                                       # on the ~0.01 scale get reasonable probability. This

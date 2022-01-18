@@ -7,6 +7,8 @@ from spatial_scene_grammars.nodes import *
 from spatial_scene_grammars.rules import *
 from spatial_scene_grammars.scene_grammar import *
 from spatial_scene_grammars.drake_interop import *
+from spatial_scene_grammars.constraints import *
+
 
 import pydrake
 import pydrake.geometry as pydrake_geom
@@ -288,7 +290,7 @@ class SharedDishes(RepeatingSetNode):
                 child_type=ServingDish,
                 xyz_rule=ParentFrameGaussianOffsetRule(
                     mean=torch.tensor([0.0, 0.0, 0.00]),
-                    variance=torch.tensor([0.025, 0.025, 0.0001])),
+                    variance=torch.tensor([0.02, 0.02, 0.0001])),
                 rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
                     RotationMatrix(), np.array([1000, 1000, 1])
                 )
@@ -310,7 +312,7 @@ class SharedTeapots(RepeatingSetNode):
                 child_type=Teapot,
                 xyz_rule=ParentFrameGaussianOffsetRule(
                     mean=torch.tensor([0.0, 0.0, 0.00]),
-                    variance=torch.tensor([0.025, 0.025, 0.0001])),
+                    variance=torch.tensor([0.01, 0.01, 0.0001])),
                 rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
                     RotationMatrix(), np.array([1000, 1000, 1])
                 )
@@ -396,4 +398,70 @@ class Table(AndNode):
             ),
         ]
 
-    
+
+# Corresponding constraint set for the grammar.
+class ObjectsOnTableConstraint(ContinuousVariableConstraint):
+    def __init__(self):
+        lb = torch.tensor([-Table.WIDTH/2.+0.15, -Table.WIDTH/2.+0.15, 0.001])
+        ub = torch.tensor([Table.WIDTH/2.-0.15, Table.WIDTH/2.-0.15, 100.])
+        super().__init__(
+            lower_bound=lb,
+            upper_bound=ub
+        )
+    def eval(self, scene_tree):
+        tables = scene_tree.find_nodes_by_type(Table)
+        xyzs = [] # in parent table frame
+        for table in tables:
+            # Collect table children xyz poses in table frame
+            objs = [node for node in scene_tree.get_children_recursive(table) if isinstance(node, TabletopObjectTypes)]
+            for obj in objs:
+                offset = torch.matmul(table.rotation.T, obj.translation - table.translation)
+                xyzs.append(offset)
+        if len(xyzs) > 0:
+            return torch.stack(xyzs, axis=0)
+        else:
+            return torch.empty(size=(0, 3))
+    def add_to_ik_prog(self, scene_tree, ik, mbp, mbp_context, node_to_free_body_ids_map):
+        raise NotImplementedError()
+
+class ObjectSpacingConstraint(ContinuousVariableConstraint):
+    # Objects all a minimum distance apart on tabletop
+    def __init__(self):
+        lb = torch.tensor([0.])
+        ub = torch.tensor([np.inf])
+        super().__init__(
+            lower_bound=lb,
+            upper_bound=ub
+        )
+    def eval(self, scene_tree):
+        tables = scene_tree.find_nodes_by_type(Table)
+        all_dists = []
+        for table in tables:
+            objs = [node for node in scene_tree.get_children_recursive(table) if isinstance(node, TabletopObjectTypes)
+                    and not isinstance(scene_tree.get_parent(node), SteamerBottom)
+                    and not isinstance(node, FirstChopstick)
+                    and not isinstance(node, SecondChopstick)]
+            if len(objs) <= 1:
+                print("no objects")
+                continue
+            xys = torch.stack([obj.translation[:2] for obj in objs], axis=0)
+            keepout_dists = torch.tensor([obj.KEEPOUT_RADIUS for obj in objs])
+            N = xys.shape[0]
+            xys_rowwise = xys.unsqueeze(1).expand(-1, N, -1)
+            keepout_dists_rowwise = keepout_dists.unsqueeze(1).expand(-1, N)
+            xys_colwise = xys.unsqueeze(0).expand(N, -1, -1)
+            keepout_dists_colwise = keepout_dists.unsqueeze(0).expand(N, -1)
+            dists = (xys_rowwise - xys_colwise).square().sum(axis=-1)
+            keepout_dists = (keepout_dists_rowwise + keepout_dists_colwise)
+
+            # Get only lower triangular non-diagonal elems
+            rows, cols = torch.tril_indices(N, N, -1)
+            # Make sure pairwise dists > keepout dists
+            dists = (dists - keepout_dists.square())[rows, cols].reshape(-1, 1)
+            all_dists.append(dists)
+        if len(all_dists) > 0:
+            return torch.cat(all_dists, axis=0)
+        else:
+            return torch.empty(size=(0, 1))
+    def add_to_ik_prog(self, scene_tree, ik, mbp, mbp_context, node_to_free_body_ids_map):
+        raise NotImplementedError()
