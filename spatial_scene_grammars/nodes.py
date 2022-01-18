@@ -302,7 +302,10 @@ class RepeatingSetNode(Node):
     def get_parameter_prior(cls):
         # Default parameter prior is a uniform distribution
         # over [0, 1].
-        return dist.Uniform(torch.zeros(1), torch.ones(1) + 1E-6)
+        # Unfortunately have to construct a prototype of the
+        # class to get how many children it can have...
+        prototype = cls(torch.eye(4))
+        return dist.Dirichlet(torch.ones_like(prototype.rule_probs))
 
     def sample_children(self):
         children = []
@@ -349,7 +352,7 @@ class IndependentSetNode(Node):
         # Default parameter prior is a uniform distribution over
         # [0, 1] for each node.
         n_rules = len(cls.generate_rules())
-        return dist.Uniform(torch.zeros(n_rules), torch.ones(n_rules))
+        return dist.Uniform(torch.zeros(n_rules), torch.ones(n_rules) + 1E-6)
 
     def sample_children(self):
         children = []

@@ -240,11 +240,11 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
                 weights = weights / torch.sum(weights) # Renormalize, as we may not have one-to-one parent-child pair to rules.
                 new_m, new_z = BinghamDistribution.fit(child_quats, weights)
                 # Sanity-check  before reassigning
-                if torch.allclose(torch.matmul(new_m.T, new_m), torch.eye(4)) and all(torch.isfinite(new_z)):
+                if torch.allclose(torch.matmul(new_m.T, new_m), torch.eye(4), atol=1E-4) and all(torch.isfinite(new_z)):
                     rot_param_dict["M"].set(new_m)
                     rot_param_dict["Z"].set(torch.clip(new_z, -1E4, 0.))
                 else:
-                    logging.error("Got bad M and Z from fit: ", new_m, new_z)
+                    logging.error("Got bad M and Z from fit: ", new_m, new_z, torch.matmul(new_m.T, new_m))
             elif type(rot_rule) == ParentFrameBinghamRotationRule:
                 # Same as  above case, but use parent/child rotation delta.
                 child_quats = [
@@ -256,11 +256,11 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
                 weights = weights / torch.sum(weights) # Renormalize, as we may not have one-to-one parent-child pair to rules.
                 new_m, new_z = BinghamDistribution.fit(child_quats, weights)
                 # Sanity-check  before reassigning
-                if torch.allclose(torch.matmul(new_m.T, new_m), torch.eye(4)) and all(torch.isfinite(new_z)):
+                if torch.allclose(torch.matmul(new_m.T, new_m), torch.eye(4), atol=1E-4) and all(torch.isfinite(new_z)):
                     rot_param_dict["M"].set(new_m)
                     rot_param_dict["Z"].set(torch.clip(new_z, -1E4, 0.))
                 else:
-                    logging.error("Got bad M and Z from fit: ", new_m, new_z)
+                    logging.error("Got bad M and Z from fit: ", new_m, new_z, torch.matmul(new_m.T, new_m))
             else:
                 raise NotImplementedError("type %s under node %s" % (type(rot_rule), node_type))
 

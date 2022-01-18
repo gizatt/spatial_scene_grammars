@@ -225,7 +225,7 @@ class SamePositionRule(XyzProductionRule):
                 parent.translation + torch.matmul(parent.rotation, self.offset),
                 child.translation, atol=1E-3):
             return torch.tensor(0.)
-        logging.warning("SamePositionRule mismatch: %s vs %s" % (parent.translation + torch.matmul(parent.rotation, self.offset), child.translation))
+        logging.warning("SamePositionRule mismatch (%s->%s): %s vs %s" % (parent, child, parent.translation + torch.matmul(parent.rotation, self.offset), child.translation))
         return torch.tensor(-np.inf)
     def get_site_values(self, parent, child):
         return {}

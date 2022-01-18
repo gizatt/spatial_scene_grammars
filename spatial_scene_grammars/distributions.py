@@ -478,7 +478,7 @@ class BinghamDistribution(TorchDistribution):
 
         # Check for orthogonality of m.
         diff = torch.matmul(param_m, param_m.T) - torch.eye(dist_dim)
-        assert torch.allclose(diff, torch.zeros(diff.shape)), \
+        assert torch.allclose(diff, torch.zeros(diff.shape), atol=1E-4), \
             "param_m is not orthogonal."
 
     @staticmethod

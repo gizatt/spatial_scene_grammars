@@ -1,3 +1,5 @@
 models.zip filter=lfs diff=lfs merge=lfs -text
 example_feasible_sampled_scene.pickle filter=lfs diff=lfs merge=lfs -text
 render*.blend* filter=lfs diff=lfs merge=lfs -text
+target_dataset_grammar_state_dict.torch filter=lfs diff=lfs merge=lfs -text
+target_dataset_examples.pickle filter=lfs diff=lfs merge=lfs -text
