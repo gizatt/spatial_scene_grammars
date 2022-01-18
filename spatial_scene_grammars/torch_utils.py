@@ -29,6 +29,12 @@ def inv_sigmoid(y, eps=1E-16):
     y = torch.clip(y, min=eps, max=1.-eps)
     return -torch.log((1 / y) - 1)
 
+def invert_torch_tf(tf):
+    tf_inv = torch.empty(4, 4)
+    tf_inv[:3, :3] = tf[:3, :3].T
+    tf_inv[:3, 3] = -torch.matmul(tf_inv[:3, :3], tf[:3, 3])
+    tf_inv[3, :] = torch.tensor([0, 0, 0, 1])
+    return tf_inv
 
 class ConstrainedParameter(torch.nn.Module):
     # Based heavily on pyro's constrained param system, but detached

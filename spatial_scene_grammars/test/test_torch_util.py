@@ -25,6 +25,15 @@ def set_seed(request):
     pyro.set_rng_seed(request.param)
     return RandomGenerator(request.param)
 
+def test_inverse_tf(set_seed):
+    # Test against drake
+    t = np.random.uniform(-1, 1, size=3)
+    R = UniformlyRandomRotationMatrix(set_seed)
+    drake_tf = RigidTransform(p=t, R=R)
+    tf = drake_tf_to_torch_tf(drake_tf)
+    tf_inv = invert_torch_tf(tf)
+    assert torch.allclose(tf_inv, drake_tf_to_torch_tf(drake_tf.inverse()))
+
 def test_inv_softplus(set_seed):
     x_test = torch.abs(torch.normal(0., 1., size=(100,))) + 0.01
     assert torch.allclose(inv_softplus(torch.nn.functional.softplus(x_test)), x_test)
