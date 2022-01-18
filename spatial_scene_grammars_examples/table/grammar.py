@@ -402,8 +402,8 @@ class Table(AndNode):
 # Corresponding constraint set for the grammar.
 class ObjectsOnTableConstraint(ContinuousVariableConstraint):
     def __init__(self):
-        lb = torch.tensor([-Table.WIDTH/2.+0.15, -Table.WIDTH/2.+0.15, 0.001])
-        ub = torch.tensor([Table.WIDTH/2.-0.15, Table.WIDTH/2.-0.15, 100.])
+        lb = torch.tensor([-Table.WIDTH/2.+0.15, -Table.WIDTH/2.+0.15, -0.02])
+        ub = torch.tensor([Table.WIDTH/2.-0.15, Table.WIDTH/2.-0.15, 1.])
         super().__init__(
             lower_bound=lb,
             upper_bound=ub
