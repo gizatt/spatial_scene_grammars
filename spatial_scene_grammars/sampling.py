@@ -22,6 +22,7 @@ from .drake_interop import (
     build_nonpenetration_constraint,
     resolve_sg_proximity_id_to_mbp_id
 )
+from .visualization import draw_scene_tree_structure_meshcat
 from pytorch3d.transforms.rotation_conversions import (
     euler_angles_to_matrix, axis_angle_to_matrix
 )
@@ -354,7 +355,7 @@ def do_fixed_structure_mcmc(grammar, scene_tree, num_samples=500,
 def do_fixed_structure_hmc_with_constraint_penalties(
         grammar, original_tree, num_samples=100, subsample_step=5, verbose=0, kernel_type="NUTS",
         fix_observeds=False, with_nonpenetration=False, with_static_stability=False, 
-        zmq_url=None, prefix="hmc_sample", constraints=[], **kwargs):
+        zmq_url=None, prefix="hmc_sample", constraints=[], structure_vis_kwargs={}, **kwargs):
     ''' Given a scene tree, resample its continuous variables
     (i.e. the node poses) while keeping the root and observed
     node poses fixed, and trying to keep the constraints implied
@@ -463,6 +464,7 @@ def do_fixed_structure_hmc_with_constraint_penalties(
                 for body_id in body_ids:
                     mbp.SetFreeBodyPose(mbp_context, mbp.get_body(body_id), torch_tf_to_drake_tf(node.tf))
             diagram.Publish(diagram_context)
+            draw_scene_tree_structure_meshcat(scene_tree, zmq_url=zmq_url,  prefix=prefix + "/structure", **structure_vis_kwargs)
             time.sleep(0.1)
     else:
         hook_fn = None
