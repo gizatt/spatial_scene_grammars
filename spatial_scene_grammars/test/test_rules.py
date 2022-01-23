@@ -261,12 +261,12 @@ def test_WorldFrameBinghamRotationRule(set_seed):
 
 xyz_rules = [
     SamePositionRule(),
-    WorldFrameBBoxRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*3.),
-    WorldFrameBBoxOffsetRule.from_bounds(lb=torch.zeros(3), ub=torch.ones(3)*5.),
-    WorldFrameGaussianOffsetRule(mean=torch.zeros(3), variance=torch.ones(3)),
-    ParentFrameGaussianOffsetRule(mean=torch.zeros(3), variance=torch.ones(3)),
+    WorldFrameBBoxRule.from_bounds(lb=torch.tensor([0.0, 0.2, 0.3]), ub=torch.ones(3)*3.),
+    WorldFrameBBoxOffsetRule.from_bounds(lb=torch.tensor([0.0, 0.2, 0.3]), ub=torch.ones(3)*5.),
+    WorldFrameGaussianOffsetRule(mean=torch.tensor([0.0, 0.2, 0.3]), variance=torch.ones(3)),
+    ParentFrameGaussianOffsetRule(mean=torch.tensor([0.0, 0.2, 0.3]), variance=torch.ones(3)),
     WorldFramePlanarGaussianOffsetRule(
-        mean=torch.zeros(2), variance=torch.ones(2), plane_transform=RigidTransform(p=np.array([1., 2., 3.]), rpy=RollPitchYaw(1., 2., 3.)))
+        mean=torch.tensor([0.0, 0.2]), variance=torch.ones(2), plane_transform=RigidTransform(p=np.array([1., 2., 3.]), rpy=RollPitchYaw(1., 2., 3.)))
 ]
 rotation_rules = [
     SameRotationRule(),
@@ -284,6 +284,8 @@ def test_ProductionRule(set_seed, xyz_rule, rotation_rule):
         rotation_rule=rotation_rule
     )
     parent = make_dummy_node()
+    parent.translation = dist.Normal(torch.zeros(3), torch.ones(3)).sample()
+    parent.rotation = torch.tensor(UniformlyRandomRotationMatrix(set_seed).matrix())
     child = rule.sample_child(parent)
     rule.score_child(parent, child)
 

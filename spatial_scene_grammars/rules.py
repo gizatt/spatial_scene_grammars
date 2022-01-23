@@ -412,6 +412,10 @@ class ParentFrameGaussianOffsetRule(WorldFrameGaussianOffsetRule):
     terms arising from rotating the offsets out of the parent frame.'''
     def sample_xyz(self, parent):
         return parent.translation + torch.matmul(parent.rotation, pyro.sample("ParentFrameGaussianOffsetRule_xyz", self.xyz_dist))
+    def score_child(self, parent, child):
+        return self.xyz_dist.log_prob(
+            torch.matmul(parent.rotation.T, child.translation - parent.translation)
+        ).sum()
     def get_site_values(self, parent, child):
         offset_in_parent_frame = torch.matmul(parent.rotation.T, child.translation - parent.translation)
         return {"ParentFrameGaussianOffsetRule_xyz": SiteValue(self.xyz_dist, offset_in_parent_frame)}
