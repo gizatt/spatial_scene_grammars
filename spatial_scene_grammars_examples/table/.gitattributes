@@ -6,3 +6,5 @@ target_dataset_examples.pickle filter=lfs diff=lfs merge=lfs -text
 post_fit_grammar_draws.pickle filter=lfs diff=lfs merge=lfs -text
 post_fit_grammar_state_dict.torch filter=lfs diff=lfs merge=lfs -text
 pre_fit_grammar_ filter=lfs diff=lfs merge=lfs -text
+fit_em_baseline.pickle filter=lfs diff=lfs merge=lfs -text
+fit_grammar_baseline.torch filter=lfs diff=lfs merge=lfs -text

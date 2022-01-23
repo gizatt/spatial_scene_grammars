@@ -135,6 +135,7 @@ def fit_grammar_params_to_sample_sets_with_uninformative_prior(grammar, posterio
             for (_, children, _), weight in zip(observed_child_sets, observed_child_sets_weights):
                 for child in children:
                     count[child.rule_k] += weight
+            count = count / torch.sum(observed_child_sets_weights)
             count = torch.clip(count, min_weight, 1.-min_weight)
             grammar.params_by_node_type[node_type.__name__].set(count)
         elif issubclass(node_type, TerminalNode):

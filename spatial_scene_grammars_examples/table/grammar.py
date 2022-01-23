@@ -139,7 +139,7 @@ class SteamerBottom(OrNode):
         )
         super().__init__(
             tf=tf,
-            rule_probs=torch.tensor([0.2, 0.5, 0.3]),
+            rule_probs=torch.tensor([0.25, 0.4, 0.35]),
             physics_geometry_info=geom,
             observed=True
         )
@@ -191,11 +191,11 @@ TabletopObjectTypes = (
     FirstChopstick, SecondChopstick
 )
 
-class PlaceSetting(IndependentSetNode):
+
+class PersonalPlateAndTeacup(AndNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            rule_probs=torch.tensor([0.9, 0.9]),
             physics_geometry_info=None,
             observed=False
         )
@@ -219,7 +219,49 @@ class PlaceSetting(IndependentSetNode):
                 rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
                     RotationMatrix(), np.array([1000, 1000, 1])
                 )
+            )
+        ]
+        return rules
+
+class PlaceSetting(OrNode):
+    def __init__(self, tf):
+        super().__init__(
+            tf=tf,
+            rule_probs=torch.tensor([0.7, 0.025, 0.025, 0.2]),
+            physics_geometry_info=None,
+            observed=False
+        )
+    @classmethod
+    def generate_rules(cls):
+        rules = [
+            ProductionRule(
+                child_type=PersonalPlateAndTeacup,
+                xyz_rule=SamePositionRule(),
+                rotation_rule=SameRotationRule()
             ),
+            ProductionRule(
+                child_type=PersonalPlate,
+                xyz_rule=ParentFrameGaussianOffsetRule(
+                    mean=torch.tensor([0.0, 0.0, 0.00]),
+                    variance=torch.tensor([0.001, 0.001, 0.0001])),
+                rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
+                    RotationMatrix(), np.array([1000, 1000, 1])
+                )
+            ),
+            ProductionRule(
+                child_type=Teacup,
+                xyz_rule=ParentFrameGaussianOffsetRule(
+                    mean=torch.tensor([0.25, 0.0, 0.00]),
+                    variance=torch.tensor([0.001, 0.005, 0.0001])),
+                rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
+                    RotationMatrix(), np.array([1000, 1000, 1])
+                )
+            ),
+            ProductionRule(
+                child_type=Null,
+                xyz_rule=SamePositionRule(),
+                rotation_rule=SameRotationRule()
+            )
             #ProductionRule(
             #    child_type=FirstChopstick,
             #    xyz_rule=ParentFrameGaussianOffsetRule(
@@ -232,12 +274,11 @@ class PlaceSetting(IndependentSetNode):
         ]
         return rules
 
-class PlaceSettings(IndependentSetNode):
+class PlaceSettings(AndNode):
     DISTANCE_FROM_CENTER = 0.5
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            rule_probs=torch.tensor([0.8, 0.8, 0.8, 0.8]),
             physics_geometry_info=None,
             observed=False
         )
@@ -323,7 +364,7 @@ class SharedSteamers(RepeatingSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
-            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.5, max_children=3, start_at_one=True),
+            rule_probs=RepeatingSetNode.get_geometric_rule_probs(p=0.6, max_children=4, start_at_one=True),
             physics_geometry_info=None,
             observed=False
         )
