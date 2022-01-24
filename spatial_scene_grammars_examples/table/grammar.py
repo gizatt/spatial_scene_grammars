@@ -506,3 +506,29 @@ class ObjectSpacingConstraint(ContinuousVariableConstraint):
             return torch.empty(size=(0, 1))
     def add_to_ik_prog(self, scene_tree, ik, mbp, mbp_context, node_to_free_body_ids_map):
         raise NotImplementedError()
+
+class TallStackConstraint(TopologyConstraint):
+    # The tallest stack of steamers is at least 4 steamers tall.
+    def __init__(self):
+        lb = torch.tensor([4.])
+        ub = torch.tensor([np.inf])
+        super().__init__(
+            lower_bound=lb,
+            upper_bound=ub
+        )
+    def eval(self, scene_tree):
+        steamers = scene_tree.find_nodes_by_type(SteamerBottom)
+        tallest_stack = 0
+        # For each steamer, count how many parents it has that
+        # are SteamerBottoms before hitting something else.
+        # This #+1 is the number of steamers in the stack.
+        for steamer in steamers:
+            current_steamer = steamer
+            stack = 0
+            while isinstance(current_steamer, SteamerBottom):
+                stack += 1
+                current_steamer = scene_tree.get_parent(current_steamer)
+            tallest_stack = max(tallest_stack, stack)
+        return torch.tensor([tallest_stack])
+
+        

@@ -14,7 +14,7 @@ from pydrake.all import (
 )
 from .random_walk_kernel import RandomWalkKernel
 from .rules import *
-from .constraints import ContinuousVariableConstraint, TopologyConstraint, ContinuousVariableConstraint
+from .constraints import ContinuousVariableConstraint, TopologyConstraint
 from .parsing import optimize_scene_tree_with_nlp
 from .torch_utils import interp_translation, interp_rotation
 from .drake_interop import (
@@ -50,18 +50,19 @@ def eval_total_constraint_set_violation(scene_tree, constraints):
     return total_violation
 
 def rejection_sample_under_constraints(
-        grammar, constraints, max_num_attempts):
+        grammar, constraints, max_num_attempts, detach=False):
     # Try to rejection sample a reasonable configuration.
     # (Keep track of the "current best" in case we never accept a
     # configuration so we have a least-violating-tree to return.)
     best_tree = None
     best_violation = torch.tensor(np.inf)
     for k in range(max_num_attempts):
-        tree = grammar.sample_tree()
+        tree = grammar.sample_tree(detach=detach)
         total_violation = eval_total_constraint_set_violation(tree, constraints)
         if total_violation <= torch.tensor(0.0):
             return tree, True
         if torch.isinf(best_violation) or total_violation <= best_violation:
+            print(k, best_violation)
             best_violation = total_violation
             best_tree = tree
     return best_tree, False
