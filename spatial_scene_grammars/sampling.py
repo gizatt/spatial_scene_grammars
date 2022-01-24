@@ -14,7 +14,7 @@ from pydrake.all import (
 )
 from .random_walk_kernel import RandomWalkKernel
 from .rules import *
-from .constraints import ContinuousVariableConstraint, TopologyConstraint
+from .constraints import PoseConstraint, StructureConstraint
 from .parsing import optimize_scene_tree_with_nlp
 from .torch_utils import interp_translation, interp_rotation
 from .drake_interop import (
@@ -31,9 +31,9 @@ def split_constraints(constraints):
     topology_constraints = []
     continuous_constraints = []
     for c in constraints:
-        if isinstance(c, TopologyConstraint):
+        if isinstance(c, StructureConstraint):
             topology_constraints.append(c)
-        elif isinstance(c, ContinuousVariableConstraint):
+        elif isinstance(c, PoseConstraint):
             continuous_constraints.append(c)
         else:
             raise ValueError("Bad constraint: not a topology or continuous variable constraint.")
@@ -62,12 +62,11 @@ def rejection_sample_under_constraints(
         if total_violation <= torch.tensor(0.0):
             return tree, True
         if torch.isinf(best_violation) or total_violation <= best_violation:
-            print(k, best_violation)
             best_violation = total_violation
             best_tree = tree
     return best_tree, False
 
-class NonpenetrationConstraint(ContinuousVariableConstraint):
+class NonpenetrationConstraint(PoseConstraint):
     def __init__(self, allowed_penetration_margin=0.0):
         ''' penetration_margin > 0, specifies penetration amounts we'll allow. '''
         self.allowed_penetration_margin = allowed_penetration_margin

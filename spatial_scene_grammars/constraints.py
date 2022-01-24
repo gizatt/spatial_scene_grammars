@@ -56,13 +56,13 @@ class Constraint():
         return max_violation, lower_violation, upper_violation
 
 
-class ContinuousVariableConstraint(Constraint):
+class PoseConstraint(Constraint):
     pass
 
-class TopologyConstraint(Constraint):
+class StructureConstraint(Constraint):
     pass
 
-class ObjectCountConstraint(TopologyConstraint):
+class ObjectCountConstraint(StructureConstraint):
     def __init__(self, object_type, min_count, max_count):
         self.object_type = object_type
         super().__init__(lower_bound=torch.tensor(min_count), upper_bound=torch.tensor(max_count))
@@ -70,7 +70,7 @@ class ObjectCountConstraint(TopologyConstraint):
         num = len(list(scene_tree.find_nodes_by_type(self.object_type)))
         return torch.tensor(num)
 
-class ChildCountConstraint(TopologyConstraint):
+class ChildCountConstraint(StructureConstraint):
     def __init__(self, parent_type, min_count, max_count):
         self.parent_type = parent_type
         super().__init__(lower_bound=torch.tensor(min_count), upper_bound=torch.tensor(max_count))

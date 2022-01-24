@@ -441,7 +441,7 @@ class Table(AndNode):
 
 
 # Corresponding constraint set for the grammar.
-class ObjectsOnTableConstraint(ContinuousVariableConstraint):
+class ObjectsOnTableConstraint(PoseConstraint):
     def __init__(self):
         lb = torch.tensor([-Table.WIDTH/2.+0.15, -Table.WIDTH/2.+0.15, -0.02])
         ub = torch.tensor([Table.WIDTH/2.-0.15, Table.WIDTH/2.-0.15, 1.])
@@ -465,7 +465,7 @@ class ObjectsOnTableConstraint(ContinuousVariableConstraint):
     def add_to_ik_prog(self, scene_tree, ik, mbp, mbp_context, node_to_free_body_ids_map):
         raise NotImplementedError()
 
-class ObjectSpacingConstraint(ContinuousVariableConstraint):
+class ObjectSpacingConstraint(PoseConstraint):
     # Objects all a minimum distance apart on tabletop
     def __init__(self):
         lb = torch.tensor([0.])
@@ -507,7 +507,7 @@ class ObjectSpacingConstraint(ContinuousVariableConstraint):
     def add_to_ik_prog(self, scene_tree, ik, mbp, mbp_context, node_to_free_body_ids_map):
         raise NotImplementedError()
 
-class TallStackConstraint(TopologyConstraint):
+class TallStackConstraint(StructureConstraint):
     # The tallest stack of steamers is at least 4 steamers tall.
     def __init__(self):
         lb = torch.tensor([4.])
