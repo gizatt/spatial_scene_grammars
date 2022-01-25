@@ -508,7 +508,7 @@ class ObjectSpacingConstraint(PoseConstraint):
         raise NotImplementedError()
 
 class TallStackConstraint(StructureConstraint):
-    # The tallest stack of steamers is at least 4 steamers tall.
+    # The largest stack of steamers is at least 4 steamers tall.
     def __init__(self):
         lb = torch.tensor([4.])
         ub = torch.tensor([np.inf])
@@ -531,4 +531,22 @@ class TallStackConstraint(StructureConstraint):
             tallest_stack = max(tallest_stack, stack)
         return torch.tensor([tallest_stack])
 
+class NumStacksConstraint(StructureConstraint):
+    # At least 3 stacks.
+    def __init__(self):
+        lb = torch.tensor([3.])
+        ub = torch.tensor([np.inf])
+        super().__init__(
+            lower_bound=lb,
+            upper_bound=ub
+        )
+    def eval(self, scene_tree):
+        shared_steamers = list(scene_tree.find_nodes_by_type(SharedSteamers))
+        assert len(shared_steamers) <= 1
+        if len(shared_steamers) == 0:
+            return torch.zeros(1)
+
+        return torch.tensor([
+            len(list(scene_tree.successors(shared_steamers[0])))
+        ])
         

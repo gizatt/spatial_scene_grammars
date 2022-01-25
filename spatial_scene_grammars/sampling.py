@@ -50,7 +50,7 @@ def eval_total_constraint_set_violation(scene_tree, constraints):
     return total_violation
 
 def rejection_sample_under_constraints(
-        grammar, constraints, max_num_attempts, detach=False):
+        grammar, constraints, max_num_attempts, detach=False, verbose=0):
     # Try to rejection sample a reasonable configuration.
     # (Keep track of the "current best" in case we never accept a
     # configuration so we have a least-violating-tree to return.)
@@ -64,6 +64,8 @@ def rejection_sample_under_constraints(
         if torch.isinf(best_violation) or total_violation <= best_violation:
             best_violation = total_violation
             best_tree = tree
+    if verbose > 0:
+        print("Sampled in %d iters" % k)
     return best_tree, False
 
 class NonpenetrationConstraint(PoseConstraint):
