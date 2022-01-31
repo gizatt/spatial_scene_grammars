@@ -466,7 +466,7 @@ def do_fixed_structure_hmc_with_constraint_penalties(
                 for body_id in body_ids:
                     mbp.SetFreeBodyPose(mbp_context, mbp.get_body(body_id), torch_tf_to_drake_tf(node.tf))
             diagram.Publish(diagram_context)
-            draw_scene_tree_structure_meshcat(scene_tree, zmq_url=zmq_url,  prefix=prefix + "/structure", **structure_vis_kwargs)
+            draw_scene_tree_structure_meshcat(scene_tree, zmq_url=zmq_url,  prefix=prefix + "/structure", delete=False, **structure_vis_kwargs)
             time.sleep(0.1)
     else:
         hook_fn = None

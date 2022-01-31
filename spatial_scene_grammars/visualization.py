@@ -52,7 +52,7 @@ def draw_scene_tree_contents_meshcat(scene_tree, prefix="scene", zmq_url=None, a
 
 def draw_scene_tree_structure_meshcat(scene_tree, prefix="scene_tree", zmq_url=None,
         alpha=0.775, node_sphere_size=0.05, linewidth=2, with_triad=True, quiet=True,
-        color_by_score=None):
+        color_by_score=None, delete=True):
     # Color by score can be a tuple of min, max score. It'll go from red at min score
     # to blue at max score.
     # Do actual drawing in meshcat, starting from root of tree
@@ -66,7 +66,8 @@ def draw_scene_tree_structure_meshcat(scene_tree, prefix="scene_tree", zmq_url=N
     else:
         vis = meshcat.Visualizer(zmq_url=zmq_url or "tcp://127.0.0.1:6000")
 
-    vis[prefix].delete()
+    if delete:
+        vis[prefix].delete()
     node_queue = [root_node]
     
     # Assign functionally random colors to each new node

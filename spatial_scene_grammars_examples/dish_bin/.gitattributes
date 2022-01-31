@@ -2,3 +2,8 @@ parsing_statistics_runs.pickle filter=lfs diff=lfs merge=lfs -text
 fit_em.pickle filter=lfs diff=lfs merge=lfs -text
 fit_grammar.torch filter=lfs diff=lfs merge=lfs -text
 sink_dataset_v2.zip filter=lfs diff=lfs merge=lfs -text
+fit_em_baseline.pickle filter=lfs diff=lfs merge=lfs -text
+fit_grammar_baseline.torch filter=lfs diff=lfs merge=lfs -text
+fit_simple_grammar.torch filter=lfs diff=lfs merge=lfs -text
+baseline_em_mmds_precomputed.pickle filter=lfs diff=lfs merge=lfs -text
+em_mmds_precomputed.pickle filter=lfs diff=lfs merge=lfs -text
