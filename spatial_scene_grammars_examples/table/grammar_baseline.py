@@ -92,7 +92,7 @@ class SteamerBottomBaseline(TerminalNode):
             observed=True
         )
 
-TabletopObjectTypes = (
+TabletopObjectTypesBaseline = (
     PersonalPlate, Teacup, Teapot, ServingDish, SteamerBottomBaseline, SteamerTop,
 )
 
@@ -189,3 +189,79 @@ class TableBaseline(IndependentSetNode):
                 rotation_rule=SameRotationRule()
             ),
         ]
+
+
+# Corresponding constraint set for the grammar.
+class ObjectsOnTableConstraintBaseline(PoseConstraint):
+    def __init__(self):
+        lb = torch.tensor([-TableBaseline.WIDTH/2.+0.15, -TableBaseline.WIDTH/2.+0.15, -0.02])
+        ub = torch.tensor([TableBaseline.WIDTH/2.-0.15, TableBaseline.WIDTH/2.-0.15, 1.])
+        super().__init__(
+            lower_bound=lb,
+            upper_bound=ub
+        )
+    def eval(self, scene_tree):
+        tables = scene_tree.find_nodes_by_type(TableBaseline)
+        xyzs = [] # in parent table frame
+        for table in tables:
+            # Collect table children xyz poses in table frame
+            objs = [node for node in scene_tree.get_children_recursive(table)
+                    if isinstance(node, TabletopObjectTypesBaseline)]
+            for obj in objs:
+                offset = torch.matmul(table.rotation.T, obj.translation - table.translation)
+                xyzs.append(offset)
+        if len(xyzs) > 0:
+            return torch.stack(xyzs, axis=0)
+        else:
+            return torch.empty(size=(0, 3))
+    def add_to_ik_prog(self, scene_tree, ik, mbp, mbp_context, node_to_free_body_ids_map):
+        raise NotImplementedError()
+
+class ObjectSpacingConstraintBaseline(PoseConstraint):
+    # Objects all a minimum distance apart on tabletop
+    def __init__(self):
+        lb = torch.tensor([0.])
+        ub = torch.tensor([np.inf])
+        super().__init__(
+            lower_bound=lb,
+            upper_bound=ub
+        )
+    def eval(self, scene_tree):
+        tables = scene_tree.find_nodes_by_type(TableBaseline)
+        all_dists = []
+        for table in tables:
+            objs = [node for node in scene_tree.get_children_recursive(table) if isinstance(node, TabletopObjectTypesBaseline)]
+            if len(objs) <= 1:
+                print("no objects")
+                continue
+            xys = torch.stack([obj.translation[:2] for obj in objs], axis=0)
+            keepout_dists = torch.tensor([obj.KEEPOUT_RADIUS for obj in objs])
+            N = xys.shape[0]
+            xys_rowwise = xys.unsqueeze(1).expand(-1, N, -1)
+            keepout_dists_rowwise = keepout_dists.unsqueeze(1).expand(-1, N)
+            xys_colwise = xys.unsqueeze(0).expand(N, -1, -1)
+            keepout_dists_colwise = keepout_dists.unsqueeze(0).expand(N, -1)
+            dists = (xys_rowwise - xys_colwise).square().sum(axis=-1)
+            keepout_dists = (keepout_dists_rowwise + keepout_dists_colwise)
+
+            # Set target keepout dist of steamerbottom-steamerbottom and
+            # steamerbottom-steamertop pairs to 0 to allow them to
+            # be on top of each other.
+            filter_inds = np.array([
+                k for k, obj in enumerate(objs)
+                if isinstance(obj, (SteamerTop, SteamerBottomBaseline))
+            ])
+            x, y = np.meshgrid(filter_inds, filter_inds)
+            keepout_dists[x, y] = 0.
+
+            # Get only lower triangular non-diagonal elems
+            rows, cols = torch.tril_indices(N, N, -1)
+            # Make sure pairwise dists > keepout dists
+            dists = (dists - keepout_dists.square())[rows, cols].reshape(-1, 1)
+            all_dists.append(dists)
+        if len(all_dists) > 0:
+            return torch.cat(all_dists, axis=0)
+        else:
+            return torch.empty(size=(0, 1))
+    def add_to_ik_prog(self, scene_tree, ik, mbp, mbp_context, node_to_free_body_ids_map):
+        raise NotImplementedError()
