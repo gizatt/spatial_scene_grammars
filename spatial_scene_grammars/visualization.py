@@ -55,9 +55,7 @@ def draw_scene_tree_structure_meshcat(scene_tree, prefix="scene_tree", zmq_url=N
         color_by_score=None, delete=True):
     # Color by score can be a tuple of min, max score. It'll go from red at min score
     # to blue at max score.
-    # Do actual drawing in meshcat, starting from root of tree
-    # So first find the root...
-    root_node = scene_tree.get_root()
+    # Do actual drawing in meshcat.
 
     if quiet:
         with open(os.devnull, 'w') as devnull:
@@ -68,7 +66,6 @@ def draw_scene_tree_structure_meshcat(scene_tree, prefix="scene_tree", zmq_url=N
 
     if delete:
         vis[prefix].delete()
-    node_queue = [root_node]
     
     # Assign functionally random colors to each new node
     # type we discover, or color my their scores.
@@ -78,11 +75,9 @@ def draw_scene_tree_structure_meshcat(scene_tree, prefix="scene_tree", zmq_url=N
 
     
     k = 0
-    while len(node_queue) > 0:
-        node = node_queue.pop(0)
+    for node in scene_tree.nodes:
         children, rules = scene_tree.get_children_and_rules(node)
-        node_queue += children
-
+        
         # 
         if color_by_score is not None:
             assert len(color_by_score) == 2, "Color by score should be a tuple of (min, max)"

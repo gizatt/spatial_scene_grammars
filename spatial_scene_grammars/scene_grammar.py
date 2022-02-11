@@ -400,4 +400,3 @@ class SpatialSceneGrammar(torch.nn.Module):
             detach=detach,
             terminate_at_observed=False
         )
-        
