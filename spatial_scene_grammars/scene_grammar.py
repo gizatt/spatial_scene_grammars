@@ -400,3 +400,51 @@ class SpatialSceneGrammar(torch.nn.Module):
             detach=detach,
             terminate_at_observed=False
         )
+
+def apply_decoration_rules_to_tree(tree, decoration_mapping):
+    '''
+        tree: A SceneTree, which will be modified in-place.
+        decoration_mapping: A dict mapping node types to
+            new node types.
+
+        Randomly applies decoration rules to an existing scene tree.
+        For each node in the existing tree, changes its geometry type (if present)
+        to fixed to freeze it in place.
+
+        Then looks up each existing node in the tree in the decoration mapping:
+        for each node with a mapping, adds a new node to the tree of the mapped
+        type at the same TF as the original node.
+
+        Finally, recursively expands the set of new decoration nodes following
+        their built-in rules.
+    '''
+    # Freeze existing nodes.
+    for node in tree.nodes:
+        if node.physics_geometry_info is not None:
+            node.physics_geometry_info.fixed = True
+    # Build list of new decoration nodes (and their source node).
+    # (Delay modification of the original tree.)
+    new_pairs = []
+    for existing_type, new_type in decoration_mapping.items():
+        for existing_node in tree.nodes:
+            if isinstance(existing_node, existing_type):
+                new_node = new_type(existing_node.tf)
+                new_pairs.append((existing_node, new_node))
+    # Now add the new nodes to the tree and initialize the expansion queue.
+    expand_queue = []
+    for existing_node, new_node in new_pairs:
+        # This node is *not* connected to its parent, since there is no
+        # rule on the parent for explaining this new node.
+        tree.add_node(new_node)
+        expand_queue.append(new_node)
+    # Finish recursive expansion of any nodes we added.
+    while len(expand_queue) > 0:
+        parent = expand_queue.pop(0)
+        # Ask node to sample its children.
+        children = parent.sample_children()
+        for child in children:
+            # Always use default params for the decoration nodes.
+            tree.add_node(child)
+            tree.add_edge(parent, child)
+            expand_queue.append(child)
+    return tree
