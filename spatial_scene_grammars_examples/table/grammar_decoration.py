@@ -119,14 +119,13 @@ class ChairDecoration(TerminalNode):
             observed=True
         )
 
-class PlaceSettingDecoration(IndependentSetNode):
-    TABLE_HEIGHT = 0.8
+class PersonalPlateDecoration(IndependentSetNode):
     def __init__(self, tf):
         super().__init__(
             tf=tf,
             physics_geometry_info=None,
             observed=False,
-            rule_probs=torch.tensor([0.75, 1.0])
+            rule_probs=torch.tensor([0.8])
     )
     @classmethod
     def generate_rules(cls):
@@ -134,12 +133,25 @@ class PlaceSettingDecoration(IndependentSetNode):
             ProductionRule(
                 child_type=FirstChopstick,
                 xyz_rule=ParentFrameGaussianOffsetRule(
-                    mean=torch.tensor([0.025, 0.0, 0.02]),
-                    variance=torch.tensor([0.002, 0.002, 0.0001])),
+                    mean=torch.tensor([0.0, 0.0, 0.05]),
+                    variance=torch.tensor([0.0005, 0.0005, 0.0001])),
                 rotation_rule=ParentFrameBinghamRotationRule.from_rotation_and_rpy_variances(
                     RotationMatrix(RollPitchYaw(0., np.pi/2., 0.)), np.array([1000, 1000, 1])
                 )
-            ),
+            )
+        ]
+
+class PlaceSettingDecoration(AndNode):
+    TABLE_HEIGHT = 0.8
+    def __init__(self, tf):
+        super().__init__(
+            tf=tf,
+            physics_geometry_info=None,
+            observed=False,
+    )
+    @classmethod
+    def generate_rules(cls):
+        return [
             ProductionRule(
                 child_type=ChairDecoration,
                 xyz_rule=ParentFrameGaussianOffsetRule(
@@ -154,6 +166,7 @@ class PlaceSettingDecoration(IndependentSetNode):
 
 decoration_mapping = {
     PlaceSetting: PlaceSettingDecoration,
+    PersonalPlate: PersonalPlateDecoration,
     SteamerBottom: SteamerDecoration,
     ServingDish: EggTartsDecoration
 }
