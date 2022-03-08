@@ -119,13 +119,8 @@ def do_collision_mesh_simplification(input_obj_path, show=False):
         convex_pieces = []
         # Do convex decomp multiple times, hoping for overlap.
         args_per_iter = [
-            {"maxhulls": 12,
-             "maxNumVerticesPerCH": 12,
-             "minVolumePerCH": 0.001,
-             "resolution": 100000,
-             "pca": 1},
-            {"maxhulls": 12,
-             "maxNumVerticesPerCH": 12,
+            {"maxhulls": 1,
+             "maxNumVerticesPerCH": 32,
              "minVolumePerCH": 0.001,
              "resolution": 100000,
              "pca": 1},
@@ -299,7 +294,7 @@ if __name__ == "__main__":
     # Update all models.
     #to_update = glob.glob(data_folder + "/**/model.sdf", recursive=True)
     #to_update = glob.glob(data_folder + "/**/Plastic_Cup/model.sdf")
-    to_update = glob.glob(data_folder + "/utensils/***/model.sdf")
+    to_update = glob.glob(data_folder + "/**/*Teapot*/model.sdf")
     
     #to_update = glob.glob(data_folder + "/**/Cole_Hardware_Mug_Classic_Blue/model.sdf")
     print(to_update)
